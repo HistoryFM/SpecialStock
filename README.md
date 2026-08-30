@@ -154,6 +154,9 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 | `ALPACA_API_KEY` | No | Optional calendar/outcome credential |
 | `ALPACA_API_SECRET` | No | Must be configured together with the Alpaca key |
 | `SPECIALSTOCK_DEMO_MODE` | No | `1` forces demo calendar/outcome behavior |
+| `SENTRY_DSN` | Monitoring | Server and Edge Sentry event destination; stored only in local/deployment environment configuration |
+| `NEXT_PUBLIC_SENTRY_DSN` | Monitoring | Browser Sentry event destination; uses the same public DSN and is embedded into client builds by Next.js |
+| `SENTRY_AUTH_TOKEN` | No | Build-only credential for production source-map uploads; never exposed to the browser |
 
 `.env.example` documents the safe shape without real values. `.env.local` is gitignored and must be treated as confidential.
 

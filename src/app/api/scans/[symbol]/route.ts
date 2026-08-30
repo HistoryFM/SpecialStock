@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import * as Sentry from "@sentry/nextjs";
 
 import { auth } from "@/auth";
 import { isAuthorizedSession } from "@/auth/authorization";
@@ -100,6 +101,11 @@ export async function POST(
     if (error instanceof ScanNotAvailableError || error instanceof AutomaticScansDisabledError) {
       return Response.json({ error: error.message }, { status: 409 });
     }
+    Sentry.captureException(error, {
+      tags: {
+        route: "api.scans.symbol",
+      },
+    });
     return Response.json(
       { error: error instanceof Error ? error.message : "The scan failed." },
       { status: 502 },

@@ -28,6 +28,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <label htmlFor="password">Shared password</label>
           <input
             autoComplete="current-password"
+            data-sentry-mask
             id="password"
             name="password"
             required
