@@ -1,5 +1,6 @@
 import "server-only";
 
+import * as Sentry from "@sentry/nextjs";
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
@@ -145,62 +146,74 @@ async function persistModelResult(input: {
   result: ModelRunResult;
   frozen: ChartAnalysisInput;
 }) {
-  const database = await getDatabase();
-  const [run] = await database
-    .insert(modelRuns)
-    .values({
-      scanSlotId: input.slotId,
-      chartArtifactId: input.chartArtifactId,
-      runRole: "primary",
-      requestedModel: input.result.requestedModel,
-      actualModel: input.result.actualModel,
-      actualProvider: input.result.actualProvider,
-      promptVersion: PROMPT_VERSION,
-      inputHash: input.frozen.inputHash,
-      status: "valid",
-      latencyMs: input.result.latencyMs,
-      inputTokens: input.result.inputTokens,
-      outputTokens: input.result.outputTokens,
-      costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
-      rawResponse: input.result.rawResponse,
-      validationErrors: [],
-      completedAt: new Date(),
-    })
-    .returning();
-  if (!run) throw new Error("The model run could not be persisted.");
-  const result = input.result.analysis;
-  const [saved] = await database
-    .insert(analyses)
-    .values({
-      modelRunId: run.id,
-      verdict: result.verdict,
-      barStatus: input.frozen.barStatus,
-      setupType: result.setup_type,
-      immediateBias: result.immediate_bias,
-      broaderTrend: result.broader_trend,
-      conviction: result.conviction,
-      observedPrice: result.observed_price === null ? null : String(result.observed_price),
-      candlestickAnalysis: result.candlestick_analysis,
-      volumeAnalysis: null,
-      vwapKeltnerAnalysis: result.vwap_keltner_analysis,
-      cciAnalysis: result.cci_analysis,
-      indicatorReadings: result.indicator_readings,
-      momentumAnalysis: null,
-      relativeVelocityAnalysis: null,
-      supportingEvidence: result.supporting_evidence,
-      conflictingEvidence: result.conflicting_evidence,
-      supportLevels: result.support_levels,
-      resistanceLevels: result.resistance_levels,
-      primaryTarget: result.primary_target === null ? null : String(result.primary_target),
-      deeperScenario: result.deeper_scenario,
-      invalidationLevel:
-        result.invalidation_level === null ? null : String(result.invalidation_level),
-      dataQualityFlags: result.data_quality_flags,
-      summary: result.summary,
-    })
-    .returning();
-  if (!saved) throw new Error("The validated analysis could not be persisted.");
-  return { run, analysis: saved };
+  return Sentry.startSpan(
+    {
+      name: "Persist validated analysis",
+      op: "specialstock.analysis.persist",
+      attributes: {
+        "specialstock.scan.slot_id": input.slotId,
+        "specialstock.chart.artifact_id": input.chartArtifactId,
+      },
+    },
+    async () => {
+      const database = await getDatabase();
+      const [run] = await database
+        .insert(modelRuns)
+        .values({
+          scanSlotId: input.slotId,
+          chartArtifactId: input.chartArtifactId,
+          runRole: "primary",
+          requestedModel: input.result.requestedModel,
+          actualModel: input.result.actualModel,
+          actualProvider: input.result.actualProvider,
+          promptVersion: PROMPT_VERSION,
+          inputHash: input.frozen.inputHash,
+          status: "valid",
+          latencyMs: input.result.latencyMs,
+          inputTokens: input.result.inputTokens,
+          outputTokens: input.result.outputTokens,
+          costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
+          rawResponse: input.result.rawResponse,
+          validationErrors: [],
+          completedAt: new Date(),
+        })
+        .returning();
+      if (!run) throw new Error("The model run could not be persisted.");
+      const result = input.result.analysis;
+      const [saved] = await database
+        .insert(analyses)
+        .values({
+          modelRunId: run.id,
+          verdict: result.verdict,
+          barStatus: input.frozen.barStatus,
+          setupType: result.setup_type,
+          immediateBias: result.immediate_bias,
+          broaderTrend: result.broader_trend,
+          conviction: result.conviction,
+          observedPrice: result.observed_price === null ? null : String(result.observed_price),
+          candlestickAnalysis: result.candlestick_analysis,
+          volumeAnalysis: null,
+          vwapKeltnerAnalysis: result.vwap_keltner_analysis,
+          cciAnalysis: result.cci_analysis,
+          indicatorReadings: result.indicator_readings,
+          momentumAnalysis: null,
+          relativeVelocityAnalysis: null,
+          supportingEvidence: result.supporting_evidence,
+          conflictingEvidence: result.conflicting_evidence,
+          supportLevels: result.support_levels,
+          resistanceLevels: result.resistance_levels,
+          primaryTarget: result.primary_target === null ? null : String(result.primary_target),
+          deeperScenario: result.deeper_scenario,
+          invalidationLevel:
+            result.invalidation_level === null ? null : String(result.invalidation_level),
+          dataQualityFlags: result.data_quality_flags,
+          summary: result.summary,
+        })
+        .returning();
+      if (!saved) throw new Error("The validated analysis could not be persisted.");
+      return { run, analysis: saved };
+    },
+  );
 }
 
 async function runModel(input: {
@@ -312,98 +325,273 @@ export async function runScan(input: {
   now?: Date;
   requestedSlotKey?: string;
 }) {
-  const now = input.now ?? new Date();
-  const policy = getScanExecutionPolicy(input.mode);
-  const database = await getDatabase();
-  await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
-  const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
-  const entry = settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
-  if (!entry) throw new UnknownWatchlistSymbolError(`${input.symbol} is not in the watchlist.`);
-  if (input.mode === "scheduled" && !entry.automaticScanEnabled) {
-    throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
-  }
-
-  const marketProvider = createMarketDataProvider();
-  const session = await marketProvider.getSession(now);
-  const claim = await createOrClaimSlot({
-    entry,
-    mode: input.mode,
-    now,
-    session,
-    requestedSlotKey: input.requestedSlotKey,
-  });
-  if (!claim.claimed) return { slotId: claim.slot.id, status: claim.slot.status, reused: true };
-
-  try {
-    const capture = await new ChartImgProvider().capture({
-      entry,
-      capturedAt: now,
-      range: chartRange(now, session, claim.completedThrough ?? undefined),
-      barStatus: input.mode === "scheduled" ? "closed" : (
-        session.isRegularSession && now >= session.opensAt && now < session.closesAt ? "open" : "closed"
-      ),
-    });
-    const storageReference = await persistChartArtifact(capture.png, capture.imageHash);
-    const [artifact] = await database.insert(chartArtifacts).values({
-      scanSlotId: claim.slot.id,
-      rendererVersion: "chart-img-v2",
-      inputHash: capture.input.inputHash,
-      imageHash: capture.imageHash,
-      mimeType: "image/png",
-      width: capture.input.width,
-      height: capture.input.height,
-      byteLength: capture.png.byteLength,
-      storageReference,
-      frozenInput: capture.input as unknown as Record<string, unknown>,
-    }).returning();
-    if (!artifact) throw new Error("Chart metadata could not be persisted.");
-
-    const storedPng = await readChartArtifact(storageReference, capture.imageHash);
-    const primary = await runModel({
-      slotId: claim.slot.id,
-      chartArtifactId: artifact.id,
-      model: settings.activeModel,
-      maxAttempts: policy.modelAttempts,
-      frozen: capture.input,
-      png: storedPng,
-    });
-    if (!primary) throw new Error("Daily AI budget is exhausted.");
-
-    if (policy.includeInEvaluation) await evaluatePendingOutcomes(input.symbol, now);
-    if (policy.createThesis) {
-      await updateThesisAndNotification({
-        symbol: input.symbol,
-        analysis: primary.analysis,
-        demo: isDemoMode(),
-        now,
+  return Sentry.startSpan(
+    {
+      name: `scan ${input.symbol}`,
+      op: "specialstock.scan",
+      attributes: {
+        "specialstock.symbol": input.symbol,
+        "specialstock.scan.mode": input.mode,
+      },
+    },
+    async (span) => {
+      const started = performance.now();
+      const now = input.now ?? new Date();
+      let stage = "initialize";
+      let claimedSlotId: string | null = null;
+      Sentry.logger.info("scan.started", {
+        "specialstock.symbol": input.symbol,
+        "specialstock.scan.mode": input.mode,
+        "specialstock.scan.requested_slot": input.requestedSlotKey ?? "none",
       });
-    }
-    const inputAsOf = claim.completedThrough ?? now;
-    await database.update(scanSlots).set({
-      status: "completed",
-      latestSourceAt: inputAsOf,
-      freshnessSeconds: Math.max(0, Math.floor((now.getTime() - inputAsOf.getTime()) / 1_000)),
-      qualityFlags: primary.analysis.dataQualityFlags,
-      inputAsOf,
-      inputHash: capture.input.inputHash,
-      completedAt: new Date(),
-      leaseExpiresAt: null,
-      updatedAt: new Date(),
-    }).where(eq(scanSlots.id, claim.slot.id));
-    return {
-      slotId: claim.slot.id,
-      analysisId: primary.analysis.id,
-      status: "completed" as const,
-      reused: false,
-    };
-  } catch (error) {
-    await database.update(scanSlots).set({
-      status: "failed",
-      errorCode: error instanceof Error ? error.message.slice(0, 180) : "scan_failed",
-      completedAt: new Date(),
-      leaseExpiresAt: null,
-      updatedAt: new Date(),
-    }).where(eq(scanSlots.id, claim.slot.id));
-    throw error;
-  }
+
+      try {
+        const policy = getScanExecutionPolicy(input.mode);
+        const database = await getDatabase();
+        await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
+        const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
+        const entry = settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
+        if (!entry) throw new UnknownWatchlistSymbolError(`${input.symbol} is not in the watchlist.`);
+        if (input.mode === "scheduled" && !entry.automaticScanEnabled) {
+          throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
+        }
+
+        stage = "market_session";
+        const marketProvider = createMarketDataProvider();
+        const session = await marketProvider.getSession(now);
+        stage = "claim_slot";
+        const claim = await createOrClaimSlot({
+          entry,
+          mode: input.mode,
+          now,
+          session,
+          requestedSlotKey: input.requestedSlotKey,
+        });
+        span.setAttributes({
+          "specialstock.scan.slot_id": claim.slot.id,
+          "specialstock.scan.slot_kind": claim.slot.slotKind,
+        });
+        if (!claim.claimed) {
+          span.setAttribute("specialstock.scan.reused", true);
+          span.setStatus({ code: 1 });
+          Sentry.logger.info("scan.reused", {
+            "specialstock.symbol": input.symbol,
+            "specialstock.scan.mode": input.mode,
+            "specialstock.scan.slot_id": claim.slot.id,
+            "specialstock.scan.status": claim.slot.status,
+            "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+          });
+          return { slotId: claim.slot.id, status: claim.slot.status, reused: true };
+        }
+        claimedSlotId = claim.slot.id;
+
+        stage = "chart_capture";
+        const capture = await Sentry.startSpan(
+          {
+            name: "Capture Chart-Img chart",
+            op: "specialstock.chart.capture",
+            attributes: {
+              "specialstock.symbol": input.symbol,
+              "specialstock.scan.slot_id": claim.slot.id,
+            },
+          },
+          () => new ChartImgProvider().capture({
+            entry,
+            capturedAt: now,
+            range: chartRange(now, session, claim.completedThrough ?? undefined),
+            barStatus: input.mode === "scheduled" ? "closed" : (
+              session.isRegularSession && now >= session.opensAt && now < session.closesAt ? "open" : "closed"
+            ),
+          }),
+        );
+
+        stage = "artifact_persist";
+        const { storageReference, artifact } = await Sentry.startSpan(
+          {
+            name: "Persist chart artifact",
+            op: "specialstock.chart.persist",
+            attributes: {
+              "specialstock.scan.slot_id": claim.slot.id,
+              "specialstock.chart.image_hash": capture.imageHash,
+            },
+          },
+          async () => {
+            const storageReference = await persistChartArtifact(capture.png, capture.imageHash);
+            const [artifact] = await database.insert(chartArtifacts).values({
+              scanSlotId: claim.slot.id,
+              rendererVersion: "chart-img-v2",
+              inputHash: capture.input.inputHash,
+              imageHash: capture.imageHash,
+              mimeType: "image/png",
+              width: capture.input.width,
+              height: capture.input.height,
+              byteLength: capture.png.byteLength,
+              storageReference,
+              frozenInput: capture.input as unknown as Record<string, unknown>,
+            }).returning();
+            if (!artifact) throw new Error("Chart metadata could not be persisted.");
+            return { storageReference, artifact };
+          },
+        );
+
+        stage = "artifact_verify";
+        const storedPng = await Sentry.startSpan(
+          {
+            name: "Verify stored chart artifact",
+            op: "specialstock.chart.verify",
+            attributes: {
+              "specialstock.scan.slot_id": claim.slot.id,
+              "specialstock.chart.artifact_id": artifact.id,
+            },
+          },
+          () => readChartArtifact(storageReference, capture.imageHash),
+        );
+
+        stage = "analysis";
+        const primary = await Sentry.startSpan(
+          {
+            name: "Run Gemini visual analysis",
+            op: "specialstock.analysis",
+            attributes: {
+              "specialstock.symbol": input.symbol,
+              "specialstock.scan.slot_id": claim.slot.id,
+              "gen_ai.request.model": settings.activeModel,
+            },
+          },
+          () => runModel({
+            slotId: claim.slot.id,
+            chartArtifactId: artifact.id,
+            model: settings.activeModel,
+            maxAttempts: policy.modelAttempts,
+            frozen: capture.input,
+            png: storedPng,
+          }),
+        );
+        if (!primary) throw new Error("Daily AI budget is exhausted.");
+
+        stage = "thesis_and_outcomes";
+        await Sentry.startSpan(
+          {
+            name: "Update thesis and outcomes",
+            op: "specialstock.thesis.update",
+            attributes: {
+              "specialstock.symbol": input.symbol,
+              "specialstock.scan.slot_id": claim.slot.id,
+              "specialstock.analysis.id": primary.analysis.id,
+              "specialstock.analysis.evaluation_eligible": policy.includeInEvaluation,
+            },
+          },
+          async () => {
+            if (policy.includeInEvaluation) await evaluatePendingOutcomes(input.symbol, now);
+            if (policy.createThesis) {
+              await updateThesisAndNotification({
+                symbol: input.symbol,
+                analysis: primary.analysis,
+                demo: isDemoMode(),
+                now,
+              });
+            }
+          },
+        );
+
+        stage = "complete_slot";
+        const inputAsOf = claim.completedThrough ?? now;
+        await Sentry.startSpan(
+          {
+            name: "Complete scan slot",
+            op: "specialstock.scan.persist",
+            attributes: { "specialstock.scan.slot_id": claim.slot.id },
+          },
+          () => database.update(scanSlots).set({
+            status: "completed",
+            latestSourceAt: inputAsOf,
+            freshnessSeconds: Math.max(0, Math.floor((now.getTime() - inputAsOf.getTime()) / 1_000)),
+            qualityFlags: primary.analysis.dataQualityFlags,
+            inputAsOf,
+            inputHash: capture.input.inputHash,
+            completedAt: new Date(),
+            leaseExpiresAt: null,
+            updatedAt: new Date(),
+          }).where(eq(scanSlots.id, claim.slot.id)),
+        );
+
+        const durationMs = Math.round(performance.now() - started);
+        span.setAttributes({
+          "specialstock.analysis.id": primary.analysis.id,
+          "specialstock.analysis.verdict": primary.analysis.verdict,
+          "specialstock.analysis.conviction": primary.analysis.conviction,
+          "specialstock.scan.duration_ms": durationMs,
+          "specialstock.scan.reused": false,
+        });
+        span.setStatus({ code: 1 });
+        const completedAttributes: Record<string, string | number | boolean> = {
+          "specialstock.symbol": input.symbol,
+          "specialstock.scan.mode": input.mode,
+          "specialstock.scan.slot_id": claim.slot.id,
+          "specialstock.scan.slot_kind": claim.slot.slotKind,
+          "specialstock.scan.duration_ms": durationMs,
+          "specialstock.analysis.id": primary.analysis.id,
+          "specialstock.analysis.verdict": primary.analysis.verdict,
+          "specialstock.analysis.conviction": primary.analysis.conviction,
+          "specialstock.analysis.bar_status": primary.analysis.barStatus,
+          "specialstock.analysis.evaluation_eligible": policy.includeInEvaluation,
+          "specialstock.chart.input_hash": capture.input.inputHash,
+          "specialstock.chart.image_hash": capture.imageHash,
+          "specialstock.model.requested": primary.run.requestedModel,
+          "specialstock.model.actual": primary.run.actualModel ?? primary.run.requestedModel,
+          "specialstock.model.provider": primary.run.actualProvider ?? "openrouter",
+          "specialstock.model.latency_ms": primary.run.latencyMs ?? 0,
+        };
+        if (primary.run.inputTokens !== null) {
+          completedAttributes["specialstock.model.input_tokens"] = primary.run.inputTokens;
+        }
+        if (primary.run.outputTokens !== null) {
+          completedAttributes["specialstock.model.output_tokens"] = primary.run.outputTokens;
+        }
+        if (primary.run.costUsd !== null) {
+          completedAttributes["specialstock.model.cost_usd"] = Number(primary.run.costUsd);
+        }
+        Sentry.logger.info("scan.completed", completedAttributes);
+        return {
+          slotId: claim.slot.id,
+          analysisId: primary.analysis.id,
+          status: "completed" as const,
+          reused: false,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The scan failed.";
+        const errorType = error instanceof Error ? error.constructor.name : "UnknownError";
+        const durationMs = Math.round(performance.now() - started);
+        span.setAttributes({
+          "error.type": errorType,
+          "specialstock.scan.stage": stage,
+          "specialstock.scan.duration_ms": durationMs,
+        });
+        span.setStatus({ code: 2, message: message.slice(0, 200) });
+        Sentry.logger.error("scan.failed", {
+          "specialstock.symbol": input.symbol,
+          "specialstock.scan.mode": input.mode,
+          "specialstock.scan.slot_id": claimedSlotId ?? "none",
+          "specialstock.scan.stage": stage,
+          "specialstock.scan.duration_ms": durationMs,
+          "specialstock.scan.retry_state": error instanceof AnalysisModelError
+            ? "model_retries_exhausted"
+            : "not_retried",
+          "error.type": errorType,
+          "error.message": message.slice(0, 500),
+        });
+        if (claimedSlotId) {
+          const database = await getDatabase();
+          await database.update(scanSlots).set({
+            status: "failed",
+            errorCode: message.slice(0, 180),
+            completedAt: new Date(),
+            leaseExpiresAt: null,
+            updatedAt: new Date(),
+          }).where(eq(scanSlots.id, claimedSlotId));
+        }
+        throw error;
+      }
+    },
+  );
 }

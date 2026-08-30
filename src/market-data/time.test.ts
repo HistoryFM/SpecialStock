@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalScanSlot,
   dateFromMarketParts,
+  marketDayBounds,
   nextScanTime,
   requestedScanSlot,
 } from "@/market-data/time";
@@ -11,6 +12,18 @@ describe("market time", () => {
   it("converts New York times correctly across DST", () => {
     expect(dateFromMarketParts("2026-03-09", 9, 30).toISOString()).toBe("2026-03-09T13:30:00.000Z");
     expect(dateFromMarketParts("2026-11-02", 9, 30).toISOString()).toBe("2026-11-02T14:30:00.000Z");
+  });
+
+  it("uses DST-safe Eastern calendar-day boundaries", () => {
+    const spring = marketDayBounds("2026-03-08");
+    const fall = marketDayBounds("2026-11-01");
+
+    expect(spring.start.toISOString()).toBe("2026-03-08T05:00:00.000Z");
+    expect(spring.end.toISOString()).toBe("2026-03-09T04:00:00.000Z");
+    expect(spring.end.getTime() - spring.start.getTime()).toBe(23 * 60 * 60_000);
+    expect(fall.start.toISOString()).toBe("2026-11-01T04:00:00.000Z");
+    expect(fall.end.toISOString()).toBe("2026-11-02T05:00:00.000Z");
+    expect(fall.end.getTime() - fall.start.getTime()).toBe(25 * 60 * 60_000);
   });
 
   it("runs the first slot at 9:35:10 and keeps it stable for the five-minute window", () => {

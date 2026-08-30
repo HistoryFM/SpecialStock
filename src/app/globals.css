@@ -1669,6 +1669,34 @@ h1 {
 .audit-metadata code { overflow-wrap: anywhere; color: #bdc9d5; font-size: 0.66rem; }
 
 .history-panel { padding: 1rem; }
+.daily-conviction-section {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.history-date-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.55rem;
+  margin-bottom: 0.8rem;
+}
+.history-date-filter label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+.history-date-filter input { min-height: 2rem; }
+.daily-conviction-table td,
+.daily-conviction-table th { padding: 0.65rem 0.75rem; }
+.daily-conviction-table td:nth-child(2) strong,
+.daily-conviction-table td:nth-child(2) small { display: block; }
+.daily-conviction-table td:nth-child(2) small {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
 .history-table tr.selected { background: #182431; }
 .history-table td, .history-table th { padding: 0.65rem 0.75rem; }
 
@@ -2227,6 +2255,35 @@ h1 {
   margin: 0.15rem 0 0;
 }
 
+.review-history {
+  grid-column: 1 / -1;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.review-history ul {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-history li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.7rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  background: #101821;
+  font-size: 0.72rem;
+}
+
+.review-history li span,
+.review-history li small { color: var(--muted); }
+.review-history li p,
+.review-history li small { grid-column: 1 / -1; margin: 0; }
+
 @media (max-width: 1100px) {
   .ai-first-workspace {
     grid-template-columns: 1fr;
@@ -2310,5 +2367,10 @@ h1 {
   .expanded-chart .chart-stage {
     height: calc(100vh - 12rem);
     min-height: 24rem;
+  }
+
+  .history-date-filter {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

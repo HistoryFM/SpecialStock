@@ -8,6 +8,7 @@ import { ReviewForm } from "@/app/(protected)/symbols/[symbol]/review-form";
 import { WorkspaceTabs } from "@/app/(protected)/symbols/[symbol]/workspace-tabs";
 import { tickerSchema } from "@/settings/schema";
 import { getSymbolDetail } from "@/symbols/data";
+import { marketDate, normalizeMarketDate } from "@/market-data/time";
 import {
   alertReasonText,
   analysisFreshness,
@@ -36,18 +37,38 @@ function outcomeLabel(slotKind: string, outcome: string | undefined) {
   return slotKind === "manual_smoke" ? "excluded" : outcome ?? "pending";
 }
 
+function dailyOutcomeLabel(input: {
+  slotKind: string;
+  hasThesis: boolean;
+  outcome: string | undefined;
+}) {
+  if (input.slotKind === "manual_smoke") return "Review only";
+  if (!input.hasThesis) return "Not tracked";
+  return input.outcome?.replaceAll("_", " ") ?? "Pending";
+}
+
+function reviewLabel(assessment: string | undefined) {
+  return assessment ? assessment[0]!.toUpperCase() + assessment.slice(1) : "Not reviewed";
+}
+
 export default async function SymbolPage({
   params,
   searchParams,
 }: {
   params: Promise<{ symbol: string }>;
-  searchParams: Promise<{ analysis?: string }>;
+  searchParams: Promise<{ analysis?: string; date?: string; tab?: string }>;
 }) {
   const parsed = tickerSchema.safeParse((await params).symbol);
   if (!parsed.success) notFound();
   const symbol = parsed.data;
-  const { analysis: selectedAnalysisId } = await searchParams;
-  const data = await getSymbolDetail(symbol, selectedAnalysisId);
+  const query = await searchParams;
+  const selectedAnalysisId = query.analysis;
+  const selectedMarketDate = normalizeMarketDate(query.date);
+  const selectedTab = query.tab === "audit" || query.tab === "review" ? query.tab : "history";
+  const data = await getSymbolDetail(symbol, {
+    analysisId: selectedAnalysisId,
+    marketDate: selectedMarketDate,
+  });
   if (data.requestedAnalysisMissing) notFound();
 
   if (!data.latest) {
@@ -95,10 +116,62 @@ export default async function SymbolPage({
     : null;
   const historyPanel = (
     <div className="history-panel">
+      <section className="daily-conviction-section" aria-labelledby="daily-conviction-heading">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Daily review workspace</p>
+            <h3 id="daily-conviction-heading">High-conviction theses</h3>
+          </div>
+          <span className="status-pill neutral">{data.dailyHighConviction.length} calls</span>
+        </div>
+        <form className="history-date-filter" method="get">
+          <label htmlFor="history-date">Market date (ET)</label>
+          <input
+            defaultValue={data.selectedMarketDate}
+            id="history-date"
+            max={marketDate(data.now)}
+            name="date"
+            type="date"
+          />
+          <button className="secondary-button compact" type="submit">View day</button>
+        </form>
+        {data.dailyHighConviction.length === 0 ? (
+          <div className="table-empty">No high-conviction bullish or bearish analyses were recorded for this date.</div>
+        ) : (
+          <div className="table-wrap">
+            <table className="daily-conviction-table">
+              <thead><tr><th>Time (ET)</th><th>Thesis</th><th>At analysis</th><th>Target</th><th>Invalidation</th><th>Source</th><th>Outcome</th><th>Review</th><th></th></tr></thead>
+              <tbody>{data.dailyHighConviction.map((row) => (
+                <tr key={row.analysis.id}>
+                  <td>{etTime(row.slot.scheduledFor)}</td>
+                  <td><strong>{row.analysis.verdict}</strong><small>{row.analysis.setupType}</small></td>
+                  <td>{money(row.analysis.observedPrice)}</td>
+                  <td>{money(row.analysis.primaryTarget)}</td>
+                  <td>{money(row.analysis.invalidationLevel)}</td>
+                  <td>{row.slot.slotKind === "manual_smoke" ? "Manual" : "Automatic"}</td>
+                  <td>{dailyOutcomeLabel({
+                    slotKind: row.slot.slotKind,
+                    hasThesis: Boolean(row.thesis),
+                    outcome: row.outcome?.result,
+                  })}</td>
+                  <td>{reviewLabel(row.latestReview?.assessment)}</td>
+                  <td><Link
+                    className="text-button"
+                    href={analysisUrl(symbol, row.analysis.id, {
+                      date: data.selectedMarketDate,
+                      tab: "review",
+                    })}
+                  >Review thesis</Link></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </section>
       <div className="section-heading"><div><p className="eyebrow">Measured history</p><h3>Prior analyses</h3></div><span className="status-pill neutral">{data.history.length} runs</span></div>
       <div className="table-wrap">
         <table className="history-table">
-          <thead><tr><th>Time (ET)</th><th>Verdict</th><th>Conviction</th><th>Target</th><th>Outcome</th><th>Model</th><th></th></tr></thead>
+          <thead><tr><th>Time (ET)</th><th>Verdict</th><th>Conviction</th><th>Target</th><th>Outcome</th><th>Review</th><th>Model</th><th></th></tr></thead>
           <tbody>{data.history.map((row) => (
             <tr className={row.analysis.id === selected.analysis.id ? "selected" : ""} key={row.analysis.id}>
               <td>{etTime(row.slot.scheduledFor)}</td>
@@ -106,6 +179,7 @@ export default async function SymbolPage({
               <td>{row.analysis.conviction}</td>
               <td>{money(row.analysis.primaryTarget)}</td>
               <td>{outcomeLabel(row.slot.slotKind, row.outcome?.result)}</td>
+              <td>{reviewLabel(row.latestReview?.assessment)}</td>
               <td>{row.run.actualModel ?? row.run.requestedModel}</td>
               <td><Link className="text-button" href={analysisUrl(symbol, row.analysis.id)}>{row.analysis.id === selected.analysis.id ? "Viewing" : "Load"}</Link></td>
             </tr>
@@ -158,6 +232,21 @@ export default async function SymbolPage({
         </dl>
       </div>
       <ReviewForm analysisId={selected.analysis.id} />
+      <div className="review-history">
+        <p className="eyebrow">Prior reviews</p>
+        {selected.reviews.length === 0 ? (
+          <p className="muted">No human review has been recorded for this analysis.</p>
+        ) : (
+          <ul>{selected.reviews.map((review) => (
+            <li key={review.id}>
+              <strong>{reviewLabel(review.assessment)}</strong>
+              <span>{etTime(review.createdAt)}</span>
+              {review.notes ? <p>{review.notes}</p> : null}
+              {review.unsupportedClaims.length > 0 ? <small>Unsupported claim flagged</small> : null}
+            </li>
+          ))}</ul>
+        )}
+      </div>
     </div>
   );
 
@@ -221,7 +310,13 @@ export default async function SymbolPage({
         </div>
       </section>
 
-      <WorkspaceTabs audit={auditPanel} history={historyPanel} review={reviewPanel} />
+      <WorkspaceTabs
+        audit={auditPanel}
+        history={historyPanel}
+        initialTab={selectedTab}
+        key={`${selected.analysis.id}:${selectedTab}`}
+        review={reviewPanel}
+      />
     </main>
   );
 }

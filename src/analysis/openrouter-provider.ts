@@ -15,6 +15,7 @@ import { getServerEnv } from "@/config/env";
 import { DEFAULT_MODEL_ID } from "@/models/catalog";
 
 const responseSchema = z.object({
+  id: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
   choices: z.array(
@@ -124,8 +125,10 @@ function setUsageAttributes(
   const inputTokens = raw.usage?.prompt_tokens;
   const outputTokens = raw.usage?.completion_tokens;
   span.setAttributes({
+    "gen_ai.response.id": raw.id,
     "gen_ai.response.model": raw.model,
     "gen_ai.response.finish_reasons": raw.choices[0]?.finish_reason ?? undefined,
+    "gen_ai.response.streaming": false,
     "gen_ai.usage.input_tokens": inputTokens,
     "gen_ai.usage.output_tokens": outputTokens,
     "gen_ai.usage.total_tokens":
@@ -139,17 +142,20 @@ function setUsageAttributes(
 
 function usageLogAttributes(input: {
   attempt: number;
+  maxAttempts: number;
   latencyMs: number;
   model: string;
   raw?: z.infer<typeof responseSchema>;
 }) {
   const attributes: Record<string, string | number | boolean> = {
     attempt: input.attempt,
+    max_attempts: input.maxAttempts,
     latency_ms: input.latencyMs,
     requested_model: input.model,
   };
   if (input.raw?.model) attributes.actual_model = input.raw.model;
   if (input.raw?.provider) attributes.actual_provider = input.raw.provider;
+  if (input.raw?.id) attributes.response_id = input.raw.id;
   if (input.raw?.usage?.prompt_tokens !== undefined) {
     attributes.input_tokens = input.raw.usage.prompt_tokens;
   }
@@ -197,6 +203,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               "gen_ai.pipeline.name": "specialstock.chart-analysis",
               "gen_ai.input.messages": inputMessages,
               "specialstock.analysis.attempt": attempt + 1,
+              "specialstock.symbol": frozen.symbol,
               "specialstock.chart.input_hash": frozen.inputHash,
             },
           },
@@ -256,7 +263,13 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               span.setStatus({ code: 1 });
               Sentry.logger.info(
                 "Gemini visual analysis completed",
-                usageLogAttributes({ attempt: attempt + 1, latencyMs, model, raw }),
+                usageLogAttributes({
+                  attempt: attempt + 1,
+                  maxAttempts,
+                  latencyMs,
+                  model,
+                  raw,
+                }),
               );
               return {
                 analysis,
@@ -284,8 +297,15 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               }
               span.setStatus({ code: 2, message });
               Sentry.logger.warn("Gemini visual analysis failed", {
-                ...usageLogAttributes({ attempt: attempt + 1, latencyMs, model, raw }),
+                ...usageLogAttributes({
+                  attempt: attempt + 1,
+                  maxAttempts,
+                  latencyMs,
+                  model,
+                  raw,
+                }),
                 error_type: timedOut ? "timeout" : raw ? "invalid_response" : "request_failed",
+                will_retry: attempt + 1 < maxAttempts,
               });
               throw new AnalysisModelError(message, {
                 status: timedOut ? "timed_out" : raw ? "invalid" : "failed",

@@ -13,7 +13,7 @@ const analysis = {
   setup_type: "Visible VWAP continuation",
   immediate_bias: "Price action is visually constructive above VWAP.",
   broader_trend: "The visible one-session structure slopes upward.",
-  conviction: "medium",
+  conviction: "high",
   candlestick_analysis: "Recent visible candles form higher lows.",
   vwap_keltner_analysis: "Price is visibly above VWAP and the Keltner midline.",
   cci_analysis: "CCI is visibly above its centerline without an extreme reading.",
@@ -30,7 +30,7 @@ const analysis = {
   deeper_scenario: "A move below the visible invalidation level changes the view.",
   invalidation_level: 97,
   data_quality_flags: ["e2e_mock_chart"],
-  summary: "Bullish visual thesis with medium conviction.",
+  summary: "Bullish visual thesis with high conviction.",
 };
 
 const mockServer = createServer(async (request, response) => {
@@ -54,6 +54,7 @@ const mockServer = createServer(async (request, response) => {
     }
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({
+      id: "e2e-openrouter-response",
       model: "google/gemini-2.5-pro",
       provider: "e2e-google-mock",
       choices: [{ message: { content: JSON.stringify(analysis) }, finish_reason: "stop" }],

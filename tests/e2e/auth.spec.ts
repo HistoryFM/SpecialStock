@@ -49,6 +49,12 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "Visual evidence ledger" })).toBeVisible();
   await expect(page.getByText("Timeframe indicators")).not.toBeVisible();
 
+  await expect(page.getByRole("heading", { name: "High-conviction theses" })).toBeVisible();
+  await expect(page.getByText("Review only", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Review thesis" }).click();
+  await expect(page).toHaveURL(/\/symbols\/AAPL\?analysis=[0-9a-f-]+&date=\d{4}-\d{2}-\d{2}&tab=review$/);
+  await expect(page.getByRole("heading", { name: "Review this analysis" })).toBeVisible();
+
   await page.getByRole("tab", { name: "Audit & inputs" }).click();
   await expect(page.getByRole("img", { name: /AAPL exact Chart-Img model input/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Exact image submitted to the model" })).toBeVisible();

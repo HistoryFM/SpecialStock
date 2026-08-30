@@ -17,6 +17,12 @@ export function WorkspaceTabs({
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const panels = { history, audit, review };
+  const selectTab = (value: Tab) => {
+    setTab(value);
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", value);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+  };
   return (
     <section className="workspace-tabs">
       <div className="tab-list" role="tablist" aria-label="Symbol workspace sections">
@@ -26,7 +32,7 @@ export function WorkspaceTabs({
             aria-selected={tab === value}
             id={`tab-${value}`}
             key={value}
-            onClick={() => setTab(value)}
+            onClick={() => selectTab(value)}
             role="tab"
             type="button"
           >

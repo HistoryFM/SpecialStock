@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt } from "drizzle-orm";
 
 import { requireAuthorizedUser } from "@/auth/require-user";
 import { getDatabase } from "@/db/client";
@@ -10,14 +10,54 @@ import {
   modelRuns,
   notificationEvents,
   outcomes,
+  reviewLabels,
   scanSlots,
   theses,
 } from "@/db/schema";
 import { createMarketDataProvider } from "@/market-data/factory";
+import { marketDayBounds } from "@/market-data/time";
 
-export async function getSymbolDetail(symbol: string, analysisId?: string) {
+type SymbolAnalysisRow = {
+  slot: typeof scanSlots.$inferSelect;
+  run: typeof modelRuns.$inferSelect;
+  analysis: typeof analyses.$inferSelect;
+  artifact: typeof chartArtifacts.$inferSelect | null;
+};
+
+async function enrichAnalysisRow(
+  database: Awaited<ReturnType<typeof getDatabase>>,
+  row: SymbolAnalysisRow,
+) {
+  const [thesis] = await database
+    .select()
+    .from(theses)
+    .where(eq(theses.analysisId, row.analysis.id))
+    .limit(1);
+  const [outcome] = thesis
+    ? await database.select().from(outcomes).where(eq(outcomes.thesisId, thesis.id)).limit(1)
+    : [];
+  const reviews = await database
+    .select()
+    .from(reviewLabels)
+    .where(eq(reviewLabels.analysisId, row.analysis.id))
+    .orderBy(desc(reviewLabels.createdAt));
+  return {
+    ...row,
+    thesis: thesis ?? null,
+    outcome: outcome ?? null,
+    latestReview: reviews[0] ?? null,
+    reviews,
+  };
+}
+
+export async function getSymbolDetail(
+  symbol: string,
+  options: { analysisId?: string; marketDate: string },
+) {
   await requireAuthorizedUser();
   const database = await getDatabase();
+  const { analysisId, marketDate } = options;
+  const dayBounds = marketDayBounds(marketDate);
   const [latestSlot] = await database
     .select()
     .from(scanSlots)
@@ -43,22 +83,59 @@ export async function getSymbolDetail(symbol: string, analysisId?: string) {
     )
     .orderBy(desc(scanSlots.scheduledFor))
     .limit(30);
-  const exactSelection = analysisId ? rows.find((row) => row.analysis.id === analysisId) : undefined;
-  const selected = analysisId ? exactSelection : rows[0];
-  const history = await Promise.all(
-    rows.map(async (row) => {
-      const [thesis] = await database
-        .select()
-        .from(theses)
-        .where(eq(theses.analysisId, row.analysis.id))
-        .limit(1);
-      const [outcome] = thesis
-        ? await database.select().from(outcomes).where(eq(outcomes.thesisId, thesis.id)).limit(1)
-        : [];
-      return { ...row, thesis: thesis ?? null, outcome: outcome ?? null };
-    }),
+  let selected = analysisId ? rows.find((row) => row.analysis.id === analysisId) : rows[0];
+  if (analysisId && !selected) {
+    [selected] = await database
+      .select({
+        slot: scanSlots,
+        run: modelRuns,
+        analysis: analyses,
+        artifact: chartArtifacts,
+      })
+      .from(scanSlots)
+      .innerJoin(modelRuns, eq(modelRuns.scanSlotId, scanSlots.id))
+      .innerJoin(analyses, eq(analyses.modelRunId, modelRuns.id))
+      .leftJoin(chartArtifacts, eq(chartArtifacts.id, modelRuns.chartArtifactId))
+      .where(
+        and(
+          eq(scanSlots.symbol, symbol),
+          eq(analyses.id, analysisId),
+          inArray(modelRuns.runRole, ["primary", "fallback"]),
+        ),
+      )
+      .limit(1);
+  }
+  const history = await Promise.all(rows.map((row) => enrichAnalysisRow(database, row)));
+  const selectedHistory = selected
+    ? history.find((row) => row.analysis.id === selected.analysis.id)
+      ?? await enrichAnalysisRow(database, selected)
+    : null;
+  const dailyRows = await database
+    .select({
+      slot: scanSlots,
+      run: modelRuns,
+      analysis: analyses,
+      artifact: chartArtifacts,
+    })
+    .from(scanSlots)
+    .innerJoin(modelRuns, eq(modelRuns.scanSlotId, scanSlots.id))
+    .innerJoin(analyses, eq(analyses.modelRunId, modelRuns.id))
+    .leftJoin(chartArtifacts, eq(chartArtifacts.id, modelRuns.chartArtifactId))
+    .where(
+      and(
+        eq(scanSlots.symbol, symbol),
+        inArray(modelRuns.runRole, ["primary", "fallback"]),
+        eq(modelRuns.status, "valid"),
+        eq(analyses.conviction, "high"),
+        inArray(analyses.verdict, ["bullish", "bearish"]),
+        gte(scanSlots.scheduledFor, dayBounds.start),
+        lt(scanSlots.scheduledFor, dayBounds.end),
+      ),
+    )
+    .orderBy(desc(scanSlots.scheduledFor), desc(modelRuns.completedAt));
+  const dailyHighConviction = await Promise.all(
+    dailyRows.map((row) => enrichAnalysisRow(database, row)),
   );
-  const selectedHistory = history.find((row) => row.analysis.id === selected?.analysis.id) ?? null;
   const [alertEvent] = selectedHistory?.thesis
     ? await database
         .select()
@@ -87,11 +164,13 @@ export async function getSymbolDetail(symbol: string, analysisId?: string) {
     latest: selectedHistory,
     latestAnalysisId: rows[0]?.analysis.id ?? null,
     latestSlot: latestSlot ?? null,
-    requestedAnalysisMissing: Boolean(analysisId && !exactSelection),
+    requestedAnalysisMissing: Boolean(analysisId && !selected),
     alertEvent: alertEvent ?? null,
     previousThesis: previousThesis ?? null,
     marketOpen,
     now,
     history,
+    dailyHighConviction,
+    selectedMarketDate: marketDate,
   };
 }

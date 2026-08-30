@@ -1,7 +1,14 @@
 export const FRESH_ANALYSIS_WINDOW_MS = 10 * 60_000;
 
-export function analysisUrl(symbol: string, analysisId: string): string {
-  return `/symbols/${encodeURIComponent(symbol)}?analysis=${encodeURIComponent(analysisId)}`;
+export function analysisUrl(
+  symbol: string,
+  analysisId: string,
+  options: { date?: string; tab?: "history" | "audit" | "review" } = {},
+): string {
+  const params = new URLSearchParams({ analysis: analysisId });
+  if (options.date) params.set("date", options.date);
+  if (options.tab) params.set("tab", options.tab);
+  return `/symbols/${encodeURIComponent(symbol)}?${params.toString()}`;
 }
 
 export function levelDistance(

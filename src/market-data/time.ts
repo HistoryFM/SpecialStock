@@ -12,6 +12,33 @@ export function marketDate(date: Date): string {
   return toMarketZoned(date).toPlainDate().toString();
 }
 
+export function marketDayBounds(date: string): { start: Date; end: Date } {
+  const plainDate = Temporal.PlainDate.from(date);
+  const start = plainDate.toZonedDateTime({
+    timeZone: MARKET_TIME_ZONE,
+    plainTime: Temporal.PlainTime.from("00:00"),
+  });
+  const end = plainDate.add({ days: 1 }).toZonedDateTime({
+    timeZone: MARKET_TIME_ZONE,
+    plainTime: Temporal.PlainTime.from("00:00"),
+  });
+  return {
+    start: new Date(start.epochMilliseconds),
+    end: new Date(end.epochMilliseconds),
+  };
+}
+
+export function normalizeMarketDate(value: string | undefined, now = new Date()): string {
+  const today = marketDate(now);
+  if (!value || value > today) return today;
+  try {
+    const parsed = Temporal.PlainDate.from(value);
+    return parsed.toString() === value ? value : today;
+  } catch {
+    return today;
+  }
+}
+
 export function dateFromMarketParts(
   date: string,
   hour: number,

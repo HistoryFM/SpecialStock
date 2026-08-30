@@ -10,6 +10,10 @@ import {
 describe("symbol analysis presentation", () => {
   it("builds immutable alert analysis links", () => {
     expect(analysisUrl("AAPL", "analysis-id")).toBe("/symbols/AAPL?analysis=analysis-id");
+    expect(analysisUrl("AAPL", "analysis-id", {
+      date: "2026-08-28",
+      tab: "review",
+    })).toBe("/symbols/AAPL?analysis=analysis-id&date=2026-08-28&tab=review");
   });
 
   it("describes alert lifecycle reasons", () => {

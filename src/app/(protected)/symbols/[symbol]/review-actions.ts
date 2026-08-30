@@ -6,7 +6,7 @@ import { z } from "zod";
 
 import { requireAuthorizedUser } from "@/auth/require-user";
 import { getDatabase } from "@/db/client";
-import { analyses, reviewLabels } from "@/db/schema";
+import { analyses, modelRuns, reviewLabels, scanSlots } from "@/db/schema";
 
 const reviewSchema = z.object({
   analysisId: z.string().uuid(),
@@ -25,7 +25,12 @@ export async function saveReviewAction(_state: { message: string }, formData: Fo
   });
   if (!parsed.success) return { message: "Review was not valid." };
   const database = await getDatabase();
-  const [analysis] = await database.select().from(analyses).where(eq(analyses.id, parsed.data.analysisId));
+  const [analysis] = await database
+    .select({ id: analyses.id, symbol: scanSlots.symbol })
+    .from(analyses)
+    .innerJoin(modelRuns, eq(modelRuns.id, analyses.modelRunId))
+    .innerJoin(scanSlots, eq(scanSlots.id, modelRuns.scanSlotId))
+    .where(eq(analyses.id, parsed.data.analysisId));
   if (!analysis) return { message: "Analysis no longer exists." };
   await database.insert(reviewLabels).values({
     analysisId: parsed.data.analysisId,
@@ -34,5 +39,6 @@ export async function saveReviewAction(_state: { message: string }, formData: Fo
     unsupportedClaims: parsed.data.unsupported ? ["reviewer_flagged"] : [],
   });
   revalidatePath("/evaluation");
+  revalidatePath(`/symbols/${analysis.symbol}`);
   return { message: "Review saved." };
 }

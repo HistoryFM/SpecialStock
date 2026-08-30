@@ -14,6 +14,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
 - Frozen chart audit trail, decision history, model latency/cost metadata, human review, alerts, thesis state, and evaluation support.
+- Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
 
 Automatic scanning requires an authenticated dashboard tab to remain open. It is intentionally not a background cloud service.
