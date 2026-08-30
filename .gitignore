@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+
+# testing
+coverage/
+test-results/
+playwright-report/
+
+# embedded local Postgres data
+.data/
+
+# local environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# logs and OS files
+*.log
+.DS_Store
+
+# local distribution bundles (may contain .env.local)
+Windows-Handoff/
+
+# TypeScript
+*.tsbuildinfo

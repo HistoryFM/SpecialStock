@@ -1,0 +1,63 @@
+{
+  "name": "special-stock",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "setup:local": "node scripts/setup-local.mjs",
+    "db:generate": "drizzle-kit generate",
+    "predb:migrate": "node scripts/ensure-local-db-dir.mjs",
+    "db:migrate": "drizzle-kit migrate",
+    "db:check": "drizzle-kit check",
+    "hash-password": "node scripts/hash-password.mjs",
+    "secrets:repo-check": "node scripts/check-repository-secrets.mjs",
+    "secrets:check": "node scripts/check-client-secrets.mjs",
+    "validate": "pnpm secrets:repo-check && pnpm lint && pnpm typecheck && pnpm test && pnpm db:check && pnpm build && pnpm secrets:check"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@js-temporal/polyfill": "^0.5.1",
+    "bcryptjs": "^3.0.3",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.3.3",
+    "next-auth": "5.0.0-beta.32",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitest/coverage-v8": "^4.1.11",
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
+    "jsdom": "^30.0.1",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

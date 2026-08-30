@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1787938382040,
+      "tag": "0000_colorful_ronan",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787947710168,
+      "tag": "0001_groovy_korg",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788034907813,
+      "tag": "0002_past_silver_sable",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788040300482,
+      "tag": "0003_fantastic_talon",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788112684082,
+      "tag": "0004_enable_automatic_scans",
+      "breakpoints": true
+    }
+  ]
+}
