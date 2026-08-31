@@ -6,9 +6,9 @@ import {
 } from "@/scans/policy";
 
 describe("scan execution policy", () => {
-  it("limits manual smoke scans to one isolated model request", () => {
+  it("allows one same-model retry for an isolated manual scan", () => {
     expect(getScanExecutionPolicy("manual")).toEqual({
-      modelAttempts: 1,
+      modelAttempts: 2,
       allowFallback: false,
       allowComparison: false,
       includeInEvaluation: false,

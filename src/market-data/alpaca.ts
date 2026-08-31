@@ -9,7 +9,7 @@ import type {
   MarketTimeframe,
   NormalizedMarketBar,
 } from "@/market-data/provider";
-import { marketDate } from "@/market-data/time";
+import { dateFromMarketParts, marketDate } from "@/market-data/time";
 
 const alpacaBarSchema = z.object({
   t: z.string(),
@@ -34,10 +34,15 @@ const latestBarsResponseSchema = z.object({
 const calendarSchema = z.array(
   z.object({
     date: z.string(),
-    open: z.string(),
-    close: z.string(),
+    open: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    close: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
   }),
 );
+
+function calendarTimestamp(date: string, clockTime: string): Date {
+  const [hour, minute] = clockTime.split(":").map(Number) as [number, number];
+  return dateFromMarketParts(date, hour, minute);
+}
 
 const timeframeMap: Record<MarketTimeframe, string> = {
   "1m": "1Min",
@@ -191,8 +196,8 @@ export class AlpacaMarketDataProvider implements MarketDataProvider {
     }
     return {
       date: session.date,
-      opensAt: new Date(session.open),
-      closesAt: new Date(session.close),
+      opensAt: calendarTimestamp(session.date, session.open),
+      closesAt: calendarTimestamp(session.date, session.close),
       isRegularSession: true,
       quality,
     };

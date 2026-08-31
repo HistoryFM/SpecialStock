@@ -13,7 +13,7 @@ export type ScanExecutionPolicy = {
 export function getScanExecutionPolicy(mode: ScanMode): ScanExecutionPolicy {
   if (mode === "manual") {
     return {
-      modelAttempts: 1,
+      modelAttempts: 2,
       allowFallback: false,
       allowComparison: false,
       includeInEvaluation: false,

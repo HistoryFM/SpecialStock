@@ -140,7 +140,7 @@ async function createOrClaimSlot(input: {
   return { slot: reclaimed ?? existing, claimed: Boolean(reclaimed), completedThrough };
 }
 
-async function persistModelResult(input: {
+export async function persistModelResult(input: {
   slotId: string;
   chartArtifactId: string;
   result: ModelRunResult;
@@ -157,6 +157,7 @@ async function persistModelResult(input: {
     },
     async () => {
       const database = await getDatabase();
+      const completedAt = new Date();
       const [run] = await database
         .insert(modelRuns)
         .values({
@@ -175,7 +176,26 @@ async function persistModelResult(input: {
           costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
           rawResponse: input.result.rawResponse,
           validationErrors: [],
-          completedAt: new Date(),
+          completedAt,
+        })
+        .onConflictDoUpdate({
+          target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel],
+          set: {
+            chartArtifactId: input.chartArtifactId,
+            actualModel: input.result.actualModel,
+            actualProvider: input.result.actualProvider,
+            promptVersion: PROMPT_VERSION,
+            inputHash: input.frozen.inputHash,
+            status: "valid",
+            latencyMs: input.result.latencyMs,
+            inputTokens: input.result.inputTokens,
+            outputTokens: input.result.outputTokens,
+            costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
+            rawResponse: input.result.rawResponse,
+            validationErrors: [],
+            failedOverFromModel: null,
+            completedAt,
+          },
         })
         .returning();
       if (!run) throw new Error("The model run could not be persisted.");

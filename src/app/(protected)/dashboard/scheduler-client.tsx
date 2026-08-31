@@ -38,6 +38,7 @@ export function SchedulerClient({
   const scanRevision = useRef<string | null>(null);
   const revisionInitialized = useRef(false);
   const inFlight = useRef(new Set<string>());
+  const tickInFlight = useRef(false);
   const [message, setMessage] = useState("Scheduler is checking the market session…");
   const [automaticOverrides, setAutomaticOverrides] = useState<Map<string, boolean>>(new Map());
   const [busySymbols, setBusySymbols] = useState<Set<string>>(new Set());
@@ -94,6 +95,9 @@ export function SchedulerClient({
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
+      if (tickInFlight.current) return;
+      tickInFlight.current = true;
+      let leadershipHeartbeat: number | null = null;
       const leader = acquireLeadership();
       try {
         const response = await fetch("/api/scans/status", { cache: "no-store" });
@@ -122,12 +126,20 @@ export function SchedulerClient({
         });
         if (leader && status.due && status.slotKey && lastSlot.current !== status.slotKey) {
           lastSlot.current = status.slotKey;
+          leadershipHeartbeat = window.setInterval(
+            () => void acquireLeadership(),
+            Math.floor(LEASE_MS / 3),
+          );
           for (const symbol of status.automaticSymbols) {
+            if (!acquireLeadership()) break;
             await run(symbol, "scheduled", status.slotKey);
           }
         }
       } catch {
         if (!cancelled) setMessage("Scheduler heartbeat unavailable.");
+      } finally {
+        if (leadershipHeartbeat !== null) window.clearInterval(leadershipHeartbeat);
+        tickInFlight.current = false;
       }
     };
     void tick();

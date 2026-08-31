@@ -102,4 +102,28 @@ describe("OpenRouterAnalysisModelProvider", () => {
     });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("recovers when an automatic attempt returns an empty response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({
+        model: "google/gemini-2.5-pro",
+        provider: "google",
+        choices: [{ message: { content: null }, finish_reason: "stop" }],
+      }))
+      .mockResolvedValueOnce(Response.json({
+        model: "google/gemini-2.5-pro",
+        provider: "google",
+        choices: [{ message: { content: JSON.stringify(analysis) }, finish_reason: "stop" }],
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new OpenRouterAnalysisModelProvider().analyze({
+      frozen,
+      png: Buffer.from("png"),
+      model: "google/gemini-2.5-pro",
+      maxAttempts: 2,
+    })).resolves.toMatchObject({ analysis });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
