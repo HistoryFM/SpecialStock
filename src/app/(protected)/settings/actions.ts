@@ -20,7 +20,7 @@ export type SaveSettingsState = {
   message: string;
 };
 
-export const INITIAL_SAVE_SETTINGS_STATE: SaveSettingsState = {
+const INITIAL_SAVE_SETTINGS_STATE: SaveSettingsState = {
   status: "idle",
   message: "",
 };
