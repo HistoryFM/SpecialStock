@@ -7,6 +7,11 @@ import { describe, expect, it, vi } from "vitest";
 import { SettingsForm } from "@/app/(protected)/settings/settings-form";
 import { DEFAULT_MODEL_ID } from "@/models/catalog";
 
+const sentryMocks = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock("@sentry/nextjs", () => ({
+  logger: { info: sentryMocks.info, warn: sentryMocks.warn },
+}));
+
 vi.mock("@/app/(protected)/settings/actions", () => ({
   saveSettingsAction: vi.fn(async () => ({ status: "success", message: "Saved" })),
 }));
@@ -29,6 +34,10 @@ describe("Settings stock editor", () => {
     render(<SettingsForm settings={settings} modelStatuses={[]} persistenceAvailable />);
 
     await user.click(screen.getByRole("button", { name: "Add stock" }));
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "settings.watchlist.row_added",
+      expect.objectContaining({ "specialstock.settings.updated_count": 2 }),
+    );
     const second = screen.getByLabelText("Watchlist symbol 2");
     await user.type(second, "msft");
     expect(second).toHaveValue("MSFT");
@@ -42,5 +51,13 @@ describe("Settings stock editor", () => {
 
     await user.click(screen.getAllByRole("button", { name: "Remove AAPL" }).at(-1)!);
     expect(screen.queryByLabelText("Watchlist symbol 2")).not.toBeInTheDocument();
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "settings.watchlist.symbol_edited",
+      expect.objectContaining({ "specialstock.symbol": "AAPL" }),
+    );
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "settings.watchlist.row_removed",
+      expect.objectContaining({ "specialstock.settings.updated_count": 1 }),
+    );
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import * as Sentry from "@sentry/nextjs";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 
 import { saveSettingsAction } from "@/app/(protected)/settings/actions";
 import type { ModelId } from "@/models/catalog";
@@ -41,6 +42,7 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
   const [initialFingerprint] = useState(() => comparable(initial));
   const [value, setValue] = useState(initial);
   const [state, action, isPending] = useActionState(saveSettingsAction, { status: "idle" as const, message: "" });
+  const lastReportedResult = useRef<string | null>(null);
   const baseline = state.fingerprint ?? initialFingerprint;
   const dirty = comparable(value) !== baseline;
   const version = state.updatedAt ?? settings.updatedAt.toISOString();
@@ -70,6 +72,25 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
     };
   }, [dirty]);
 
+  useEffect(() => {
+    if (state.status === "idle") return;
+    const resultKey = `${state.status}|${state.message}|${state.updatedAt ?? "none"}`;
+    if (lastReportedResult.current === resultKey) return;
+    lastReportedResult.current = resultKey;
+    const attributes = {
+      "specialstock.settings.outcome": state.status,
+      "specialstock.settings.result_message": state.message.slice(0, 300),
+      "specialstock.settings.updated_version": state.updatedAt ?? "unchanged",
+      "specialstock.settings.current_row_count": value.rows.length,
+      "specialstock.settings.current_enabled_count": value.rows.filter((row) => row.automaticScanEnabled).length,
+    };
+    if (state.status === "success") {
+      Sentry.logger.info("settings.watchlist.client_result", attributes);
+    } else {
+      Sentry.logger.warn("settings.watchlist.client_result", attributes);
+    }
+  }, [state, value.rows]);
+
   function updateRow(key: string, update: Partial<WatchlistEntry>) {
     setValue((current) => ({ ...current, rows: current.rows.map((row) => row.key === key ? { ...row, ...update } : row) }));
   }
@@ -85,11 +106,30 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
       dailyBudgetUsd: parsed.dailyBudgetUsd,
       notificationsEnabled: parsed.notificationsEnabled,
     });
+    Sentry.logger.info("settings.watchlist.client_reset", {
+      "specialstock.settings.row_count": parsed.rows.length,
+      "specialstock.settings.enabled_count": parsed.rows.filter((row) => row.automaticScanEnabled).length,
+    });
   }
 
   return (
     <form action={action} className="settings-stack" onSubmit={(event) => {
-      if (clientError) event.preventDefault();
+      const attributes = {
+        "specialstock.settings.requested_count": value.rows.length,
+        "specialstock.settings.requested_symbols": symbols.join(","),
+        "specialstock.settings.requested_enabled_count": value.rows.filter((row) => row.automaticScanEnabled).length,
+        "specialstock.settings.expected_version": version,
+        "specialstock.settings.client_valid": !clientError,
+      };
+      if (clientError) {
+        event.preventDefault();
+        Sentry.logger.warn("settings.watchlist.client_submit_blocked", {
+          ...attributes,
+          "specialstock.settings.validation_message": clientError,
+        });
+      } else {
+        Sentry.logger.info("settings.watchlist.client_submitted", attributes);
+      }
     }}>
       <input name="updatedAt" type="hidden" value={version} />
       <section className="settings-card" aria-labelledby="watchlist-heading">
@@ -101,15 +141,35 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
         <div className="ticker-grid">
           {value.rows.map((row, index) => (
             <div className="watchlist-entry" key={row.key}>
-              <label><span>Symbol {index + 1}</span><input aria-label={`Watchlist symbol ${index + 1}`} maxLength={10} name="watchlist" onChange={(event) => updateRow(row.key, { symbol: event.target.value.toUpperCase() })} spellCheck={false} value={row.symbol} /></label>
-              <label><span>Exchange</span><select name="exchange" onChange={(event) => updateRow(row.key, { exchange: event.target.value as WatchlistEntry["exchange"] })} value={row.exchange}>{WATCHLIST_EXCHANGES.map((exchange) => <option key={exchange}>{exchange}</option>)}</select></label>
+              <label><span>Symbol {index + 1}</span><input aria-label={`Watchlist symbol ${index + 1}`} maxLength={10} name="watchlist" onBlur={() => Sentry.logger.info("settings.watchlist.symbol_edited", {
+                "specialstock.settings.row_index": index,
+                "specialstock.symbol": row.symbol.trim().toUpperCase() || "blank",
+                "specialstock.settings.client_valid": !clientError,
+              })} onChange={(event) => updateRow(row.key, { symbol: event.target.value.toUpperCase() })} spellCheck={false} value={row.symbol} /></label>
+              <label><span>Exchange</span><select name="exchange" onChange={(event) => {
+                const exchange = event.target.value as WatchlistEntry["exchange"];
+                updateRow(row.key, { exchange });
+                Sentry.logger.info("settings.watchlist.exchange_changed", {
+                  "specialstock.settings.row_index": index,
+                  "specialstock.symbol": row.symbol.trim().toUpperCase() || "blank",
+                  "specialstock.settings.exchange": exchange,
+                });
+              }} value={row.exchange}>{WATCHLIST_EXCHANGES.map((exchange) => <option key={exchange}>{exchange}</option>)}</select></label>
               <div className="watchlist-auto-field">
                 <span>Auto scan</span>
                 <button
                   aria-checked={row.automaticScanEnabled}
                   aria-label={`Automatic scanning for ${row.symbol || `stock ${index + 1}`}`}
                   className="watchlist-auto-switch"
-                  onClick={() => updateRow(row.key, { automaticScanEnabled: !row.automaticScanEnabled })}
+                  onClick={() => {
+                    const enabled = !row.automaticScanEnabled;
+                    updateRow(row.key, { automaticScanEnabled: enabled });
+                    Sentry.logger.info("settings.watchlist.auto_changed", {
+                      "specialstock.settings.row_index": index,
+                      "specialstock.symbol": row.symbol.trim().toUpperCase() || "blank",
+                      "specialstock.settings.requested_enabled": enabled,
+                    });
+                  }}
                   role="switch"
                   type="button"
                 >
@@ -118,11 +178,25 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
                 </button>
               </div>
               <input name="automaticScanEnabled" type="hidden" value={String(row.automaticScanEnabled)} />
-              <button aria-label={`Remove ${row.symbol || `row ${index + 1}`}`} className="secondary-button compact" disabled={value.rows.length === 1} onClick={() => setValue((current) => ({ ...current, rows: current.rows.filter((candidate) => candidate.key !== row.key) }))} type="button">Remove</button>
+              <button aria-label={`Remove ${row.symbol || `row ${index + 1}`}`} className="secondary-button compact" disabled={value.rows.length === 1} onClick={() => {
+                Sentry.logger.info("settings.watchlist.row_removed", {
+                  "specialstock.settings.row_index": index,
+                  "specialstock.symbol": row.symbol.trim().toUpperCase() || "blank",
+                  "specialstock.settings.previous_count": value.rows.length,
+                  "specialstock.settings.updated_count": value.rows.length - 1,
+                });
+                setValue((current) => ({ ...current, rows: current.rows.filter((candidate) => candidate.key !== row.key) }));
+              }} type="button">Remove</button>
             </div>
           ))}
         </div>
-        <button className="secondary-button" disabled={value.rows.length >= 20} onClick={() => setValue((current) => ({ ...current, rows: [...current.rows, { key: crypto.randomUUID(), symbol: "", exchange: "NASDAQ", automaticScanEnabled: false }] }))} type="button">Add stock</button>
+        <button className="secondary-button" disabled={value.rows.length >= 20} onClick={() => {
+          Sentry.logger.info("settings.watchlist.row_added", {
+            "specialstock.settings.previous_count": value.rows.length,
+            "specialstock.settings.updated_count": value.rows.length + 1,
+          });
+          setValue((current) => ({ ...current, rows: [...current.rows, { key: crypto.randomUUID(), symbol: "", exchange: "NASDAQ", automaticScanEnabled: false }] }));
+        }} type="button">Add stock</button>
         {clientError ? <p className="form-error" role="alert">{clientError}</p> : null}
       </section>
 

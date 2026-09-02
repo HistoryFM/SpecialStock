@@ -85,6 +85,18 @@ The model is locked to `google/gemini-2.5-pro` through OpenRouter. Compact reque
 
 The application is currently designed for local execution. PGlite and chart images use the local filesystem; a serverless deployment requires deliberate migration to durable Postgres and private object storage.
 
+### Sentry diagnostic coverage
+
+Sentry receives 100% tracing, structured logs, and replay coverage for the local production app. The telemetry is designed to reconstruct scheduler and Settings complaints without provider keys, chart bytes, cookies, request bodies, or password fields.
+
+- Browser scheduler logs record leadership changes, material slot/status changes, enabled and running symbols, batch requests, retries, response outcomes, and recovery after heartbeat failures.
+- Server batch spans record the settings version and enabled-symbol snapshot, one child span per symbol, each launch offset, peak in-flight work, launch spread, per-symbol outcome, and total duration. Use `span.op:specialstock.scan.batch` for the batch and `span.op:specialstock.scan.batch.item` for its concurrent children.
+- Quick dashboard Auto changes record the browser request and the server's authoritative before/after enabled counts, changed count, symbols, duration, and settings versions.
+- Full Settings edits record local add/remove/symbol/exchange/Auto intent, client validation or submission, and the server's added, removed, reordered, exchange-changed, and Auto-changed symbols. Optimistic-concurrency failures include the expected and observed versions.
+- Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, and safe prompt/output capture.
+
+Useful log searches begin with `scheduler.`, `scan.batch.`, `settings.auto.`, or `settings.watchlist.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
+
 ## Requirements
 
 - Node.js 24.x.

@@ -10,6 +10,20 @@ import { DEFAULT_WATCHLIST } from "@/models/catalog";
 const refresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
 
+const sentryMocks = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  spans: [] as Array<{ options: { op?: string }; setAttributes: ReturnType<typeof vi.fn> }>,
+}));
+vi.mock("@sentry/nextjs", () => ({
+  logger: { info: sentryMocks.info, warn: sentryMocks.warn },
+  startSpan: vi.fn(async (options, callback) => {
+    const span = { setAttribute: vi.fn(), setAttributes: vi.fn(), setStatus: vi.fn() };
+    sentryMocks.spans.push({ options, setAttributes: span.setAttributes });
+    return callback(span);
+  }),
+}));
+
 function item(symbol: string): SymbolDashboardItem {
   return {
     symbol,
@@ -45,6 +59,9 @@ function item(symbol: string): SymbolDashboardItem {
 describe("automatic scan scheduler", () => {
   beforeEach(() => {
     refresh.mockReset();
+    sentryMocks.info.mockReset();
+    sentryMocks.warn.mockReset();
+    sentryMocks.spans.length = 0;
     localStorage.clear();
     vi.stubGlobal("crypto", { randomUUID: () => "11111111-1111-4111-8111-111111111111" });
   });
@@ -109,5 +126,24 @@ describe("automatic scan scheduler", () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/batch")).toHaveLength(1);
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "scheduler.leadership.changed",
+      expect.objectContaining({ "specialstock.scheduler.is_leader": true }),
+    );
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "scheduler.status.changed",
+      expect.objectContaining({
+        "specialstock.scheduler.due": true,
+        "specialstock.scheduler.enabled_count": 20,
+      }),
+    );
+    expect(sentryMocks.info).toHaveBeenCalledWith(
+      "scheduler.batch.completed",
+      expect.objectContaining({
+        "specialstock.scan.batch_completed": 19,
+        "specialstock.scan.batch_failed": 1,
+      }),
+    );
+    expect(sentryMocks.spans.some(({ options }) => options.op === "specialstock.scheduler.batch")).toBe(true);
   });
 });

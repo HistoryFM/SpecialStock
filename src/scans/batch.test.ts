@@ -6,16 +6,21 @@ const mocks = vi.hoisted(() => ({
   runScan: vi.fn(),
   captureException: vi.fn(),
   info: vi.fn(),
+  warn: vi.fn(),
+  spans: [] as Array<{
+    options: { name: string; op?: string };
+    span: { setAttribute: ReturnType<typeof vi.fn>; setAttributes: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> };
+  }>,
 }));
 
 vi.mock("@sentry/nextjs", () => ({
   captureException: mocks.captureException,
-  logger: { info: mocks.info },
-  startSpan: vi.fn(async (_options, callback) => callback({
-    setAttribute: vi.fn(),
-    setAttributes: vi.fn(),
-    setStatus: vi.fn(),
-  })),
+  logger: { info: mocks.info, warn: mocks.warn },
+  startSpan: vi.fn(async (options, callback) => {
+    const span = { setAttribute: vi.fn(), setAttributes: vi.fn(), setStatus: vi.fn() };
+    mocks.spans.push({ options, span });
+    return callback(span);
+  }),
 }));
 
 vi.mock("@/scans/service", () => ({
@@ -40,7 +45,7 @@ vi.mock("@/db/client", () => ({
     insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
     select: () => ({
       from: () => ({
-        where: async () => [{ watchlist: DEFAULT_WATCHLIST }],
+        where: async () => [{ watchlist: DEFAULT_WATCHLIST, updatedAt: new Date("2026-09-01T13:59:00.000Z") }],
       }),
     }),
   })),
@@ -53,6 +58,8 @@ describe("scheduled scan batch", () => {
     mocks.runScan.mockReset();
     mocks.captureException.mockReset();
     mocks.info.mockReset();
+    mocks.warn.mockReset();
+    mocks.spans.length = 0;
   });
 
   it("starts all 20 scans before settling and preserves successful siblings", async () => {
@@ -85,5 +92,18 @@ describe("scheduled scan batch", () => {
       error: "provider failed",
     });
     expect(mocks.captureException).toHaveBeenCalledTimes(1);
+    expect(mocks.spans.filter(({ options }) => options.op === "specialstock.scan.batch.item")).toHaveLength(20);
+    const batchSpan = mocks.spans.find(({ options }) => options.op === "specialstock.scan.batch");
+    expect(batchSpan?.span.setAttributes).toHaveBeenCalledWith(expect.objectContaining({
+      "specialstock.scan.batch_peak_in_flight": 20,
+      "specialstock.scan.batch_outcomes": expect.stringContaining("MSFT:failed"),
+    }));
+    expect(mocks.warn).toHaveBeenCalledWith(
+      "scan.batch.completed_with_failures",
+      expect.objectContaining({
+        "specialstock.scan.batch_peak_in_flight": 20,
+        "specialstock.scan.batch_outcomes": expect.stringContaining("MSFT:failed"),
+      }),
+    );
   });
 });
