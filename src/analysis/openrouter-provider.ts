@@ -7,11 +7,15 @@ import { z } from "zod";
 import { AnalysisModelError, type AnalysisModelProvider } from "@/analysis/provider";
 import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt } from "@/analysis/prompt";
 import {
-  compactAnalysisWireSchema,
   fullAnalysisResultSchema,
   type ModelAttemptResult,
 } from "@/analysis/types";
-import { parseJsonResponse, validateCompactAnalysis, validateFullAnalysis } from "@/analysis/validate";
+import {
+  AnalysisValidationError,
+  parseJsonResponse,
+  validateCompactAnalysis,
+  validateFullAnalysis,
+} from "@/analysis/validate";
 import { getServerEnv } from "@/config/env";
 import { DEFAULT_MODEL_ID } from "@/models/catalog";
 
@@ -43,18 +47,40 @@ const COMPACT_ESTIMATE_USD = 0.015;
 const FULL_ESTIMATE_USD = 0.08;
 
 function compactJsonSchema() {
-  return {
+  const conviction = { type: "string", enum: ["low", "medium", "high"] };
+  const readableQuality = { type: "string", enum: ["clear", "partial"] };
+  const allQuality = { type: "string", enum: ["clear", "partial", "unreadable"] };
+  const directional = (verdict: "bullish" | "bearish") => ({
     type: "object",
     additionalProperties: false,
-    required: Object.keys(compactAnalysisWireSchema.shape),
+    required: ["p", "v", "c", "t", "i", "q"],
     properties: {
-      p: { anyOf: [{ type: "number" }, { type: "null" }] },
-      v: { type: "string", enum: ["bullish", "bearish", "no_trade"] },
-      c: { type: "string", enum: ["low", "medium", "high"] },
-      t: { anyOf: [{ type: "number" }, { type: "null" }] },
-      i: { anyOf: [{ type: "number" }, { type: "null" }] },
-      q: { type: "string", enum: ["clear", "partial", "unreadable"] },
+      p: { type: "number" },
+      v: { type: "string", enum: [verdict] },
+      c: conviction,
+      t: { type: "number" },
+      i: { type: "number" },
+      q: readableQuality,
     },
+  });
+  return {
+    anyOf: [
+      directional("bullish"),
+      directional("bearish"),
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["p", "v", "c", "t", "i", "q"],
+        properties: {
+          p: { anyOf: [{ type: "number" }, { type: "null" }] },
+          v: { type: "string", enum: ["no_trade"] },
+          c: conviction,
+          t: { type: "null" },
+          i: { type: "null" },
+          q: allQuality,
+        },
+      },
+    ],
   };
 }
 
@@ -150,6 +176,19 @@ function sentryOutputMessages(content: string) {
       parts: [{ type: "text", content }],
     },
   ]);
+}
+
+function correctivePrompt(error: unknown) {
+  if (error instanceof AnalysisValidationError) {
+    return `The previous JSON failed validation: ${error.issues.join("; ").slice(0, 500)}. Return a corrected object matching the schema exactly.`;
+  }
+  if (error instanceof SyntaxError) {
+    return "The previous response was not valid JSON. Return only one valid JSON object matching the schema exactly.";
+  }
+  if (error instanceof z.ZodError) {
+    return "The previous response did not match the required JSON structure. Return a corrected object matching the schema exactly.";
+  }
+  return null;
 }
 
 async function resolveUsage(
@@ -253,11 +292,14 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
     const maxTokens = compact ? 256 : FULL_MAX_TOKENS;
     const estimate = compact ? COMPACT_ESTIMATE_USD : FULL_ESTIMATE_USD;
     const chartSha256 = createHash("sha256").update(png).digest("hex");
-    const inputMessages = sentryInputMessages(prompt, png, chartSha256);
     const attempts: ModelAttemptResult[] = [];
     let lastError: unknown;
+    let correction: string | null = null;
 
     for (let index = 0; index < maxAttempts; index += 1) {
+      const attemptPrompt: string = correction ? `${prompt}\n\nRetry correction:\n${correction}` : prompt;
+      const inputMessages = sentryInputMessages(attemptPrompt, png, chartSha256);
+      let nextCorrection: string | null = null;
       const spanAttributes: Record<string, string | number | boolean> = {
         "gen_ai.operation.name": "chat",
         "gen_ai.operation.type": "ai_client",
@@ -301,7 +343,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
                 reasoning: compact ? { max_tokens: 128 } : { effort: "low" },
                 response_format: { type: "json_schema", json_schema: { name: compact ? "compact_signal" : "full_analysis", strict: true, schema: compact ? compactJsonSchema() : fullJsonSchema() } },
                 messages: [{ role: "user", content: [
-                  { type: "text", text: prompt },
+                  { type: "text", text: attemptPrompt },
                   { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } },
                 ] }],
               }),
@@ -313,12 +355,13 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             providerResponse = await response.json();
             raw = responseSchema.parse(providerResponse);
             const content = raw.choices[0]!.message.content;
-            if (content) span.setAttribute("gen_ai.output.messages", sentryOutputMessages(content));
             if (raw.choices[0]!.finish_reason === "length") throw new Error("OpenRouter response exceeded the structured-output token budget.");
             if (!content) throw new Error("OpenRouter returned an empty response.");
+            const parsedContent = parseJsonResponse(content);
             const analysis = compact
-              ? validateCompactAnalysis(parseJsonResponse(content))
-              : validateFullAnalysis(parseJsonResponse(content));
+              ? validateCompactAnalysis(parsedContent)
+              : validateFullAnalysis(parsedContent);
+            span.setAttribute("gen_ai.output.messages", sentryOutputMessages(JSON.stringify(parsedContent)));
             const usage = await resolveUsage(apiKey, raw);
             const attempt: ModelAttemptResult = {
               attemptNumber: index + 1, responseId: raw.id ?? null, status: "valid",
@@ -361,7 +404,14 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
                     ? "invalid_response"
                     : "request_failed",
             });
-            return { ok: false as const, error, attempt, willRetry, retryAfterMs: retryDelay(response) };
+            nextCorrection = response?.ok ? correctivePrompt(error) : null;
+            return {
+              ok: false as const,
+              error,
+              attempt,
+              willRetry,
+              retryAfterMs: retryDelay(response),
+            };
           } finally {
             clearTimeout(timeout);
           }
@@ -381,6 +431,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
       }
       lastError = outcome.error;
       if (!outcome.willRetry) break;
+      correction = nextCorrection;
       await new Promise((resolve) => setTimeout(resolve, outcome.retryAfterMs));
     }
 

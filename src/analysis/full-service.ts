@@ -133,15 +133,6 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
   const reservation = await reserveAnalysisBudget({
     model: run.requestedModel, runRole: "primary", usageClass: "full_analysis", modelRunId: run.id, now,
   });
-  if (!reservation) {
-    await database.update(modelRuns).set({ status: "budget_skipped", completedAt: new Date() })
-      .where(eq(modelRuns.id, run.id));
-    await database.update(analyses).set({
-      fullAnalysisState: "failed", fullError: "Daily AI budget is exhausted.",
-      fullLeaseToken: null, fullLeaseExpiresAt: null,
-    }).where(and(eq(analyses.id, id), eq(analyses.fullLeaseToken, leaseToken)));
-    throw new Error("Daily AI budget is exhausted.");
-  }
 
   try {
     const png = await readChartArtifact(loaded.artifact.storageReference, loaded.artifact.imageHash);

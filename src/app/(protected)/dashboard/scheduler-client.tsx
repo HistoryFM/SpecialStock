@@ -32,7 +32,7 @@ export function SchedulerClient({
   budget: {
     todayUsd: number;
     monthUsd: number;
-    capUsd: number;
+    targetUsd: number;
     byClass?: { routine_compact?: number; manual_compact?: number; full_analysis?: number };
     routineProjectionUsd?: number | null;
   };
@@ -41,6 +41,8 @@ export function SchedulerClient({
   const router = useRouter();
   const tabId = useRef(crypto.randomUUID());
   const lastSlot = useRef<string | null>(null);
+  const batchInFlight = useRef<string | null>(null);
+  const nextBatchRetryAt = useRef(0);
   const scanRevision = useRef<string | null>(null);
   const revisionInitialized = useRef(false);
   const inFlight = useRef(new Set<string>());
@@ -48,6 +50,7 @@ export function SchedulerClient({
   const [message, setMessage] = useState("Scheduler is checking the market session…");
   const [automaticOverrides, setAutomaticOverrides] = useState<Map<string, boolean>>(new Map());
   const [busySymbols, setBusySymbols] = useState<Set<string>>(new Set());
+  const [batchBusySymbols, setBatchBusySymbols] = useState<Set<string>>(new Set());
   const [remoteBusySymbols, setRemoteBusySymbols] = useState<Set<string>>(new Set());
   const items = useMemo(() => initialItems.map((item) => ({
     ...item,
@@ -100,6 +103,50 @@ export function SchedulerClient({
     [router],
   );
 
+  const runScheduledBatch = useCallback(async (symbols: string[], slotKey: string) => {
+    if (batchInFlight.current) return false;
+    batchInFlight.current = slotKey;
+    setBatchBusySymbols(new Set(symbols));
+    try {
+      const response = await fetch("/api/scans/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slotKey }),
+      });
+      const payload = (await response.json()) as {
+        error?: string;
+        total?: number;
+        counts?: {
+          completed: number;
+          alreadyCompleted: number;
+          alreadyRunning: number;
+          terminalFailed: number;
+          failed: number;
+        };
+      };
+      if (!response.ok || !payload.counts) {
+        throw new Error(payload.error ?? "Scheduled batch failed.");
+      }
+      lastSlot.current = slotKey;
+      nextBatchRetryAt.current = 0;
+      const successful = payload.counts.completed + payload.counts.alreadyCompleted;
+      const pending = payload.counts.alreadyRunning;
+      const failed = payload.counts.terminalFailed + payload.counts.failed;
+      setMessage(
+        `Scheduled batch settled · ${successful} completed${pending ? ` · ${pending} already running` : ""}${failed ? ` · ${failed} failed` : ""}.`,
+      );
+      router.refresh();
+      return true;
+    } catch (error) {
+      nextBatchRetryAt.current = Date.now() + 30_000;
+      setMessage(error instanceof Error ? `${error.message} Retrying shortly.` : "Scheduled batch failed. Retrying shortly.");
+      return false;
+    } finally {
+      batchInFlight.current = null;
+      setBatchBusySymbols(new Set());
+    }
+  }, [router]);
+
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -132,19 +179,16 @@ export function SchedulerClient({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tabId: tabId.current, isLeader: leader }),
         });
-        if (leader && status.due && status.slotKey && lastSlot.current !== status.slotKey) {
-          lastSlot.current = status.slotKey;
+        if (
+          leader && status.due && status.slotKey && lastSlot.current !== status.slotKey &&
+          Date.now() >= nextBatchRetryAt.current
+        ) {
           leadershipHeartbeat = window.setInterval(
             () => void acquireLeadership(),
             Math.floor(LEASE_MS / 3),
           );
           if (acquireLeadership()) {
-            const results = await Promise.allSettled(
-              status.automaticSymbols.map((symbol) => run(symbol, "scheduled", status.slotKey!, false)),
-            );
-            const completed = results.filter((result) => result.status === "fulfilled" && result.value).length;
-            setMessage(`Scheduled batch settled · ${completed} of ${status.automaticSymbols.length} completed.`);
-            router.refresh();
+            await runScheduledBatch(status.automaticSymbols, status.slotKey);
           }
         }
       } catch {
@@ -160,7 +204,7 @@ export function SchedulerClient({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [acquireLeadership, router, run]);
+  }, [acquireLeadership, router, runScheduledBatch]);
 
   const setAutomaticScanning = useCallback(async (symbols: string[], enabled: boolean) => {
     try {
@@ -195,7 +239,7 @@ export function SchedulerClient({
   }, []);
 
   const enabledCount = items.filter((item) => item.automaticScanEnabled).length;
-  const allBusySymbols = new Set([...remoteBusySymbols, ...busySymbols]);
+  const allBusySymbols = new Set([...remoteBusySymbols, ...busySymbols, ...batchBusySymbols]);
 
   return (
     <>
@@ -207,7 +251,7 @@ export function SchedulerClient({
         <span><strong>Charts</strong> {demoMode ? "Not configured" : "Chart-Img / TradingView"}</span>
         <span><strong>Auto</strong> {enabledCount} of {items.length} · {enabledCount ? "Browser active" : "Off"}</span>
         <span><strong>Database</strong> {database.engine} · {database.status}</span>
-        <span className="tabular"><strong>Spend</strong> ${budget.todayUsd.toFixed(4)} / ${budget.capUsd.toFixed(2)} today</span>
+        <span className="tabular"><strong>Spend</strong> ${budget.todayUsd.toFixed(4)} today · ${budget.targetUsd.toFixed(2)} target</span>
         <span className="tabular" title="Scheduled compact · manual compact · full analysis">
           <strong>By use</strong> ${(budget.byClass?.routine_compact ?? 0).toFixed(4)} · ${(budget.byClass?.manual_compact ?? 0).toFixed(4)} · ${(budget.byClass?.full_analysis ?? 0).toFixed(4)}
         </span>

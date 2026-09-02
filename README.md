@@ -184,7 +184,7 @@ The scheduler:
 
 - Runs only enabled stocks.
 - Runs once shortly after each completed five-minute bar from 9:35 through 3:55 Eastern; it does not launch a 4:00 PM scan.
-- Launches all enabled symbols for the due slot together (up to 20) and refreshes once after the batch settles.
+- Sends one authenticated batch request per due slot; the server launches all enabled symbols together (up to 20) and the dashboard refreshes once after settlement.
 - Uses browser leader election and database idempotency to avoid duplicate scans across tabs.
 - Carries one server-validated slot through the full symbol batch so slow symbols cannot drift into the next bar.
 - Retains the previous valid analysis if a new scan fails and does not cancel successful siblings when another symbol fails.
@@ -193,9 +193,9 @@ Keep the dashboard open, the laptop awake, and the internet connection active.
 
 The seeded universe is AAPL, MSFT, AMZN, GOOGL, META, TSLA, NVDA, AMD, AVGO, BE,
 MU, SKHY, SNDK, NOW, CRM, SPCX, ORCL, GLD, SLV, and USO. The default daily provider
-budget is $12. The routine 2,000-scan projection is operationally gated by that
-configured cap while the original under-$10 cost target remains visible as an
-efficiency benchmark.
+spend target is $12. It is informational and never stops scans. The routine
+2,000-scan projection and the original under-$10 efficiency benchmark remain
+visible for cost monitoring.
 
 ### Signal meaning
 

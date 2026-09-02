@@ -24,36 +24,18 @@ export async function reserveAnalysisBudget(input: {
   usageClass: UsageClass;
   modelRunId?: string;
   now: Date;
-}): Promise<string | null> {
+}): Promise<string> {
   if (isDemoMode()) return "demo";
   const database = await getDatabase();
   const date = marketDate(input.now);
-  const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
-  const cap = Number(settings?.dailyBudgetUsd ?? DEFAULT_DAILY_BUDGET_USD);
-  if (input.usageClass === "routine_compact") {
-    const [rolling] = await database.select({
-      count: sql<string>`count(*)`,
-      total: sql<string>`coalesce(sum(coalesce(${budgetReservations.actualUsd}, ${budgetReservations.reservedUsd})), 0)`,
-    }).from(budgetReservations).where(and(
-      eq(budgetReservations.usageClass, "routine_compact"),
-      isNotNull(budgetReservations.modelRunId),
-      sql`${budgetReservations.status} in ('settled', 'estimated')`,
-    ));
-    const count = Number(rolling?.count ?? 0);
-    const projected = count ? Number(rolling?.total ?? 0) / count * 2_000 * 1.1 : 0;
-    if (count >= 20 && projected >= cap) return null;
-  }
   const reserved = RESERVED_COST_USD[input.usageClass];
   return database.transaction(async (tx) => {
     await tx.insert(dailyBudgetLedger).values({ marketDate: date }).onConflictDoNothing();
     const [claimed] = await tx.update(dailyBudgetLedger)
       .set({ committedUsd: sql`${dailyBudgetLedger.committedUsd} + ${reserved}`, updatedAt: new Date() })
-      .where(and(
-        eq(dailyBudgetLedger.marketDate, date),
-        sql`${dailyBudgetLedger.committedUsd} + ${reserved} <= ${cap}`,
-      ))
+      .where(eq(dailyBudgetLedger.marketDate, date))
       .returning({ marketDate: dailyBudgetLedger.marketDate });
-    if (!claimed) return null;
+    if (!claimed) throw new Error("The daily spend ledger could not be reserved.");
     const [reservation] = await tx.insert(budgetReservations).values({
       marketDate: date,
       model: input.model,
@@ -62,7 +44,8 @@ export async function reserveAnalysisBudget(input: {
       modelRunId: input.modelRunId,
       reservedUsd: String(reserved),
     }).returning({ id: budgetReservations.id });
-    return reservation?.id ?? null;
+    if (!reservation) throw new Error("The analysis spend reservation could not be persisted.");
+    return reservation.id;
   });
 }
 
@@ -116,7 +99,7 @@ export async function getBudgetSummary(now = new Date()) {
     ? Number(routine?.total ?? 0) / routineCount * 2_000 * 1.1
     : null;
   return {
-    capUsd: Number(settings?.dailyBudgetUsd ?? DEFAULT_DAILY_BUDGET_USD),
+    targetUsd: Number(settings?.dailyBudgetUsd ?? DEFAULT_DAILY_BUDGET_USD),
     todayUsd: Number(daily?.total ?? 0),
     monthUsd: Number(monthly?.total ?? 0),
     routineProjectionUsd,

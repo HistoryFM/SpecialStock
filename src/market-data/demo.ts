@@ -139,4 +139,20 @@ export class DemoMarketDataProvider implements MarketDataProvider {
       },
     };
   }
+
+  async getPreviousRegularSession(before: Date): Promise<MarketSession> {
+    const dateString = previousWeekday(before);
+    return {
+      date: dateString,
+      opensAt: dateFromMarketParts(dateString, 9, 30),
+      closesAt: dateFromMarketParts(dateString, 16, 0),
+      isRegularSession: true,
+      quality: {
+        provider: this.id,
+        feed: this.feed,
+        observedAt: new Date(),
+        flags: ["demo_calendar"],
+      },
+    };
+  }
 }

@@ -79,6 +79,10 @@ export function addMarketDays(date: string, amount: number): string {
   return current.toString();
 }
 
+export function addCalendarDays(date: string, amount: number): string {
+  return Temporal.PlainDate.from(date).add({ days: amount }).toString();
+}
+
 export type ScanSlotKind = "postclose";
 
 export type CanonicalScanSlot = {

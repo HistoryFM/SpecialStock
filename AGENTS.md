@@ -23,8 +23,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - The exact stored PNG sent to Gemini must remain hash-verifiable and available in the authenticated audit UI.
 - Manual scans must remain available regardless of automatic-scan state and must not create alerts, replace theses, or create evaluations.
 - Routine automatic and manual scans produce compact signals only. Full narrative analysis is generated once, on opening an eligible result, from the same verified stored PNG and must not change locked signal fields or create side effects.
-- Automatic scanning is per stock, browser-driven, regular-session only, concurrent within a due batch (up to 20), and duplicate-safe. Never allow overlapping scans for the same symbol.
+- Automatic scheduling is browser-driven and regular-session only; each due slot is submitted as one server batch that runs enabled stocks concurrently (up to 20) and remains duplicate-safe. Never allow overlapping scans for the same symbol.
 - The watchlist supports 1–20 stocks. Preserve ordering and per-stock automatic state through Settings edits.
+- The configured daily provider amount is an informational spend target. Cost projections and target overruns must not stop scans.
 - This is an analysis assistant, not an execution or autonomous-trading system.
 
 ## Secrets and local data

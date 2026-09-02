@@ -133,8 +133,8 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
       </section>
 
       <section className="settings-card">
-        <div className="settings-card-heading"><div><p className="eyebrow">Controls</p><h2>Notifications and budget</h2></div><span className="status-pill neutral">Overall daily cap</span></div>
-        <div className="control-grid"><label><span>Daily AI cap (USD)</span><input max="100" min="1" name="dailyBudgetUsd" onChange={(event) => setValue((current) => ({ ...current, dailyBudgetUsd: Number(event.target.value) }))} step="1" type="number" value={value.dailyBudgetUsd} /></label></div>
+        <div className="settings-card-heading"><div><p className="eyebrow">Controls</p><h2>Notifications and budget</h2></div><span className="status-pill neutral">Informational target</span></div>
+        <div className="control-grid"><label><span>Daily AI spend target (USD)</span><input max="100" min="1" name="dailyBudgetUsd" onChange={(event) => setValue((current) => ({ ...current, dailyBudgetUsd: Number(event.target.value) }))} step="1" type="number" value={value.dailyBudgetUsd} /></label></div>
         <label className="toggle-row"><input checked={value.notificationsEnabled} name="notificationsEnabled" onChange={(event) => setValue((current) => ({ ...current, notificationsEnabled: event.target.checked }))} type="checkbox" /><span><strong>Browser alert events</strong><small>Alerts still require an eligible automatic compact signal.</small></span></label>
       </section>
 

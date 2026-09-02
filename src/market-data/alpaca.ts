@@ -9,7 +9,7 @@ import type {
   MarketTimeframe,
   NormalizedMarketBar,
 } from "@/market-data/provider";
-import { dateFromMarketParts, marketDate } from "@/market-data/time";
+import { addCalendarDays, dateFromMarketParts, marketDate } from "@/market-data/time";
 
 const alpacaBarSchema = z.object({
   t: z.string(),
@@ -200,6 +200,28 @@ export class AlpacaMarketDataProvider implements MarketDataProvider {
       closesAt: calendarTimestamp(session.date, session.close),
       isRegularSession: true,
       quality,
+    };
+  }
+
+  async getPreviousRegularSession(before: Date): Promise<MarketSession> {
+    const beforeDate = marketDate(before);
+    const url = new URL("https://api.alpaca.markets/v2/calendar");
+    url.searchParams.set("start", addCalendarDays(beforeDate, -10));
+    url.searchParams.set("end", addCalendarDays(beforeDate, -1));
+    const parsed = calendarSchema.parse(await this.request(url));
+    const session = parsed.at(-1);
+    if (!session) throw new Error("No prior regular market session was found.");
+    return {
+      date: session.date,
+      opensAt: calendarTimestamp(session.date, session.open),
+      closesAt: calendarTimestamp(session.date, session.close),
+      isRegularSession: true,
+      quality: {
+        provider: this.id,
+        feed: this.feed,
+        observedAt: new Date(),
+        flags: ["alpaca_calendar"],
+      },
     };
   }
 }

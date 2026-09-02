@@ -118,6 +118,12 @@ describe("OpenRouterAnalysisModelProvider", () => {
     expect(serialized).not.toContain("fiveMinute");
     const messages = requestBody.messages as Array<{ content: Array<{ type: string }> }>;
     expect(messages[0]?.content.filter((part) => part.type === "image_url")).toHaveLength(1);
+    const compactSchema = (requestBody.response_format as {
+      json_schema: { schema: { anyOf: Array<{ properties: Record<string, { type?: string; enum?: string[] }> }> } };
+    }).json_schema.schema;
+    expect(compactSchema.anyOf).toHaveLength(3);
+    expect(compactSchema.anyOf[0]?.properties.p.type).toBe("number");
+    expect(compactSchema.anyOf[2]?.properties.t.type).toBe("null");
 
     expect(sentry.spans).toHaveLength(1);
     const span = sentry.spans[0]!;
@@ -221,6 +227,41 @@ describe("OpenRouterAnalysisModelProvider", () => {
       "Gemini visual analysis completed",
       expect.objectContaining({ usage_class: "routine_compact", attempt: 2 }),
     );
+  });
+
+  it("adds safe corrective instructions after a directional validation failure", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_url, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      const content = requestBodies.length === 1
+        ? { p: null, v: "bullish", c: "high", t: null, i: null, q: "clear" }
+        : wireAnalysis;
+      return Response.json({
+        model: "google/gemini-2.5-pro",
+        provider: "google",
+        choices: [{ message: { content: JSON.stringify(content) }, finish_reason: "stop" }],
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new OpenRouterAnalysisModelProvider().analyze({
+      frozen,
+      png: Buffer.from("png"),
+      model: "google/gemini-2.5-pro",
+      phase: "compact",
+      usageClass: "routine_compact",
+      maxAttempts: 2,
+    })).resolves.toMatchObject({ analysis, attempts: [{ status: "invalid" }, { status: "valid" }] });
+
+    const secondMessages = requestBodies[1]!.messages as Array<{
+      content: Array<{ type: string; text?: string }>;
+    }>;
+    expect(secondMessages[0]?.content[0]?.text).toContain("Retry correction:");
+    expect(secondMessages[0]?.content[0]?.text).toContain("directional analysis requires observed price");
+    expect(String(sentry.spans[1]?.attributes["gen_ai.input.messages"])).toContain("Retry correction:");
+    expect(sentry.spans[0]?.attributes["gen_ai.output.messages"]).toBeUndefined();
+    expect(JSON.stringify(sentry.spans)).not.toContain("test-openrouter-key");
+    expect(JSON.stringify(sentry.spans)).not.toContain("data:image/png;base64");
   });
 
   it("attaches reconciled usage and cost to the originating attempt", async () => {

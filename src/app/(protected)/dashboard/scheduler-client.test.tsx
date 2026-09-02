@@ -54,13 +54,8 @@ describe("automatic scan scheduler", () => {
     vi.unstubAllGlobals();
   });
 
-  it("runs a due slot concurrently, keeps successful siblings, and refreshes once", async () => {
+  it("submits one server-side due batch and refreshes once after partial failure", async () => {
     const symbols = DEFAULT_WATCHLIST.map((entry) => entry.symbol);
-    const events: string[] = [];
-    let releaseBatch: (() => void) | undefined;
-    const batchGate = new Promise<void>((resolve) => {
-      releaseBatch = resolve;
-    });
     const slotKey = "postclose:2026-08-31T15:50:00.000Z";
     const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
       const url = String(request);
@@ -80,18 +75,23 @@ describe("automatic scan scheduler", () => {
       if (url === "/api/scans/status" && init?.method === "POST") {
         return Response.json({ ok: true });
       }
-      if (url.startsWith("/api/scans/")) {
-        const symbol = url.split("/").at(-1)!;
-        events.push(`start:${symbol}`);
-        if (events.filter((event) => event.startsWith("start:")).length === symbols.length) {
-          releaseBatch?.();
-        }
-        await batchGate;
-        events.push(`finish:${symbol}`);
-        expect(JSON.parse(String(init?.body))).toEqual({ mode: "scheduled", slotKey });
-        return symbol === "MSFT"
-          ? Response.json({ error: "mock provider failure" }, { status: 502 })
-          : Response.json({ status: "completed" });
+      if (url === "/api/scans/batch") {
+        expect(JSON.parse(String(init?.body))).toEqual({ slotKey });
+        return Response.json({
+          slotKey,
+          total: symbols.length,
+          counts: {
+            completed: 19,
+            alreadyCompleted: 0,
+            alreadyRunning: 0,
+            terminalFailed: 0,
+            failed: 1,
+          },
+          results: symbols.map((symbol) => ({
+            symbol,
+            outcome: symbol === "MSFT" ? "failed" : "completed",
+          })),
+        });
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -101,14 +101,13 @@ describe("automatic scan scheduler", () => {
       <SchedulerClient
         initialItems={symbols.map(item)}
         database={{ engine: "PGlite", status: "connected" }}
-        budget={{ todayUsd: 0, monthUsd: 0, capUsd: 1 }}
+        budget={{ todayUsd: 0, monthUsd: 0, targetUsd: 1 }}
         demoMode={false}
       />,
     );
 
-    await waitFor(() => expect(events.filter((event) => event.startsWith("finish:"))).toHaveLength(20));
-    expect(events.slice(0, 20)).toEqual(symbols.map((symbol) => `start:${symbol}`));
-    expect(new Set(events.slice(20))).toEqual(new Set(symbols.map((symbol) => `finish:${symbol}`)));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/batch")).toHaveLength(1);
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

@@ -46,4 +46,5 @@ export interface MarketDataProvider {
     symbols: string[],
   ): Promise<{ bars: NormalizedMarketBar[]; quality: MarketDataQuality }>;
   getSession(date: Date): Promise<MarketSession>;
+  getPreviousRegularSession(before: Date): Promise<MarketSession>;
 }

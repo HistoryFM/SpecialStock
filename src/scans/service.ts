@@ -28,9 +28,9 @@ import { createMarketDataProvider } from "@/market-data/factory";
 import {
   canonicalScanSlot,
   dateFromMarketParts,
-  previousWeekday,
   requestedScanSlot,
 } from "@/market-data/time";
+import type { MarketDataProvider, MarketSession } from "@/market-data/provider";
 import { evaluatePendingOutcomes } from "@/outcomes/evaluate";
 import {
   getScanExecutionPolicy,
@@ -46,15 +46,12 @@ export class ScanAlreadyRunningError extends Error {}
 
 function chartRange(
   now: Date,
-  session: { date: string; opensAt: Date; closesAt: Date; isRegularSession: boolean },
+  session: Pick<MarketSession, "date" | "opensAt" | "closesAt" | "isRegularSession">,
   completedThrough?: Date,
 ) {
   const currentSession =
     session.isRegularSession && now >= session.opensAt && now <= session.closesAt;
-  const completedCurrentSession = session.isRegularSession && now > session.closesAt;
-  const latestDate = currentSession || completedCurrentSession
-    ? session.date
-    : previousWeekday(now);
+  const latestDate = session.date;
   const closesAt = dateFromMarketParts(latestDate, 16, 0);
   return {
     from: dateFromMarketParts(latestDate, 9, 30),
@@ -65,6 +62,41 @@ function chartRange(
 }
 
 export const chartRangeForTest = chartRange;
+
+async function resolveChartCaptureWindow(input: {
+  now: Date;
+  session: MarketSession;
+  completedThrough?: Date;
+  mode: ScanMode;
+  marketProvider: MarketDataProvider;
+}) {
+  if (input.mode === "scheduled") {
+    return {
+      range: chartRange(input.now, input.session, input.completedThrough),
+      barStatus: "closed" as const,
+    };
+  }
+  const fiveMinutesAfterOpen = new Date(input.session.opensAt.getTime() + 5 * 60_000);
+  const usableCurrentSession =
+    input.session.isRegularSession &&
+    input.now >= fiveMinutesAfterOpen &&
+    input.now <= input.session.closesAt;
+  const completedCurrentSession =
+    input.session.isRegularSession && input.now > input.session.closesAt;
+  if (usableCurrentSession || completedCurrentSession) {
+    return {
+      range: chartRange(input.now, input.session),
+      barStatus: usableCurrentSession ? "open" as const : "closed" as const,
+    };
+  }
+  const previous = await input.marketProvider.getPreviousRegularSession(input.now);
+  return {
+    range: { from: previous.opensAt, to: previous.closesAt },
+    barStatus: "closed" as const,
+  };
+}
+
+export const resolveChartCaptureWindowForTest = resolveChartCaptureWindow;
 
 async function createOrClaimSlot(input: {
   entry: WatchlistEntry;
@@ -287,11 +319,6 @@ async function runModel(input: {
     modelRunId: pendingRun.id,
     now: new Date(input.frozen.capturedAt),
   });
-  if (!reservation) {
-    await database.update(modelRuns).set({ status: "budget_skipped", completedAt: new Date() })
-      .where(eq(modelRuns.id, pendingRun.id));
-    return null;
-  }
   try {
     const result = await createAnalysisModelProvider().analyze({ ...input, phase: "compact" });
     if (result.phase !== "compact") throw new Error("Compact scan returned the wrong model phase.");
@@ -385,6 +412,8 @@ export async function runScan(input: {
   mode: ScanMode;
   now?: Date;
   requestedSlotKey?: string;
+  scheduledEntry?: WatchlistEntry;
+  scheduledSession?: MarketSession;
 }) {
   return Sentry.startSpan(
     {
@@ -411,15 +440,15 @@ export async function runScan(input: {
         const database = await getDatabase();
         await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
         const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
-        const entry = settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
+        const entry = input.scheduledEntry ?? settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
         if (!entry) throw new UnknownWatchlistSymbolError(`${input.symbol} is not in the watchlist.`);
-        if (input.mode === "scheduled" && !entry.automaticScanEnabled) {
+        if (input.mode === "scheduled" && !input.scheduledEntry && !entry.automaticScanEnabled) {
           throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
         }
 
         stage = "market_session";
         const marketProvider = createMarketDataProvider();
-        const session = await marketProvider.getSession(now);
+        const session = input.scheduledSession ?? await marketProvider.getSession(now);
         stage = "claim_slot";
         const claim = await createOrClaimSlot({
           entry,
@@ -447,6 +476,13 @@ export async function runScan(input: {
         claimedSlotId = claim.slot.id;
 
         stage = "chart_capture";
+        const captureWindow = await resolveChartCaptureWindow({
+          now,
+          session,
+          completedThrough: claim.completedThrough ?? undefined,
+          mode: input.mode,
+          marketProvider,
+        });
         const capture = await Sentry.startSpan(
           {
             name: "Capture Chart-Img chart",
@@ -459,10 +495,8 @@ export async function runScan(input: {
           () => new ChartImgProvider().capture({
             entry,
             capturedAt: now,
-            range: chartRange(now, session, claim.completedThrough ?? undefined),
-            barStatus: input.mode === "scheduled" ? "closed" : (
-              session.isRegularSession && now >= session.opensAt && now < session.closesAt ? "open" : "closed"
-            ),
+            range: captureWindow.range,
+            barStatus: captureWindow.barStatus,
           }),
         );
 
@@ -529,8 +563,6 @@ export async function runScan(input: {
             usageClass: input.mode === "scheduled" ? "routine_compact" : "manual_compact",
           }),
         );
-        if (!primary) throw new Error("Daily AI budget is exhausted.");
-
         stage = "thesis_and_outcomes";
         await Sentry.startSpan(
           {

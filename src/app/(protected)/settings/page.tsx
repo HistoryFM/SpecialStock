@@ -22,7 +22,7 @@ export default async function SettingsPage() {
           <p className="eyebrow">Workspace controls</p>
           <h1>Settings</h1>
           <p className="muted">
-            Configure exchange-aware symbols, manual-first automation, and analysis budget.
+            Configure exchange-aware symbols, automatic scanning, and an informational spend target.
           </p>
         </div>
         <span

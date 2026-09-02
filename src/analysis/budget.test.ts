@@ -12,6 +12,7 @@ vi.mock("@/config/env", () => ({ isDemoMode: () => false }));
 import {
   getBudgetSummary,
   reserveAnalysisBudget,
+  settleAnalysisBudget,
 } from "@/analysis/budget";
 
 const clients: PGlite[] = [];
@@ -43,7 +44,7 @@ afterEach(async () => {
 });
 
 describe("analysis budget", () => {
-  it("uses the configured cap for the routine projection gate and keeps the $10 benchmark", async () => {
+  it("reports the configured target and $10 benchmark without blocking projected spend", async () => {
     const { client, database } = await createDatabase();
     const slotId = "00000000-0000-4000-8000-000000000021";
     const runId = "00000000-0000-4000-8000-000000000022";
@@ -79,17 +80,17 @@ describe("analysis budget", () => {
 
     const summary = await getBudgetSummary(input.now);
     expect(summary).toMatchObject({
-      capUsd: 12,
+      targetUsd: 12,
       routineProjectionSampleSize: 20,
       routineCostTargetMet: false,
     });
     expect(summary.routineProjectionUsd).toBeCloseTo(11.16, 2);
 
     await database.update(schema.appSettings).set({ dailyBudgetUsd: "11.00" });
-    expect(await reserveAnalysisBudget(input)).toBeNull();
+    expect(await reserveAnalysisBudget(input)).toEqual(expect.any(String));
   });
 
-  it("atomically prevents concurrent reservations from exceeding the daily cap", async () => {
+  it("atomically accounts for concurrent reservations even above the spend target", async () => {
     const { client, database } = await createDatabase();
     await database.insert(schema.appSettings).values({ id: 1, dailyBudgetUsd: "0.03" });
     const input = {
@@ -104,11 +105,20 @@ describe("analysis budget", () => {
       reserveAnalysisBudget(input),
     ]);
 
-    expect(reservations.filter(Boolean)).toHaveLength(1);
+    expect(reservations).toHaveLength(2);
     const ledger = await client.query<{ committed_usd: string }>(
       "select committed_usd from daily_budget_ledger",
     );
-    expect(ledger.rows[0]?.committed_usd).toBe("0.02000000");
-    expect((await client.query("select id from budget_reservations")).rows).toHaveLength(1);
+    expect(ledger.rows[0]?.committed_usd).toBe("0.04000000");
+    expect((await client.query("select id from budget_reservations")).rows).toHaveLength(2);
+
+    await Promise.all([
+      settleAnalysisBudget(reservations[0]!, 0.004, "settled"),
+      settleAnalysisBudget(reservations[1]!, null, "estimated"),
+    ]);
+    const settled = await client.query<{ committed_usd: string }>(
+      "select committed_usd from daily_budget_ledger",
+    );
+    expect(settled.rows[0]?.committed_usd).toBe("0.02400000");
   });
 });
