@@ -36,6 +36,20 @@
       "when": 1788112684082,
       "tag": "0004_enable_automatic_scans",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788280262849,
+      "tag": "0005_colossal_morgan_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788313567209,
+      "tag": "0006_groovy_expediter",
+      "breakpoints": true
     }
   ]
 }

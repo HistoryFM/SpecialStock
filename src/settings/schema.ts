@@ -24,7 +24,7 @@ export const watchlistEntrySchema = z.object({
 export const watchlistSchema = z
   .array(watchlistEntrySchema)
   .min(1, "Add at least one symbol")
-  .max(5, "The initial release supports at most five symbols")
+  .max(20, "Use at most 20 symbols")
   .superRefine((entries, context) => {
     if (new Set(entries.map((entry) => entry.symbol)).size !== entries.length) {
       context.addIssue({

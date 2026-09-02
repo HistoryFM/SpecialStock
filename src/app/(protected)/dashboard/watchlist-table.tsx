@@ -245,7 +245,7 @@ export function WatchlistTable({
               <th><SortButton label="Symbol / price" value="symbol" active={sortKey === "symbol"} direction={direction} onSort={sort} /></th>
               <th><SortButton label="Signal" value="verdict" active={sortKey === "verdict"} direction={direction} onSort={sort} /></th>
               <th><SortButton label="Auto" value="automaticScanEnabled" active={sortKey === "automaticScanEnabled"} direction={direction} onSort={sort} /></th>
-              <th>Setup</th>
+              <th>Visual quality</th>
               <th>Target / invalidation</th>
               <th><SortButton label="Data / last scan" value="scannedAt" active={sortKey === "scannedAt"} direction={direction} onSort={sort} /></th>
               <th><span className="sr-only">Actions</span></th>
@@ -296,7 +296,7 @@ export function WatchlistTable({
                     </span>
                   </td>
                   <td className="summary-cell">
-                    <span>{item.summary ?? "Run a scan to create the first frozen analysis."}</span>
+                    <span>{item.visualQuality ? `${item.visualQuality[0]!.toUpperCase()}${item.visualQuality.slice(1)}` : "Run a scan to assess the chart."}</span>
                     {item.error ? (
                       <details onClick={(event) => event.stopPropagation()}>
                         <summary>Latest scan failed</summary>
@@ -330,7 +330,7 @@ export function WatchlistTable({
                     <details className="mobile-row-details" onClick={(event) => event.stopPropagation()}>
                       <summary>More</summary>
                       <dl>
-                        <div><dt>Setup</dt><dd>{item.summary ?? "No analysis"}</dd></div>
+                        <div><dt>Visual quality</dt><dd>{item.visualQuality ?? "Not assessed"}</dd></div>
                         <div><dt>Levels</dt><dd>{price(item.target)} / {price(item.invalidation)}</dd></div>
                         <div><dt>Model</dt><dd>{item.model}</dd></div>
                         <div><dt>Run status</dt><dd>{runState.label}</dd></div>

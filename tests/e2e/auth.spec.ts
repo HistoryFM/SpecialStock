@@ -29,7 +29,7 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
 
   const row = page.getByRole("row", { name: "Open AAPL analysis" });
   await row.getByRole("button", { name: "Run now" }).click();
-  await expect(row.locator(".summary-cell > span")).toContainText("Bullish visual thesis", { timeout: 60_000 });
+  await expect(row.locator(".summary-cell > span")).toContainText("Clear", { timeout: 60_000 });
   await expect(row.getByText("Bullish", { exact: true })).toBeVisible();
 
   await expect(row.getByText("Auto on")).toBeVisible();
@@ -42,11 +42,10 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
 
   await row.press("Enter");
   await expect(page).toHaveURL(/\/symbols\/AAPL$/);
-  await expect(page.getByTestId("ai-decision-brief")).toBeVisible();
+  await expect(page.getByTestId("compact-signal")).toBeVisible();
   await expect(page.getByRole("img", { name: /frozen five-minute chart with VWAP, Keltner Channels, Volume/ })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "How the model reached this conclusion" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Momentum and trend strength" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Visual evidence ledger" })).toBeVisible();
+  await expect(page.getByText("Full AI reasoning · cached")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Visible VWAP continuation" })).toBeVisible();
   await expect(page.getByText("Timeframe indicators")).not.toBeVisible();
 
   await expect(page.getByRole("heading", { name: "High-conviction theses" })).toBeVisible();
@@ -79,9 +78,17 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   const scanStatus = await page.request.get("/api/scans/AAPL");
   expect(scanStatus.ok()).toBe(true);
   expect(JSON.stringify(await scanStatus.json())).not.toMatch(/OPENROUTER|CHART_IMG_API_KEY|rawResponse/);
+  const providerStats = await page.request.get("http://127.0.0.1:3199/stats");
+  expect(await providerStats.json()).toEqual({ chart: 1, compact: 1, full: 1 });
+
+  await page.goto("/dashboard");
+  await page.getByRole("row", { name: /AAPL/ }).last().press("Enter");
+  await expect(page.getByText("Full AI reasoning · cached")).toBeVisible();
+  expect(await (await page.request.get("http://127.0.0.1:3199/stats")).json()).toEqual({ chart: 1, compact: 1, full: 1 });
 
   await page.goto("/settings");
-  await expect(page.getByText("Gemini 2.5 Pro", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Managed from the watchlist" })).toBeVisible();
-  await expect(page.getByLabel("Watchlist symbol 1")).toHaveValue("AAPL");
+  await expect(page.getByText("Gemini 2.5 Pro only", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Watchlist symbol 1", { exact: true })).toHaveValue("AAPL");
+  await expect(page.getByLabel("Watchlist symbol 20", { exact: true })).toHaveValue("USO");
+  await expect(page.getByText("20 / 20")).toBeVisible();
 });

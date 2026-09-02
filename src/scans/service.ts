@@ -6,9 +6,10 @@ import { randomUUID } from "node:crypto";
 
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
-import { PROMPT_VERSION } from "@/analysis/prompt";
+import { COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
 import { AnalysisModelError } from "@/analysis/provider";
-import type { ChartAnalysisInput, ModelRunResult } from "@/analysis/types";
+import type { ChartAnalysisInput, CompactModelRunResult, ModelAttemptResult } from "@/analysis/types";
+import { isFullAnalysisEligible } from "@/analysis/validate";
 import { persistChartArtifact, readChartArtifact } from "@/chart/artifact-storage";
 import { ChartImgProvider } from "@/chart/chart-img-provider";
 import { isDemoMode } from "@/config/env";
@@ -17,6 +18,7 @@ import {
   analyses,
   appSettings,
   chartArtifacts,
+  modelAttempts,
   modelRuns,
   notificationEvents,
   scanSlots,
@@ -40,6 +42,7 @@ import type { WatchlistEntry } from "@/settings/types";
 export class ScanNotAvailableError extends Error {}
 export class UnknownWatchlistSymbolError extends Error {}
 export class AutomaticScansDisabledError extends Error {}
+export class ScanAlreadyRunningError extends Error {}
 
 function chartRange(
   now: Date,
@@ -112,11 +115,20 @@ async function createOrClaimSlot(input: {
     .select()
     .from(scanSlots)
     .where(eq(scanSlots.idempotencyKey, idempotencyKey));
-  if (!existing) throw new Error("The scan slot could not be loaded after claiming.");
+  if (!existing) {
+    const [active] = await database.select().from(scanSlots).where(and(
+      eq(scanSlots.symbol, input.entry.symbol), eq(scanSlots.status, "running"),
+    )).limit(1);
+    if (active) throw new ScanAlreadyRunningError(`${input.entry.symbol} already has a scan in progress.`);
+    throw new Error("The scan slot could not be loaded after claiming.");
+  }
   if (existing.status === "completed") {
     return { slot: existing, claimed: false, completedThrough };
   }
   if (existing.status === "running" && existing.leaseExpiresAt && existing.leaseExpiresAt > input.now) {
+    return { slot: existing, claimed: false, completedThrough };
+  }
+  if (input.mode === "scheduled" && ["failed", "skipped"].includes(existing.status)) {
     return { slot: existing, claimed: false, completedThrough };
   }
   const [reclaimed] = await database
@@ -140,10 +152,29 @@ async function createOrClaimSlot(input: {
   return { slot: reclaimed ?? existing, claimed: Boolean(reclaimed), completedThrough };
 }
 
+async function persistAttempts(runId: string, attempts: ModelAttemptResult[]) {
+  if (!attempts.length) return;
+  const database = await getDatabase();
+  await database.insert(modelAttempts).values(attempts.map((attempt) => ({
+    modelRunId: runId,
+    attemptNumber: attempt.attemptNumber,
+    responseId: attempt.responseId,
+    status: attempt.status,
+    latencyMs: attempt.latencyMs,
+    inputTokens: attempt.inputTokens,
+    outputTokens: attempt.outputTokens,
+    costUsd: attempt.costUsd === null ? null : String(attempt.costUsd),
+    estimatedCostUsd: attempt.estimatedCostUsd === null ? null : String(attempt.estimatedCostUsd),
+    errorCode: attempt.errorCode,
+    rawResponse: attempt.rawResponse,
+  }))).onConflictDoNothing();
+}
+
 export async function persistModelResult(input: {
   slotId: string;
   chartArtifactId: string;
-  result: ModelRunResult;
+  runId?: string;
+  result: CompactModelRunResult;
   frozen: ChartAnalysisInput;
 }) {
   return Sentry.startSpan(
@@ -158,16 +189,12 @@ export async function persistModelResult(input: {
     async () => {
       const database = await getDatabase();
       const completedAt = new Date();
-      const [run] = await database
-        .insert(modelRuns)
-        .values({
-          scanSlotId: input.slotId,
-          chartArtifactId: input.chartArtifactId,
-          runRole: "primary",
-          requestedModel: input.result.requestedModel,
+      let run;
+      if (input.runId) {
+        [run] = await database.update(modelRuns).set({
           actualModel: input.result.actualModel,
           actualProvider: input.result.actualProvider,
-          promptVersion: PROMPT_VERSION,
+          promptVersion: COMPACT_PROMPT_VERSION,
           inputHash: input.frozen.inputHash,
           status: "valid",
           latencyMs: input.result.latencyMs,
@@ -177,14 +204,25 @@ export async function persistModelResult(input: {
           rawResponse: input.result.rawResponse,
           validationErrors: [],
           completedAt,
+        }).where(eq(modelRuns.id, input.runId)).returning();
+      } else {
+        [run] = await database.insert(modelRuns).values({
+          scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
+          phase: "compact", requestedModel: input.result.requestedModel,
+          actualModel: input.result.actualModel, actualProvider: input.result.actualProvider,
+          promptVersion: COMPACT_PROMPT_VERSION, inputHash: input.frozen.inputHash, status: "valid",
+          latencyMs: input.result.latencyMs, inputTokens: input.result.inputTokens,
+          outputTokens: input.result.outputTokens,
+          costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
+          rawResponse: input.result.rawResponse, validationErrors: [], completedAt,
         })
         .onConflictDoUpdate({
-          target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel],
+          target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
           set: {
             chartArtifactId: input.chartArtifactId,
             actualModel: input.result.actualModel,
             actualProvider: input.result.actualProvider,
-            promptVersion: PROMPT_VERSION,
+            promptVersion: COMPACT_PROMPT_VERSION,
             inputHash: input.frozen.inputHash,
             status: "valid",
             latencyMs: input.result.latencyMs,
@@ -198,7 +236,9 @@ export async function persistModelResult(input: {
           },
         })
         .returning();
+      }
       if (!run) throw new Error("The model run could not be persisted.");
+      await persistAttempts(run.id, input.result.attempts);
       const result = input.result.analysis;
       const [saved] = await database
         .insert(analyses)
@@ -206,28 +246,13 @@ export async function persistModelResult(input: {
           modelRunId: run.id,
           verdict: result.verdict,
           barStatus: input.frozen.barStatus,
-          setupType: result.setup_type,
-          immediateBias: result.immediate_bias,
-          broaderTrend: result.broader_trend,
           conviction: result.conviction,
+          visualQuality: result.visual_quality,
+          fullAnalysisState: isFullAnalysisEligible(result) ? "not_requested" : "ineligible",
           observedPrice: result.observed_price === null ? null : String(result.observed_price),
-          candlestickAnalysis: result.candlestick_analysis,
-          volumeAnalysis: null,
-          vwapKeltnerAnalysis: result.vwap_keltner_analysis,
-          cciAnalysis: result.cci_analysis,
-          indicatorReadings: result.indicator_readings,
-          momentumAnalysis: null,
-          relativeVelocityAnalysis: null,
-          supportingEvidence: result.supporting_evidence,
-          conflictingEvidence: result.conflicting_evidence,
-          supportLevels: result.support_levels,
-          resistanceLevels: result.resistance_levels,
           primaryTarget: result.primary_target === null ? null : String(result.primary_target),
-          deeperScenario: result.deeper_scenario,
           invalidationLevel:
             result.invalidation_level === null ? null : String(result.invalidation_level),
-          dataQualityFlags: result.data_quality_flags,
-          summary: result.summary,
         })
         .returning();
       if (!saved) throw new Error("The validated analysis could not be persisted.");
@@ -243,17 +268,35 @@ async function runModel(input: {
   maxAttempts: 1 | 2;
   frozen: ChartAnalysisInput;
   png: Buffer;
+  usageClass: "routine_compact" | "manual_compact";
 }) {
+  const database = await getDatabase();
+  const [pendingRun] = await database.insert(modelRuns).values({
+    scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
+    phase: "compact", requestedModel: input.model, promptVersion: COMPACT_PROMPT_VERSION,
+    inputHash: input.frozen.inputHash, status: "pending",
+  }).onConflictDoUpdate({
+    target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
+    set: { chartArtifactId: input.chartArtifactId, status: "pending", startedAt: new Date(), completedAt: null },
+  }).returning();
+  if (!pendingRun) throw new Error("The model run could not be claimed.");
   const reservation = await reserveAnalysisBudget({
     model: input.model,
     runRole: "primary",
+    usageClass: input.usageClass,
+    modelRunId: pendingRun.id,
     now: new Date(input.frozen.capturedAt),
   });
-  if (!reservation) return null;
+  if (!reservation) {
+    await database.update(modelRuns).set({ status: "budget_skipped", completedAt: new Date() })
+      .where(eq(modelRuns.id, pendingRun.id));
+    return null;
+  }
   try {
-    const result = await createAnalysisModelProvider().analyze(input);
+    const result = await createAnalysisModelProvider().analyze({ ...input, phase: "compact" });
+    if (result.phase !== "compact") throw new Error("Compact scan returned the wrong model phase.");
     await settleAnalysisBudget(reservation, result.costUsd, "settled");
-    return persistModelResult({ ...input, result });
+    return persistModelResult({ ...input, runId: pendingRun.id, result });
   } catch (error) {
     const failure =
       error instanceof AnalysisModelError
@@ -268,21 +311,19 @@ async function runModel(input: {
             outputTokens: null,
             costUsd: null,
             rawResponse: null,
+            attempts: [],
           });
     await settleAnalysisBudget(
       reservation,
       failure.metadata.costUsd,
-      failure.metadata.costUsd === null ? "released" : "settled",
+      failure.metadata.attempts.length === 0
+        ? "released"
+        : failure.metadata.costUsd === null ? "estimated" : "settled",
     );
-    await (await getDatabase()).insert(modelRuns).values({
-      scanSlotId: input.slotId,
-      chartArtifactId: input.chartArtifactId,
-      runRole: "primary",
-      requestedModel: failure.metadata.requestedModel,
+    await persistAttempts(pendingRun.id, failure.metadata.attempts);
+    await database.update(modelRuns).set({
       actualModel: failure.metadata.actualModel,
       actualProvider: failure.metadata.actualProvider,
-      promptVersion: PROMPT_VERSION,
-      inputHash: input.frozen.inputHash,
       status: failure.metadata.status,
       latencyMs: failure.metadata.latencyMs,
       inputTokens: failure.metadata.inputTokens,
@@ -291,7 +332,7 @@ async function runModel(input: {
       rawResponse: failure.metadata.rawResponse,
       validationErrors: [failure.message.slice(0, 500)],
       completedAt: new Date(),
-    }).onConflictDoNothing();
+    }).where(eq(modelRuns.id, pendingRun.id));
     throw error;
   }
 }
@@ -485,6 +526,7 @@ export async function runScan(input: {
             maxAttempts: policy.modelAttempts,
             frozen: capture.input,
             png: storedPng,
+            usageClass: input.mode === "scheduled" ? "routine_compact" : "manual_compact",
           }),
         );
         if (!primary) throw new Error("Daily AI budget is exhausted.");
@@ -526,7 +568,9 @@ export async function runScan(input: {
             status: "completed",
             latestSourceAt: inputAsOf,
             freshnessSeconds: Math.max(0, Math.floor((now.getTime() - inputAsOf.getTime()) / 1_000)),
-            qualityFlags: primary.analysis.dataQualityFlags,
+            qualityFlags: primary.analysis.visualQuality === "clear"
+              ? []
+              : [`visual_${primary.analysis.visualQuality}`],
             inputAsOf,
             inputHash: capture.input.inputHash,
             completedAt: new Date(),

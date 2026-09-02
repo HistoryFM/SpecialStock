@@ -7,7 +7,30 @@ import { DEFAULT_WATCHLIST } from "@/models/catalog";
 import { watchlistEntrySchema } from "@/settings/schema";
 
 describe("automatic-scan defaults", () => {
-  it("enables every stock in a fresh default watchlist", () => {
+  it("seeds the approved 20 stocks in order with automatic scans enabled", () => {
+    expect(DEFAULT_WATCHLIST).toEqual([
+      { symbol: "AAPL", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "MSFT", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "AMZN", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "GOOGL", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "META", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "TSLA", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "NVDA", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "AMD", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "AVGO", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "BE", exchange: "NYSE", automaticScanEnabled: true },
+      { symbol: "MU", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "SKHY", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "SNDK", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "NOW", exchange: "NYSE", automaticScanEnabled: true },
+      { symbol: "CRM", exchange: "NYSE", automaticScanEnabled: true },
+      { symbol: "SPCX", exchange: "NASDAQ", automaticScanEnabled: true },
+      { symbol: "ORCL", exchange: "NYSE", automaticScanEnabled: true },
+      { symbol: "GLD", exchange: "AMEX", automaticScanEnabled: true },
+      { symbol: "SLV", exchange: "AMEX", automaticScanEnabled: true },
+      { symbol: "USO", exchange: "AMEX", automaticScanEnabled: true },
+    ]);
+    expect(new Set(DEFAULT_WATCHLIST.map((entry) => entry.symbol)).size).toBe(20);
     expect(DEFAULT_WATCHLIST.every((entry) => entry.automaticScanEnabled)).toBe(true);
   });
 

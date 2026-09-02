@@ -39,6 +39,20 @@ export const scanStatusEnum = pgEnum("scan_status", [
   "skipped",
 ]);
 export const runRoleEnum = pgEnum("run_role", ["primary", "comparison", "fallback"]);
+export const modelRunPhaseEnum = pgEnum("model_run_phase", ["compact", "full"]);
+export const visualQualityEnum = pgEnum("visual_quality", ["clear", "partial", "unreadable"]);
+export const fullAnalysisStateEnum = pgEnum("full_analysis_state", [
+  "ineligible",
+  "not_requested",
+  "running",
+  "available",
+  "failed",
+]);
+export const usageClassEnum = pgEnum("usage_class", [
+  "routine_compact",
+  "manual_compact",
+  "full_analysis",
+]);
 export const modelRunStatusEnum = pgEnum("model_run_status", [
   "pending",
   "valid",
@@ -94,7 +108,7 @@ export const appSettings = pgTable(
     automaticScansEnabled: boolean("automatic_scans_enabled").default(false).notNull(),
     notificationsEnabled: boolean("notifications_enabled").default(false).notNull(),
     dailyBudgetUsd: numeric("daily_budget_usd", { precision: 8, scale: 2 })
-      .default("10.00")
+      .default("12.00")
       .notNull(),
     ...timestamps,
   },
@@ -102,7 +116,7 @@ export const appSettings = pgTable(
     check("app_settings_singleton", sql`${table.id} = 1`),
     check(
       "app_settings_watchlist_size",
-      sql`jsonb_array_length(${table.watchlist}) between 1 and 5`,
+      sql`jsonb_array_length(${table.watchlist}) between 1 and 20`,
     ),
     check(
       "app_settings_active_model_allowlist",
@@ -181,6 +195,9 @@ export const scanSlots = pgTable(
   },
   (table) => [
     uniqueIndex("scan_slots_idempotency_key_unique").on(table.idempotencyKey),
+    uniqueIndex("scan_slots_one_running_per_symbol_unique")
+      .on(table.symbol)
+      .where(sql`${table.status} = 'running'`),
     index("scan_slots_symbol_scheduled_idx").on(table.symbol, table.scheduledFor),
   ],
 );
@@ -241,6 +258,7 @@ export const modelRuns = pgTable(
       .notNull(),
     chartArtifactId: uuid("chart_artifact_id").references(() => chartArtifacts.id),
     runRole: runRoleEnum("run_role").notNull(),
+    phase: modelRunPhaseEnum("phase").default("compact").notNull(),
     requestedModel: text("requested_model").notNull(),
     actualModel: text("actual_model"),
     actualProvider: text("actual_provider"),
@@ -262,7 +280,33 @@ export const modelRuns = pgTable(
       table.scanSlotId,
       table.runRole,
       table.requestedModel,
+      table.phase,
     ),
+  ],
+);
+
+export const modelAttempts = pgTable(
+  "model_attempts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    modelRunId: uuid("model_run_id")
+      .references(() => modelRuns.id, { onDelete: "cascade" })
+      .notNull(),
+    attemptNumber: integer("attempt_number").notNull(),
+    responseId: text("response_id"),
+    status: modelRunStatusEnum("status").notNull(),
+    latencyMs: integer("latency_ms").notNull(),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
+    estimatedCostUsd: numeric("estimated_cost_usd", { precision: 16, scale: 8 }),
+    errorCode: text("error_code"),
+    rawResponse: jsonb("raw_response").$type<unknown>(),
+    createdAt: timestamps.createdAt,
+  },
+  (table) => [
+    uniqueIndex("model_attempts_run_number_unique").on(table.modelRunId, table.attemptNumber),
+    index("model_attempts_run_idx").on(table.modelRunId),
   ],
 );
 
@@ -274,27 +318,37 @@ export const analyses = pgTable("analyses", {
     .unique(),
   verdict: verdictEnum("verdict").notNull(),
   barStatus: barStatusEnum("bar_status").notNull(),
-  setupType: text("setup_type").notNull(),
-  immediateBias: text("immediate_bias").notNull(),
-  broaderTrend: text("broader_trend").notNull(),
+  setupType: text("setup_type"),
+  immediateBias: text("immediate_bias"),
+  broaderTrend: text("broader_trend"),
   conviction: convictionEnum("conviction").notNull(),
+  visualQuality: visualQualityEnum("visual_quality").default("partial").notNull(),
+  fullAnalysisState: fullAnalysisStateEnum("full_analysis_state")
+    .default("ineligible")
+    .notNull(),
+  fullModelRunId: uuid("full_model_run_id").references(() => modelRuns.id, {
+    onDelete: "set null",
+  }),
+  fullLeaseToken: text("full_lease_token"),
+  fullLeaseExpiresAt: timestamp("full_lease_expires_at", { withTimezone: true }),
+  fullError: text("full_error"),
   observedPrice: numeric("observed_price", { precision: 20, scale: 8 }),
-  candlestickAnalysis: text("candlestick_analysis").notNull(),
+  candlestickAnalysis: text("candlestick_analysis"),
   volumeAnalysis: text("volume_analysis"),
-  vwapKeltnerAnalysis: text("vwap_keltner_analysis").notNull(),
+  vwapKeltnerAnalysis: text("vwap_keltner_analysis"),
   cciAnalysis: text("cci_analysis"),
   indicatorReadings: jsonb("indicator_readings").$type<IndicatorReadings>(),
   momentumAnalysis: text("momentum_analysis"),
   relativeVelocityAnalysis: text("relative_velocity_analysis"),
-  supportingEvidence: jsonb("supporting_evidence").$type<string[]>().notNull(),
-  conflictingEvidence: jsonb("conflicting_evidence").$type<string[]>().notNull(),
-  supportLevels: jsonb("support_levels").$type<number[]>().notNull(),
-  resistanceLevels: jsonb("resistance_levels").$type<number[]>().notNull(),
+  supportingEvidence: jsonb("supporting_evidence").$type<string[]>(),
+  conflictingEvidence: jsonb("conflicting_evidence").$type<string[]>(),
+  supportLevels: jsonb("support_levels").$type<number[]>(),
+  resistanceLevels: jsonb("resistance_levels").$type<number[]>(),
   primaryTarget: numeric("primary_target", { precision: 20, scale: 8 }),
-  deeperScenario: text("deeper_scenario").notNull(),
+  deeperScenario: text("deeper_scenario"),
   invalidationLevel: numeric("invalidation_level", { precision: 20, scale: 8 }),
-  dataQualityFlags: jsonb("data_quality_flags").$type<string[]>().notNull(),
-  summary: text("summary").notNull(),
+  dataQualityFlags: jsonb("data_quality_flags").$type<string[]>(),
+  summary: text("summary"),
   createdAt: timestamps.createdAt,
 });
 
@@ -387,6 +441,8 @@ export const budgetReservations = pgTable(
     marketDate: text("market_date").notNull(),
     model: text("model").notNull(),
     runRole: runRoleEnum("run_role").notNull(),
+    usageClass: usageClassEnum("usage_class").default("routine_compact").notNull(),
+    modelRunId: uuid("model_run_id").references(() => modelRuns.id, { onDelete: "set null" }),
     reservedUsd: numeric("reserved_usd", { precision: 16, scale: 8 }).notNull(),
     actualUsd: numeric("actual_usd", { precision: 16, scale: 8 }),
     status: text("status").default("reserved").notNull(),
@@ -395,6 +451,12 @@ export const budgetReservations = pgTable(
   },
   (table) => [index("budget_reservations_date_idx").on(table.marketDate, table.status)],
 );
+
+export const dailyBudgetLedger = pgTable("daily_budget_ledger", {
+  marketDate: text("market_date").primaryKey(),
+  committedUsd: numeric("committed_usd", { precision: 16, scale: 8 }).default("0").notNull(),
+  ...timestamps,
+});
 
 export const schedulerHeartbeats = pgTable(
   "scheduler_heartbeats",

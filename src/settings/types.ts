@@ -22,5 +22,5 @@ export type AppSettings = {
 
 export interface SettingsRepository {
   get(): Promise<AppSettings>;
-  update(input: Omit<AppSettings, "updatedAt">): Promise<AppSettings>;
+  update(input: Omit<AppSettings, "updatedAt">, expectedUpdatedAt?: Date): Promise<AppSettings>;
 }

@@ -1,10 +1,12 @@
 import { SchedulerClient } from "@/app/(protected)/dashboard/scheduler-client";
+import { SignalHistory } from "@/app/(protected)/dashboard/signal-history";
 import { getDashboardData } from "@/dashboard/data";
+import { getEligibleSignalHistory } from "@/history/data";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const data = await getDashboardData();
+  const [data, history] = await Promise.all([getDashboardData(), getEligibleSignalHistory()]);
 
   return (
     <main className="page-shell">
@@ -36,6 +38,7 @@ export default async function DashboardPage() {
         budget={data.budget}
         demoMode={data.demoMode}
       />
+      <SignalHistory key={history.items[0]?.analysisId ?? "empty"} initialPage={history} />
     </main>
   );
 }

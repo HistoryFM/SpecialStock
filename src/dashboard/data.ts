@@ -29,7 +29,8 @@ export type SymbolDashboardItem = {
   latestPrice: number | null;
   verdict: "bullish" | "bearish" | "no_trade" | null;
   conviction: "low" | "medium" | "high" | null;
-  summary: string | null;
+  visualQuality?: "clear" | "partial" | "unreadable" | null;
+  summary?: string | null;
   target: number | null;
   invalidation: number | null;
   model: string;
@@ -77,7 +78,7 @@ export async function getDashboardData() {
         latestPrice: null,
         verdict: null,
         conviction: null,
-        summary: null,
+        visualQuality: null,
         target: null,
         invalidation: null,
         model: getModelDefinition(settings.activeModel).displayName,
@@ -132,7 +133,7 @@ export async function getDashboardData() {
       latestPrice: joined?.analysis.observedPrice ? Number(joined.analysis.observedPrice) : null,
       verdict: joined?.analysis.verdict ?? null,
       conviction: joined?.analysis.conviction ?? null,
-      summary: joined?.analysis.summary ?? null,
+      visualQuality: joined?.analysis.visualQuality ?? null,
       target: joined?.analysis.primaryTarget ? Number(joined.analysis.primaryTarget) : null,
       invalidation: joined?.analysis.invalidationLevel
         ? Number(joined.analysis.invalidationLevel)

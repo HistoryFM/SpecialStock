@@ -1,6 +1,6 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { requireAuthorizedUser } from "@/auth/require-user";
 import { getDatabase } from "@/db/client";
@@ -22,7 +22,7 @@ export class DrizzleSettingsRepository implements SettingsRepository {
     return { ...settings, dailyBudgetUsd: Number(settings.dailyBudgetUsd) };
   }
 
-  async update(input: Omit<AppSettings, "updatedAt">): Promise<AppSettings> {
+  async update(input: Omit<AppSettings, "updatedAt">, expectedUpdatedAt?: Date): Promise<AppSettings> {
     await requireAuthorizedUser();
     const database = await getDatabase();
     const [settings] = await database
@@ -38,10 +38,21 @@ export class DrizzleSettingsRepository implements SettingsRepository {
         dailyBudgetUsd: String(input.dailyBudgetUsd),
         updatedAt: new Date(),
       })
-      .where(eq(appSettings.id, 1))
+      .where(and(
+        eq(appSettings.id, 1),
+        expectedUpdatedAt ? eq(appSettings.updatedAt, expectedUpdatedAt) : undefined,
+      ))
       .returning();
 
+    if (!settings && expectedUpdatedAt) throw new SettingsConflictError();
     if (!settings) throw new Error("The singleton app settings row is missing.");
     return { ...settings, dailyBudgetUsd: Number(settings.dailyBudgetUsd) };
+  }
+}
+
+export class SettingsConflictError extends Error {
+  constructor() {
+    super("Settings changed in another tab. Reset to load the latest values before saving again.");
+    this.name = "SettingsConflictError";
   }
 }

@@ -8,12 +8,13 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 
 ## Current product behavior
 
-- Five-symbol, exchange-aware watchlist supporting NASDAQ, NYSE, and AMEX symbols.
+- One-to-20-symbol, exchange-aware watchlist supporting NASDAQ, NYSE, and AMEX symbols.
+- Fresh and untouched legacy installations seed the approved 20-stock universe with automatic scanning enabled for every stock.
 - Prominent bullish, bearish, and no-trade signals based on Gemini's latest valid verdict.
 - Manual **Run now** analysis for every stock, regardless of market state or automatic-scan setting.
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
-- Frozen chart audit trail, decision history, model latency/cost metadata, human review, alerts, thesis state, and evaluation support.
+- Compact-signal history across configured and removed stocks, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
 - Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
 
@@ -21,14 +22,16 @@ Automatic scanning requires an authenticated dashboard tab to remain open. It is
 
 ## Analysis contract
 
-Every analysis follows the same pipeline:
+Every routine or manual scan follows this pipeline:
 
 1. The server requests one Chart-Img TradingView chart for `EXCHANGE:SYMBOL`.
 2. Chart-Img returns a 1600×1920 PNG covering one regular US market session at a five-minute interval.
 3. The server validates the response, hashes the exact bytes, and stores the PNG under `.data/chart-artifacts/`.
 4. Gemini receives that exact stored PNG plus only the symbol, interval, capture time, and completed/incomplete-bar metadata.
-5. The server validates Gemini's structured visual judgment and stores the decision with the chart hash and audit metadata.
+5. Gemini returns only observed price, verdict, conviction, target, invalidation, and visual quality. The server validates and stores that compact signal with the chart hash and audit metadata.
 6. Authenticated UI routes verify the stored hash before returning the chart image.
+
+Opening a medium/high bullish or bearish result claims full-analysis work once. Gemini receives the already-stored, hash-verified PNG again—without a new Chart-Img request—and returns narrative/evidence fields only. It cannot change the compact signal's locked verdict, conviction, observed price, target, or invalidation. Low-conviction and no-trade results remain compact and still expose the frozen chart and audit data.
 
 Gemini is explicitly instructed not to reconstruct or calculate technical indicators. If the chart or labels are unclear, the preferred verdict is `no_trade` with readability flags.
 
@@ -51,17 +54,21 @@ There are no Bollinger Bands and no Bollinger crossover study.
 
 ### Gemini output
 
-The decision brief includes:
+Compact scan output includes only:
 
 - Visually observed price.
 - Bullish, bearish, or no-trade verdict and qualitative conviction.
-- Setup, immediate bias, broader trend, target, invalidation, support, and resistance.
+- Target, invalidation, and visual quality.
+
+Eligible full-analysis output adds:
+
+- Setup, immediate bias, broader trend, support, and resistance.
 - Candlestick, VWAP/Keltner, and CCI analysis.
 - Fixed visual readings for price action, VWAP, Keltner, Volume, ADX, RSI, MACD, CCI, and CMF.
 - Stance, readability, and a concise observation for each visual reading.
 - Supporting evidence, conflicting evidence, alternate/deeper scenario, data-quality flags, and summary.
 
-The model is locked to `google/gemini-2.5-pro` through OpenRouter. Same-model retries are allowed for transient/malformed responses; comparison models and cross-model fallback are disabled.
+The model is locked to `google/gemini-2.5-pro` through OpenRouter. Compact requests use Gemini's 128-token minimum thinking budget and a 256-token completion ceiling. Same-model retries are allowed only for transient, rate-limit, empty, malformed, and validation failures; authentication, payment, configuration, and unsupported-request failures are terminal. Every billed attempt is persisted and charged to the daily ledger, using a retained estimate when exact usage cannot be reconciled.
 
 ## Architecture
 
@@ -74,7 +81,7 @@ The model is locked to `google/gemini-2.5-pro` through OpenRouter. Same-model re
 | Analysis provider | OpenRouter using only `google/gemini-2.5-pro` |
 | Chart storage | Content-addressed local PNG files with SHA-256 verification |
 | Calendar/outcomes | Alpaca when configured; never used for chart indicators or Gemini numeric context |
-| Scheduling | Authenticated browser leader, sequential per-symbol scans, database idempotency |
+| Scheduling | Authenticated browser leader, concurrent due-slot batch (up to 20), database idempotency and per-symbol exclusion |
 
 The application is currently designed for local execution. PGlite and chart images use the local filesystem; a serverless deployment requires deliberate migration to durable Postgres and private object storage.
 
@@ -165,7 +172,7 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 
 ### Manual analysis
 
-Use **Run now** on any watchlist row. Manual scans work with automatic scanning on or off and while the market is open or closed. Only that stock's button is disabled while its scan is running.
+Use **Run now** on any watchlist row. Manual scans create a compact signal, work with automatic scanning on or off and while the market is open or closed, and are rejected only when that same symbol already has a scan running.
 
 Manual scans intentionally do not create alerts, replace the active thesis, or create evaluation outcomes.
 
@@ -177,16 +184,22 @@ The scheduler:
 
 - Runs only enabled stocks.
 - Runs once shortly after each completed five-minute bar from 9:35 through 3:55 Eastern; it does not launch a 4:00 PM scan.
-- Processes symbols sequentially.
+- Launches all enabled symbols for the due slot together (up to 20) and refreshes once after the batch settles.
 - Uses browser leader election and database idempotency to avoid duplicate scans across tabs.
 - Carries one server-validated slot through the full symbol batch so slow symbols cannot drift into the next bar.
-- Retains the previous valid analysis if a new scan fails.
+- Retains the previous valid analysis if a new scan fails and does not cancel successful siblings when another symbol fails.
 
 Keep the dashboard open, the laptop awake, and the internet connection active.
 
+The seeded universe is AAPL, MSFT, AMZN, GOOGL, META, TSLA, NVDA, AMD, AVGO, BE,
+MU, SKHY, SNDK, NOW, CRM, SPCX, ORCL, GLD, SLV, and USO. The default daily provider
+budget is $12. The routine 2,000-scan projection is operationally gated by that
+configured cap while the original under-$10 cost target remains visible as an
+efficiency benchmark.
+
 ### Signal meaning
 
-The watchlist signal is Gemini's latest valid overall visual verdict. It is not a locally calculated crossover or trading signal. Stale or retained results are labeled so a failed new scan cannot masquerade as fresh analysis.
+The watchlist signal is Gemini's latest valid compact visual verdict. It is not a locally calculated crossover or trading signal. The dashboard's cursor-paginated history includes eligible manual signals and removed stocks. Stale or retained results are labeled so a failed new scan cannot masquerade as fresh analysis.
 
 ## Local data and backup
 
@@ -268,6 +281,6 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 
 - Automatic scans stop when the dashboard is closed, the laptop sleeps, or connectivity is lost.
 - Regular US market sessions only; automatic scans run from 9:35 through 3:55 Eastern and extended hours are out of scope.
-- The watchlist is intentionally small and single-user.
+- The watchlist supports at most 20 stocks and remains single-user.
 - Chart images and history have no automatic retention deletion.
 - This tool provides visual technical-analysis assistance, not investment advice, order execution, or guarantees of outcome.

@@ -10,7 +10,7 @@ import { tickerSchema } from "@/settings/schema";
 
 const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };
 const updateSchema = z.object({
-  symbols: z.array(tickerSchema).min(1).max(5).refine(
+  symbols: z.array(tickerSchema).min(1).max(20).refine(
     (symbols) => new Set(symbols).size === symbols.length,
     "Symbols must be unique.",
   ),

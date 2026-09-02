@@ -22,7 +22,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <p className="eyebrow">Private technical workspace</p>
         <h1 id="login-heading">Welcome to SpecialStock</h1>
         <p className="muted">
-          Sign in to view the five-symbol watchlist and analysis settings.
+          Sign in to view the 20-stock watchlist and analysis settings.
         </p>
         <form action={loginAction} className="login-form">
           <label htmlFor="password">Shared password</label>

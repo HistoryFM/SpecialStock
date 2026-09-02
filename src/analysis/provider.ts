@@ -1,4 +1,4 @@
-import type { ChartAnalysisInput, ModelRunResult } from "@/analysis/types";
+import type { ChartAnalysisInput, ModelAttemptResult, ModelRunResult } from "@/analysis/types";
 
 export type AnalysisModelFailureMetadata = {
   status: "invalid" | "failed" | "timed_out";
@@ -10,6 +10,7 @@ export type AnalysisModelFailureMetadata = {
   outputTokens: number | null;
   costUsd: number | null;
   rawResponse: unknown;
+  attempts: ModelAttemptResult[];
 };
 
 export class AnalysisModelError extends Error {
@@ -28,6 +29,14 @@ export interface AnalysisModelProvider {
     frozen: ChartAnalysisInput;
     png: Buffer;
     model: string;
+    phase?: "compact" | "full";
+    lockedSignal?: {
+      observedPrice: number | null;
+      verdict: "bullish" | "bearish" | "no_trade";
+      conviction: "low" | "medium" | "high";
+      target: number | null;
+      invalidation: number | null;
+    };
     maxAttempts?: 1 | 2;
   }): Promise<ModelRunResult>;
 }

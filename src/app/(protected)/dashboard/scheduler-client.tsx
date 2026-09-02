@@ -29,7 +29,13 @@ export function SchedulerClient({
 }: {
   initialItems: SymbolDashboardItem[];
   database: { engine: string; status: string };
-  budget: { todayUsd: number; monthUsd: number; capUsd: number };
+  budget: {
+    todayUsd: number;
+    monthUsd: number;
+    capUsd: number;
+    byClass?: { routine_compact?: number; manual_compact?: number; full_analysis?: number };
+    routineProjectionUsd?: number | null;
+  };
   demoMode: boolean;
 }) {
   const router = useRouter();
@@ -64,8 +70,8 @@ export function SchedulerClient({
   }, []);
 
   const run = useCallback(
-    async (symbol: string, mode: "manual" | "scheduled", slotKey?: string) => {
-      if (inFlight.current.has(symbol)) return;
+    async (symbol: string, mode: "manual" | "scheduled", slotKey?: string, refresh = true) => {
+      if (inFlight.current.has(symbol)) return false;
       inFlight.current.add(symbol);
       setBusySymbols((current) => new Set(current).add(symbol));
       try {
@@ -77,9 +83,11 @@ export function SchedulerClient({
         const payload = (await response.json()) as { error?: string };
         if (!response.ok) throw new Error(payload.error ?? "Scan failed");
         setMessage(`${symbol} ${mode} scan completed.`);
-        router.refresh();
+        if (refresh) router.refresh();
+        return true;
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "Scan failed.");
+        return false;
       } finally {
         inFlight.current.delete(symbol);
         setBusySymbols((current) => {
@@ -130,9 +138,13 @@ export function SchedulerClient({
             () => void acquireLeadership(),
             Math.floor(LEASE_MS / 3),
           );
-          for (const symbol of status.automaticSymbols) {
-            if (!acquireLeadership()) break;
-            await run(symbol, "scheduled", status.slotKey);
+          if (acquireLeadership()) {
+            const results = await Promise.allSettled(
+              status.automaticSymbols.map((symbol) => run(symbol, "scheduled", status.slotKey!, false)),
+            );
+            const completed = results.filter((result) => result.status === "fulfilled" && result.value).length;
+            setMessage(`Scheduled batch settled · ${completed} of ${status.automaticSymbols.length} completed.`);
+            router.refresh();
           }
         }
       } catch {
@@ -196,6 +208,10 @@ export function SchedulerClient({
         <span><strong>Auto</strong> {enabledCount} of {items.length} · {enabledCount ? "Browser active" : "Off"}</span>
         <span><strong>Database</strong> {database.engine} · {database.status}</span>
         <span className="tabular"><strong>Spend</strong> ${budget.todayUsd.toFixed(4)} / ${budget.capUsd.toFixed(2)} today</span>
+        <span className="tabular" title="Scheduled compact · manual compact · full analysis">
+          <strong>By use</strong> ${(budget.byClass?.routine_compact ?? 0).toFixed(4)} · ${(budget.byClass?.manual_compact ?? 0).toFixed(4)} · ${(budget.byClass?.full_analysis ?? 0).toFixed(4)}
+        </span>
+        <span className="tabular"><strong>2k routine</strong> {budget.routineProjectionUsd === null || budget.routineProjectionUsd === undefined ? "Collecting data" : `$${budget.routineProjectionUsd.toFixed(2)}`}</span>
       </div>
       <WatchlistTable
         items={items}

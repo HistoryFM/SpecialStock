@@ -10,6 +10,7 @@ import {
   runScan,
   ScanNotAvailableError,
   AutomaticScansDisabledError,
+  ScanAlreadyRunningError,
   UnknownWatchlistSymbolError,
 } from "@/scans/service";
 import { tickerSchema } from "@/settings/schema";
@@ -98,7 +99,7 @@ export async function POST(
     if (error instanceof z.ZodError || error instanceof UnknownWatchlistSymbolError) {
       return Response.json({ error: "Invalid scan request." }, { status: 400 });
     }
-    if (error instanceof ScanNotAvailableError || error instanceof AutomaticScansDisabledError) {
+    if (error instanceof ScanNotAvailableError || error instanceof AutomaticScansDisabledError || error instanceof ScanAlreadyRunningError) {
       return Response.json({ error: error.message }, { status: 409 });
     }
     Sentry.captureException(error, {

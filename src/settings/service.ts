@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   comparisonEnabled: false,
   automaticScansEnabled: false,
   notificationsEnabled: false,
-  dailyBudgetUsd: 10,
+  dailyBudgetUsd: 12,
   updatedAt: new Date(0),
 };
 
@@ -51,6 +51,7 @@ export class SettingsService {
       }>;
       activeModel: ModelId;
     } & Partial<Omit<SettingsInput, "watchlist" | "activeModel">>,
+    expectedUpdatedAt?: Date,
   ): Promise<AppSettings> {
     const current = await this.repository.get();
     const automaticState = new Map(
@@ -86,7 +87,7 @@ export class SettingsService {
       }
     }
 
-    return this.repository.update(input);
+    return this.repository.update(input, expectedUpdatedAt);
   }
 }
 

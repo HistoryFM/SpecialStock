@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AnalysisRefreshControl } from "@/app/(protected)/symbols/[symbol]/analysis-refresh-control";
-import { DecisionBrief } from "@/app/(protected)/symbols/[symbol]/decision-brief";
+import { FullAnalysisPanel } from "@/app/(protected)/symbols/[symbol]/full-analysis-panel";
 import { ReviewForm } from "@/app/(protected)/symbols/[symbol]/review-form";
 import { WorkspaceTabs } from "@/app/(protected)/symbols/[symbol]/workspace-tabs";
 import { tickerSchema } from "@/settings/schema";
@@ -281,7 +281,15 @@ export default async function SymbolPage({
       />
 
       <section className="ai-first-workspace">
-        <DecisionBrief analysis={selected.analysis} snapshotPrice={snapshotPrice} />
+        <article className="decision-brief" data-testid="compact-signal">
+          <div className="decision-heading"><div><p className="eyebrow">Compact signal · next 15–30 minutes</p><h2>{selected.analysis.verdict.replace("_", " ")}</h2></div><span className={`conviction-badge ${selected.analysis.conviction}`}>{selected.analysis.conviction} conviction</span></div>
+          <dl className="decision-levels">
+            <div><dt>Observed price</dt><dd>{money(snapshotPrice)}</dd></div>
+            <div><dt>Primary target</dt><dd className="positive">{money(selected.analysis.primaryTarget)}</dd></div>
+            <div><dt>Invalidation</dt><dd className="negative">{money(selected.analysis.invalidationLevel)}</dd></div>
+          </dl>
+          <footer className="broader-context"><strong>Visual quality</strong><span>{selected.analysis.visualQuality}</span></footer>
+        </article>
 
         <aside className="supporting-chart" aria-label="Supporting chart">
           <div className="supporting-chart-heading"><div><p className="eyebrow">Chart-Img / TradingView · 5-minute</p><h2>Frozen chart snapshot</h2></div><span>Exact model input</span></div>
@@ -299,16 +307,23 @@ export default async function SymbolPage({
         </aside>
       </section>
 
-      <section className="deep-analysis" aria-labelledby="deep-analysis-heading">
-        <div className="deep-analysis-heading"><p className="eyebrow">Full AI reasoning</p><h2 id="deep-analysis-heading">How the model reached this conclusion</h2></div>
-        <div className="deep-analysis-grid">
-          <article><span>01</span><h3>Visible price action</h3><p>{selected.analysis.candlestickAnalysis}</p></article>
-          <article><span>02</span><h3>VWAP and Keltner structure</h3><p>{selected.analysis.vwapKeltnerAnalysis}</p><p>{selected.analysis.broaderTrend}</p></article>
-          <article><span>03</span><h3>Momentum and trend strength</h3><p>{selected.analysis.indicatorReadings ? ["adx", "rsi", "macd", "cci"].map((key) => selected.analysis.indicatorReadings![key as "adx" | "rsi" | "macd" | "cci"].observation).join(" ") : selected.analysis.cciAnalysis ?? "Expanded indicator analysis was not recorded for this legacy result."}</p></article>
-          <article><span>04</span><h3>Participation and money flow</h3><p>{selected.analysis.indicatorReadings ? `${selected.analysis.indicatorReadings.volume.observation} ${selected.analysis.indicatorReadings.cmf.observation}` : "Volume and CMF analysis was not recorded for this legacy result."}</p></article>
-          <article><span>05</span><h3>Risks and alternate scenario</h3><ul>{selected.analysis.conflictingEvidence.map((item) => <li key={item}>{item}</li>)}</ul><p>{selected.analysis.deeperScenario}</p></article>
-        </div>
-      </section>
+      <FullAnalysisPanel initial={{
+        analysisId: selected.analysis.id,
+        state: selected.analysis.fullAnalysisState,
+        error: selected.analysis.fullError,
+        full: selected.analysis.fullAnalysisState === "available" ? {
+          setupType: selected.analysis.setupType,
+          immediateBias: selected.analysis.immediateBias,
+          broaderTrend: selected.analysis.broaderTrend,
+          candlestickAnalysis: selected.analysis.candlestickAnalysis,
+          vwapKeltnerAnalysis: selected.analysis.vwapKeltnerAnalysis,
+          cciAnalysis: selected.analysis.cciAnalysis,
+          supportingEvidence: selected.analysis.supportingEvidence,
+          conflictingEvidence: selected.analysis.conflictingEvidence,
+          deeperScenario: selected.analysis.deeperScenario,
+          summary: selected.analysis.summary,
+        } : null,
+      }} />
 
       <WorkspaceTabs
         audit={auditPanel}

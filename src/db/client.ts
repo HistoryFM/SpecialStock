@@ -4,6 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle, type PgliteDatabase } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 
 import { getServerEnv } from "@/config/env";
@@ -19,7 +20,10 @@ const globalDatabase = globalThis as typeof globalThis & {
 function resolveLocalDatabasePath(): string {
   const workspace = process.cwd();
   const databasePath = resolve(workspace, getServerEnv().LOCAL_DATABASE_PATH);
-  if (databasePath !== workspace && !databasePath.startsWith(`${workspace}${sep}`)) {
+  const isolatedE2ePrefix = `${resolve(tmpdir())}${sep}specialstock-e2e-`;
+  const isIsolatedE2ePath = process.env.SPECIALSTOCK_E2E_ISOLATED === "1"
+    && databasePath.startsWith(isolatedE2ePrefix);
+  if (databasePath !== workspace && !databasePath.startsWith(`${workspace}${sep}`) && !isIsolatedE2ePath) {
     throw new Error("LOCAL_DATABASE_PATH must stay inside the SpecialStock workspace.");
   }
   return databasePath;

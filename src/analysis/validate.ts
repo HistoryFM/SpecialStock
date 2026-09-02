@@ -1,4 +1,10 @@
-import { analysisResultSchema, type AnalysisResult } from "@/analysis/types";
+import {
+  compactAnalysisResultSchema,
+  compactAnalysisWireSchema,
+  fullAnalysisResultSchema,
+  type CompactAnalysisResult,
+  type FullAnalysisResult,
+} from "@/analysis/types";
 
 const disallowedClaims =
   /\b(option contract|strike price|expiration|expiry|delta|gamma|theta|premium|position size|market order|limit order|stop order|buy \d|sell \d|relative velocity|institutional (?:buying|selling|activity))\b/i;
@@ -18,30 +24,29 @@ export function parseJsonResponse(value: string): unknown {
   return JSON.parse(withoutFence);
 }
 
-export function validateAnalysis(raw: unknown): AnalysisResult {
-  const parsed = analysisResultSchema.safeParse(raw);
-  if (!parsed.success) {
+export function isFullAnalysisEligible(input: {
+  verdict: "bullish" | "bearish" | "no_trade";
+  conviction: "low" | "medium" | "high";
+}): boolean {
+  return input.verdict !== "no_trade" && input.conviction !== "low";
+}
+
+export function validateCompactAnalysis(raw: unknown): CompactAnalysisResult {
+  const wire = compactAnalysisWireSchema.safeParse(raw);
+  if (!wire.success) {
     throw new AnalysisValidationError(
-      parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+      wire.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
     );
   }
-  const result = parsed.data;
+  const result = compactAnalysisResultSchema.parse({
+    observed_price: wire.data.p,
+    verdict: wire.data.v,
+    conviction: wire.data.c,
+    primary_target: wire.data.t,
+    invalidation_level: wire.data.i,
+    visual_quality: wire.data.q,
+  });
   const issues: string[] = [];
-  const allText = [
-    result.setup_type,
-    result.immediate_bias,
-    result.broader_trend,
-    result.candlestick_analysis,
-    result.vwap_keltner_analysis,
-    result.cci_analysis,
-    ...Object.values(result.indicator_readings).map((reading) => reading.observation),
-    result.deeper_scenario,
-    result.summary,
-    ...result.supporting_evidence,
-    ...result.conflicting_evidence,
-  ].join(" ");
-  if (disallowedClaims.test(allText)) issues.push("response claims unavailable data or trading mechanics");
-
   if (result.verdict === "no_trade") {
     if (result.primary_target !== null || result.invalidation_level !== null) {
       issues.push("no_trade must not include target or invalidation levels");
@@ -64,11 +69,45 @@ export function validateAnalysis(raw: unknown): AnalysisResult {
     issues.push("bearish price levels are directionally contradictory");
   }
   if (
-    result.indicator_readings.price_action.readability === "unreadable" &&
+    result.visual_quality === "unreadable" &&
     result.verdict !== "no_trade"
   ) {
     issues.push("an unreadable price chart requires a no_trade verdict");
   }
   if (issues.length) throw new AnalysisValidationError(issues);
+  return result;
+}
+
+export function validateFullAnalysis(raw: unknown): FullAnalysisResult {
+  if (raw && typeof raw === "object") {
+    const locked = ["observed_price", "verdict", "conviction", "primary_target", "invalidation_level"];
+    const present = locked.filter((field) => Object.hasOwn(raw, field));
+    if (present.length) {
+      throw new AnalysisValidationError([`full analysis attempted to update locked fields: ${present.join(", ")}`]);
+    }
+  }
+  const parsed = fullAnalysisResultSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new AnalysisValidationError(
+      parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+    );
+  }
+  const result = parsed.data;
+  const allText = [
+    result.setup_type,
+    result.immediate_bias,
+    result.broader_trend,
+    result.candlestick_analysis,
+    result.vwap_keltner_analysis,
+    result.cci_analysis,
+    ...Object.values(result.indicator_readings).map((reading) => reading.observation),
+    result.deeper_scenario,
+    result.summary,
+    ...result.supporting_evidence,
+    ...result.conflicting_evidence,
+  ].join(" ");
+  if (disallowedClaims.test(allText)) {
+    throw new AnalysisValidationError(["response claims unavailable data or trading mechanics"]);
+  }
   return result;
 }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SchedulerClient } from "@/app/(protected)/dashboard/scheduler-client";
 import type { SymbolDashboardItem } from "@/dashboard/data";
+import { DEFAULT_WATCHLIST } from "@/models/catalog";
 
 const refresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
@@ -53,8 +54,13 @@ describe("automatic scan scheduler", () => {
     vi.unstubAllGlobals();
   });
 
-  it("runs enabled symbols sequentially for the due server slot", async () => {
+  it("runs a due slot concurrently, keeps successful siblings, and refreshes once", async () => {
+    const symbols = DEFAULT_WATCHLIST.map((entry) => entry.symbol);
     const events: string[] = [];
+    let releaseBatch: (() => void) | undefined;
+    const batchGate = new Promise<void>((resolve) => {
+      releaseBatch = resolve;
+    });
     const slotKey = "postclose:2026-08-31T15:50:00.000Z";
     const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
       const url = String(request);
@@ -64,9 +70,9 @@ describe("automatic scan scheduler", () => {
           slotKey,
           nextScanAt: "2026-08-31T16:00:10.000Z",
           marketOpen: true,
-          automaticSymbols: ["AAPL", "MSFT"],
-          enabledCount: 2,
-          configuredCount: 2,
+          automaticSymbols: symbols,
+          enabledCount: symbols.length,
+          configuredCount: symbols.length,
           runningScans: [],
           scanRevision: null,
         });
@@ -77,10 +83,15 @@ describe("automatic scan scheduler", () => {
       if (url.startsWith("/api/scans/")) {
         const symbol = url.split("/").at(-1)!;
         events.push(`start:${symbol}`);
-        await Promise.resolve();
+        if (events.filter((event) => event.startsWith("start:")).length === symbols.length) {
+          releaseBatch?.();
+        }
+        await batchGate;
         events.push(`finish:${symbol}`);
         expect(JSON.parse(String(init?.body))).toEqual({ mode: "scheduled", slotKey });
-        return Response.json({ status: "completed" });
+        return symbol === "MSFT"
+          ? Response.json({ error: "mock provider failure" }, { status: 502 })
+          : Response.json({ status: "completed" });
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -88,19 +99,16 @@ describe("automatic scan scheduler", () => {
 
     render(
       <SchedulerClient
-        initialItems={[item("AAPL"), item("MSFT")]}
+        initialItems={symbols.map(item)}
         database={{ engine: "PGlite", status: "connected" }}
         budget={{ todayUsd: 0, monthUsd: 0, capUsd: 1 }}
         demoMode={false}
       />,
     );
 
-    await waitFor(() => expect(events).toEqual([
-      "start:AAPL",
-      "finish:AAPL",
-      "start:MSFT",
-      "finish:MSFT",
-    ]));
-    expect(refresh).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(events.filter((event) => event.startsWith("finish:"))).toHaveLength(20));
+    expect(events.slice(0, 20)).toEqual(symbols.map((symbol) => `start:${symbol}`));
+    expect(new Set(events.slice(20))).toEqual(new Set(symbols.map((symbol) => `finish:${symbol}`)));
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

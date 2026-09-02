@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OpenRouterAnalysisModelProvider } from "@/analysis/openrouter-provider";
-import type { AnalysisResult, ChartAnalysisInput } from "@/analysis/types";
+import type { ChartAnalysisInput } from "@/analysis/types";
 
 const frozen: ChartAnalysisInput = {
   version: "chart-img-input-v1",
@@ -20,31 +20,8 @@ const frozen: ChartAnalysisInput = {
   ],
   inputHash: "input-hash",
 };
-const analysis: AnalysisResult = {
-  observed_price: 100,
-  verdict: "bullish",
-  setup_type: "Breakout structure",
-  immediate_bias: "Upward pressure is visible.",
-  broader_trend: "The visible trend is constructive.",
-  conviction: "high",
-  candlestick_analysis: "Recent candles closed higher.",
-  vwap_keltner_analysis: "Price is above visible VWAP.",
-  cci_analysis: "CCI is visibly positive.",
-  indicator_readings: Object.fromEntries(
-    ["price_action", "vwap", "keltner", "volume", "adx", "rsi", "macd", "cci", "cmf"].map(
-      (key) => [key, { stance: "bullish", readability: "clear", observation: `${key} is legible.` }],
-    ),
-  ) as AnalysisResult["indicator_readings"],
-  supporting_evidence: ["Higher lows support the thesis."],
-  conflicting_evidence: ["Nearby resistance may limit follow-through."],
-  support_levels: [98],
-  resistance_levels: [104],
-  primary_target: 104,
-  deeper_scenario: "Continuation requires the structure to hold.",
-  invalidation_level: 97,
-  data_quality_flags: [],
-  summary: "Bullish visual thesis.",
-};
+const wireAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
+const analysis = { observed_price: 100, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
 
 beforeEach(() => {
   vi.stubEnv("AUTH_SECRET", "a-secure-test-secret-that-is-at-least-32-characters");
@@ -60,7 +37,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       return Response.json({
         model: "google/gemini-2.5-pro",
         provider: "google",
-        choices: [{ message: { content: JSON.stringify(analysis) }, finish_reason: "stop" }],
+        choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
       });
     }));
 
@@ -114,7 +91,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       .mockResolvedValueOnce(Response.json({
         model: "google/gemini-2.5-pro",
         provider: "google",
-        choices: [{ message: { content: JSON.stringify(analysis) }, finish_reason: "stop" }],
+        choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
       }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -123,7 +100,18 @@ describe("OpenRouterAnalysisModelProvider", () => {
       png: Buffer.from("png"),
       model: "google/gemini-2.5-pro",
       maxAttempts: 2,
-    })).resolves.toMatchObject({ analysis });
+    })).resolves.toMatchObject({ analysis, costUsd: 0.03, attempts: [{ status: "invalid" }, { status: "valid" }] });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry or estimate spend for authentication failures", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "unauthorized" }, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(new OpenRouterAnalysisModelProvider().analyze({
+      frozen, png: Buffer.from("png"), model: "google/gemini-2.5-pro", maxAttempts: 2,
+    })).rejects.toMatchObject({
+      metadata: { costUsd: 0, attempts: [{ estimatedCostUsd: null }] },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
