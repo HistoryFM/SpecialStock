@@ -240,13 +240,21 @@ export function SchedulerClient({
 
   const enabledCount = items.filter((item) => item.automaticScanEnabled).length;
   const allBusySymbols = new Set([...remoteBusySymbols, ...busySymbols, ...batchBusySymbols]);
+  const busySymbolList = [...allBusySymbols];
+  const busyLabel = `${busySymbolList.length} stock${busySymbolList.length === 1 ? "" : "s"}`;
 
   return (
     <>
       <div className="workspace-status-strip" aria-live="polite">
-        <span className={`status-dot ${demoMode ? "warning" : "live"}`} aria-hidden="true" />
-        <span className="status-message">
-          {allBusySymbols.size ? `Scanning ${[...allBusySymbols].join(", ")}…` : message}
+        <span
+          className={`status-dot ${demoMode ? "warning" : "live"}${busySymbolList.length ? " scanning" : ""}`}
+          aria-hidden="true"
+        />
+        <span
+          className={`status-message${busySymbolList.length ? " scanning" : ""}`}
+          title={busySymbolList.length ? `Scanning ${busySymbolList.join(", ")}` : undefined}
+        >
+          {busySymbolList.length ? `Scanning ${busyLabel} concurrently…` : message}
         </span>
         <span><strong>Charts</strong> {demoMode ? "Not configured" : "Chart-Img / TradingView"}</span>
         <span><strong>Auto</strong> {enabledCount} of {items.length} · {enabledCount ? "Browser active" : "Off"}</span>

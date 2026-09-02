@@ -1122,6 +1122,13 @@ h1 {
 .workspace-status-strip > .status-message {
   min-width: 17rem;
   flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-status-strip > .status-message.scanning {
+  color: var(--text);
+  font-weight: 650;
 }
 
 .workspace-status-strip strong {
@@ -1140,6 +1147,21 @@ h1 {
 
 .status-dot.warning {
   background: var(--warning);
+}
+
+.status-dot.scanning {
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent);
+  animation: scan-status-pulse 1.6s ease-out infinite;
+}
+
+@keyframes scan-status-pulse {
+  70%, 100% {
+    box-shadow: 0 0 0 0.42rem transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.scanning { animation: none; }
 }
 
 .tabular,
