@@ -9,12 +9,13 @@ const mockPort = 3199;
 const runRoot = mkdtempSync(join(tmpdir(), "specialstock-e2e-"));
 const databasePath = join(runRoot, "database");
 const artifactPath = join(runRoot, "charts");
+const sendSentryTelemetry = process.env.SPECIALSTOCK_E2E_SENTRY === "1";
+const retryFirstCompact = process.env.SPECIALSTOCK_E2E_RETRY_ONCE === "1";
 const testEnv = {
   ...process.env,
   SPECIALSTOCK_E2E_ISOLATED: "1",
   SENTRY_AUTH_TOKEN: "",
-  SENTRY_DSN: "",
-  NEXT_PUBLIC_SENTRY_DSN: "",
+  ...(sendSentryTelemetry ? {} : { SENTRY_DSN: "", NEXT_PUBLIC_SENTRY_DSN: "" }),
   LOCAL_DATABASE_PATH: databasePath,
   CHART_ARTIFACT_DIR: artifactPath,
 };
@@ -94,15 +95,19 @@ const mockServer = createServer(async (request, response) => {
     beginProviderRequest(phase);
     await providerDelay();
     response.writeHead(200, { "Content-Type": "application/json" });
+    const retryableCompactFailure = retryFirstCompact && phase === "compact" && providerCalls.compact === 1;
     response.end(JSON.stringify({
-      id: `e2e-openrouter-${phase}-response`,
+      id: `e2e-openrouter-${phase}-response-${providerCalls[phase]}`,
       model: "google/gemini-2.5-pro",
       provider: "e2e-google-mock",
-      choices: [{ message: { content: JSON.stringify(
-        phase === "compact"
-          ? promptText.includes("NASDAQ:MSFT") ? ineligibleCompactAnalysis : compactAnalysis
-          : fullAnalysis,
-      ) }, finish_reason: "stop" }],
+      choices: [{
+        message: { content: retryableCompactFailure ? null : JSON.stringify(
+          phase === "compact"
+            ? promptText.includes("NASDAQ:MSFT") ? ineligibleCompactAnalysis : compactAnalysis
+            : fullAnalysis,
+        ) },
+        finish_reason: "stop",
+      }],
       usage: phase === "compact"
         ? { prompt_tokens: 1000, completion_tokens: 80, cost: 0.002 }
         : { prompt_tokens: 1000, completion_tokens: 400, cost: 0.005 },

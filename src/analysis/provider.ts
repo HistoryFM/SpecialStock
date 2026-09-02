@@ -1,3 +1,4 @@
+import type { UsageClass } from "@/analysis/budget";
 import type { ChartAnalysisInput, ModelAttemptResult, ModelRunResult } from "@/analysis/types";
 
 export type AnalysisModelFailureMetadata = {
@@ -29,7 +30,8 @@ export interface AnalysisModelProvider {
     frozen: ChartAnalysisInput;
     png: Buffer;
     model: string;
-    phase?: "compact" | "full";
+    phase: "compact" | "full";
+    usageClass: UsageClass;
     lockedSignal?: {
       observedPrice: number | null;
       verdict: "bullish" | "bearish" | "no_trade";

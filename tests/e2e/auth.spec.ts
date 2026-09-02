@@ -24,6 +24,7 @@ test("protects the application shell and supports the single-user session", asyn
 });
 
 test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => {
+  const expectedCompactCalls = process.env.SPECIALSTOCK_E2E_RETRY_ONCE === "1" ? 2 : 1;
   await signIn(page);
   await page.setViewportSize({ width: 1440, height: 900 });
 
@@ -79,12 +80,16 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   expect(scanStatus.ok()).toBe(true);
   expect(JSON.stringify(await scanStatus.json())).not.toMatch(/OPENROUTER|CHART_IMG_API_KEY|rawResponse/);
   const providerStats = await page.request.get("http://127.0.0.1:3199/stats");
-  expect(await providerStats.json()).toEqual({ chart: 1, compact: 1, full: 1 });
+  expect(await providerStats.json()).toEqual({ chart: 1, compact: expectedCompactCalls, full: 1 });
 
   await page.goto("/dashboard");
   await page.getByRole("row", { name: /AAPL/ }).last().press("Enter");
   await expect(page.getByText("Full AI reasoning · cached")).toBeVisible();
-  expect(await (await page.request.get("http://127.0.0.1:3199/stats")).json()).toEqual({ chart: 1, compact: 1, full: 1 });
+  expect(await (await page.request.get("http://127.0.0.1:3199/stats")).json()).toEqual({
+    chart: 1,
+    compact: expectedCompactCalls,
+    full: 1,
+  });
 
   await page.goto("/settings");
   await expect(page.getByText("Gemini 2.5 Pro only", { exact: true })).toBeVisible();

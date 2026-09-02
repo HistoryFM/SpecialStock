@@ -147,7 +147,7 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     const png = await readChartArtifact(loaded.artifact.storageReference, loaded.artifact.imageHash);
     const result = await createAnalysisModelProvider().analyze({
       frozen: loaded.artifact.frozenInput as ChartAnalysisInput,
-      png, model: run.requestedModel, phase: "full", maxAttempts: 2,
+      png, model: run.requestedModel, phase: "full", usageClass: "full_analysis", maxAttempts: 2,
       lockedSignal: {
         observedPrice: loaded.analysis.observedPrice === null ? null : Number(loaded.analysis.observedPrice),
         verdict: loaded.analysis.verdict,
