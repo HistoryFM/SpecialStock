@@ -7,6 +7,7 @@ import { requireAuthorizedUser } from "@/auth/require-user";
 import { isDemoMode } from "@/config/env";
 import { checkDatabaseHealth, getDatabase } from "@/db/client";
 import { analyses, appSettings, chartArtifacts, modelRuns, scanSlots } from "@/db/schema";
+import { maybeRunRetention } from "@/history/retention";
 import { getModelDefinition } from "@/models/catalog";
 
 export type SymbolDashboardItem = {
@@ -42,6 +43,7 @@ export type SymbolDashboardItem = {
 
 export async function getDashboardData() {
   await requireAuthorizedUser();
+  await maybeRunRetention();
   const database = await getDatabase();
   await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
   const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));

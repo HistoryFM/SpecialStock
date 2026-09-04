@@ -97,6 +97,9 @@ export default async function SymbolPage({
   }
 
   const selected = data.latest;
+  const chartInterval = selected.artifact && ["1m", "5m", "10m"].includes(String(selected.artifact.frozenInput.interval))
+    ? String(selected.artifact.frozenInput.interval)
+    : "5m";
   const snapshotPrice = selected.analysis.observedPrice ? Number(selected.analysis.observedPrice) : null;
   const modelName = selected.run.actualModel ?? selected.run.requestedModel;
   const isHistoricalSelection = Boolean(selectedAnalysisId);
@@ -211,6 +214,7 @@ export default async function SymbolPage({
               <div><dt>Input hash</dt><dd><code>{selected.artifact.inputHash}</code></dd></div>
               <div><dt>Image hash</dt><dd><code>{selected.artifact.imageHash}</code></dd></div>
               <div><dt>Renderer</dt><dd>{selected.artifact.rendererVersion}</dd></div>
+              <div><dt>Interval</dt><dd>{chartInterval}</dd></div>
               <div><dt>Prompt</dt><dd>{selected.run.promptVersion}</dd></div>
               <div><dt>Model</dt><dd>{modelName}</dd></div>
               <div><dt>Latency / cost</dt><dd>{(selected.run.latencyMs ?? 0).toLocaleString()} ms · ${Number(selected.run.costUsd ?? 0).toFixed(6)}</dd></div>
@@ -275,7 +279,7 @@ export default async function SymbolPage({
       <AnalysisRefreshControl
         currentAnalysisId={selected.analysis.id}
         initialFreshness={freshness}
-        key={selected.analysis.id}
+        key={`refresh:${selected.analysis.id}`}
         preserveSelection={isHistoricalSelection}
         symbol={symbol}
       />
@@ -292,10 +296,10 @@ export default async function SymbolPage({
         </article>
 
         <aside className="supporting-chart" aria-label="Supporting chart">
-          <div className="supporting-chart-heading"><div><p className="eyebrow">Chart-Img / TradingView · 5-minute</p><h2>Frozen chart snapshot</h2></div><span>Exact model input</span></div>
+          <div className="supporting-chart-heading"><div><p className="eyebrow">Chart-Img / TradingView · {chartInterval}</p><h2>Frozen chart snapshot</h2></div><span>Exact model input</span></div>
           {selected.artifact ? (
             <Image
-              alt={`${symbol} frozen five-minute chart with VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF`}
+              alt={`${symbol} frozen ${chartInterval} chart with VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF`}
               className="analysis-chart"
               height={selected.artifact.height}
               priority
@@ -307,7 +311,7 @@ export default async function SymbolPage({
         </aside>
       </section>
 
-      <FullAnalysisPanel initial={{
+      <FullAnalysisPanel key={`full:${selected.analysis.id}`} initial={{
         analysisId: selected.analysis.id,
         state: selected.analysis.fullAnalysisState,
         error: selected.analysis.fullError,

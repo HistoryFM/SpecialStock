@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { SymbolDashboardItem } from "@/dashboard/data";
-import { WatchlistTable } from "@/app/(protected)/dashboard/watchlist-table";
+import type { ManualScanTimeframe } from "@/analysis/types";
+import {
+  type ManualBatchRun,
+  type ManualBatchSelectionResult,
+  WatchlistTable,
+} from "@/app/(protected)/dashboard/watchlist-table";
 
 type Status = {
   due: boolean;
@@ -42,6 +47,7 @@ export function SchedulerClient({
   const router = useRouter();
   const tabId = useRef(crypto.randomUUID());
   const lastSlot = useRef<string | null>(null);
+  const pendingScheduledSlot = useRef<string | null>(null);
   const batchInFlight = useRef<string | null>(null);
   const nextBatchRetryAt = useRef(0);
   const scanRevision = useRef<string | null>(null);
@@ -77,7 +83,7 @@ export function SchedulerClient({
   }, []);
 
   const run = useCallback(
-    async (symbol: string, mode: "manual" | "scheduled", slotKey?: string, refresh = true) => {
+    async (symbol: string, mode: "manual" | "scheduled", slotKey?: string, refresh = true, timeframe: ManualScanTimeframe = "5m") => {
       if (inFlight.current.has(symbol)) return false;
       inFlight.current.add(symbol);
       setBusySymbols((current) => new Set(current).add(symbol));
@@ -85,7 +91,11 @@ export function SchedulerClient({
         const response = await fetch(`/api/scans/${encodeURIComponent(symbol)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode, ...(slotKey ? { slotKey } : {}) }),
+          body: JSON.stringify({
+            mode,
+            ...(slotKey ? { slotKey } : {}),
+            ...(mode === "manual" ? { timeframe, requestId: crypto.randomUUID() } : {}),
+          }),
         });
         const payload = (await response.json()) as { error?: string };
         if (!response.ok) throw new Error(payload.error ?? "Scan failed");
@@ -106,6 +116,39 @@ export function SchedulerClient({
     },
     [router],
   );
+
+  const runManualBatch = useCallback(async (
+    runs: ManualBatchRun[],
+  ): Promise<ManualBatchSelectionResult | null> => {
+    const requestId = crypto.randomUUID();
+    const symbols = runs.map(({ symbol }) => symbol);
+    setBatchBusySymbols(new Set(symbols));
+    try {
+      const response = await fetch("/api/scans/manual-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runs, requestId }),
+      });
+      const payload = (await response.json()) as ManualBatchSelectionResult & {
+        error?: string;
+        counts?: { completed: number; reused: number; alreadyRunning: number; failed: number };
+      };
+      if (!response.ok || !payload.counts || !payload.results) {
+        throw new Error(payload.error ?? "Manual batch failed.");
+      }
+      const completed = payload.counts.completed + payload.counts.reused;
+      setMessage(
+        `Manual batch settled · ${completed} completed${payload.counts.alreadyRunning ? ` · ${payload.counts.alreadyRunning} already running` : ""}${payload.counts.failed ? ` · ${payload.counts.failed} failed` : ""}.`,
+      );
+      router.refresh();
+      return payload;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Manual batch failed.");
+      return null;
+    } finally {
+      setBatchBusySymbols(new Set());
+    }
+  }, [router]);
 
   const runScheduledBatch = useCallback(async (symbols: string[], slotKey: string) => {
     if (batchInFlight.current) {
@@ -157,14 +200,26 @@ export function SchedulerClient({
             };
             results?: Array<{ symbol: string; outcome: string }>;
           };
+          if (response.status === 409 && pendingScheduledSlot.current === slotKey) {
+            pendingScheduledSlot.current = null;
+            nextBatchRetryAt.current = 0;
+            setMessage("The pending automatic slot expired; the scheduler will use the latest five-minute slot.");
+            return false;
+          }
           if (!response.ok || !payload.counts) {
             throw new Error(payload.error ?? "Scheduled batch failed.");
           }
-          lastSlot.current = slotKey;
-          nextBatchRetryAt.current = 0;
           const successful = payload.counts.completed + payload.counts.alreadyCompleted;
           const pending = payload.counts.alreadyRunning;
           const failed = payload.counts.terminalFailed + payload.counts.failed;
+          if (pending) {
+            pendingScheduledSlot.current = slotKey;
+            nextBatchRetryAt.current = Date.now() + 10_000;
+          } else {
+            pendingScheduledSlot.current = null;
+            lastSlot.current = slotKey;
+            nextBatchRetryAt.current = 0;
+          }
           const durationMs = Math.round(performance.now() - started);
           const outcomes = payload.results?.map((result) => `${result.symbol}:${result.outcome}`).join(",") ?? "unavailable";
           span.setAttributes({
@@ -194,7 +249,7 @@ export function SchedulerClient({
             `Scheduled batch settled · ${successful} completed${pending ? ` · ${pending} already running` : ""}${failed ? ` · ${failed} failed` : ""}.`,
           );
           router.refresh();
-          return true;
+          return pending === 0;
         } catch (error) {
           const durationMs = Math.round(performance.now() - started);
           const errorType = error instanceof Error ? error.constructor.name : "UnknownError";
@@ -297,8 +352,9 @@ export function SchedulerClient({
           body: JSON.stringify({ tabId: tabId.current, isLeader: leader }),
         });
         if (!heartbeatResponse.ok) throw new Error(`Scheduler heartbeat returned HTTP ${heartbeatResponse.status}.`);
+        const slotToRun = pendingScheduledSlot.current ?? (status.due ? status.slotKey : null);
         if (
-          leader && status.due && status.slotKey && lastSlot.current !== status.slotKey &&
+          leader && slotToRun && lastSlot.current !== slotToRun &&
           Date.now() >= nextBatchRetryAt.current
         ) {
           leadershipHeartbeat = window.setInterval(
@@ -306,7 +362,7 @@ export function SchedulerClient({
             Math.floor(LEASE_MS / 3),
           );
           if (acquireLeadership()) {
-            await runScheduledBatch(status.automaticSymbols, status.slotKey);
+            await runScheduledBatch(status.automaticSymbols, slotToRun);
           }
         }
       } catch (error) {
@@ -452,7 +508,8 @@ export function SchedulerClient({
         items={items}
         busySymbols={allBusySymbols}
         onAutomaticScanChange={setAutomaticScanning}
-        onRun={(symbol) => void run(symbol, "manual")}
+        onRun={(symbol, timeframe) => void run(symbol, "manual", undefined, true, timeframe)}
+        onRunSelected={runManualBatch}
       />
     </>
   );

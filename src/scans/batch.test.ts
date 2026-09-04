@@ -24,6 +24,7 @@ vi.mock("@sentry/nextjs", () => ({
 }));
 
 vi.mock("@/scans/service", () => ({
+  ScanAlreadyRunningError: class ScanAlreadyRunningError extends Error {},
   ScanNotAvailableError: class ScanNotAvailableError extends Error {},
   runScan: mocks.runScan,
 }));
@@ -52,6 +53,7 @@ vi.mock("@/db/client", () => ({
 }));
 
 import { runScheduledBatch } from "@/scans/batch";
+import { ScanAlreadyRunningError } from "@/scans/service";
 
 describe("scheduled scan batch", () => {
   beforeEach(() => {
@@ -105,5 +107,31 @@ describe("scheduled scan batch", () => {
         "specialstock.scan.batch_outcomes": expect.stringContaining("MSFT:failed"),
       }),
     );
+  });
+
+  it("reports a manual collision as retryable without failing completed siblings", async () => {
+    mocks.runScan.mockImplementation(async ({ symbol, mode, timeframe }: { symbol: string; mode: string; timeframe?: string }) => {
+      expect(mode).toBe("scheduled");
+      expect(timeframe).toBeUndefined();
+      if (symbol === "MSFT") throw new ScanAlreadyRunningError("MSFT already has a scan in progress.");
+      return { slotId: `slot-${symbol}`, analysisId: `analysis-${symbol}`, status: "completed", reused: false };
+    });
+
+    const result = await runScheduledBatch(
+      "postclose:2026-09-01T14:00:00.000Z",
+      new Date("2026-09-01T14:05:20.000Z"),
+    );
+
+    expect(result.counts).toEqual({
+      completed: 19,
+      alreadyCompleted: 0,
+      alreadyRunning: 1,
+      terminalFailed: 0,
+      failed: 0,
+    });
+    expect(result.results.find((entry) => entry.symbol === "MSFT")).toMatchObject({
+      outcome: "already_running",
+    });
+    expect(mocks.captureException).not.toHaveBeenCalled();
   });
 });

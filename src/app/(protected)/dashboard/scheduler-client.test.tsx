@@ -68,6 +68,7 @@ describe("automatic scan scheduler", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -145,5 +146,64 @@ describe("automatic scan scheduler", () => {
       }),
     );
     expect(sentryMocks.spans.some(({ options }) => options.op === "specialstock.scheduler.batch")).toBe(true);
+  });
+
+  it("retries the same automatic slot after a manual collision and then marks it complete", async () => {
+    vi.useFakeTimers();
+    const symbols = DEFAULT_WATCHLIST.map((entry) => entry.symbol);
+    const slotKey = "postclose:2026-08-31T15:50:00.000Z";
+    let batchCalls = 0;
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request);
+      if (url === "/api/scans/status" && !init?.method) {
+        return Response.json({
+          due: true,
+          slotKey,
+          nextScanAt: "2026-08-31T16:00:10.000Z",
+          marketOpen: true,
+          automaticSymbols: symbols,
+          enabledCount: symbols.length,
+          configuredCount: symbols.length,
+          runningScans: batchCalls ? [] : [{ symbol: "MSFT", startedAt: "2026-08-31T15:55:00.000Z" }],
+          scanRevision: null,
+        });
+      }
+      if (url === "/api/scans/status" && init?.method === "POST") return Response.json({ ok: true });
+      if (url === "/api/scans/batch") {
+        expect(JSON.parse(String(init?.body))).toEqual({ slotKey });
+        batchCalls += 1;
+        return Response.json({
+          slotKey,
+          total: symbols.length,
+          counts: batchCalls === 1
+            ? { completed: 19, alreadyCompleted: 0, alreadyRunning: 1, terminalFailed: 0, failed: 0 }
+            : { completed: 1, alreadyCompleted: 19, alreadyRunning: 0, terminalFailed: 0, failed: 0 },
+          results: symbols.map((symbol) => ({
+            symbol,
+            outcome: batchCalls === 1 && symbol === "MSFT"
+              ? "already_running"
+              : batchCalls === 1 ? "completed" : symbol === "MSFT" ? "completed" : "already_completed",
+          })),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SchedulerClient
+        initialItems={symbols.map(item)}
+        database={{ engine: "PGlite", status: "connected" }}
+        budget={{ todayUsd: 0, monthUsd: 0, targetUsd: 1 }}
+        demoMode={false}
+      />,
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(batchCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(batchCalls).toBe(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(batchCalls).toBe(2);
   });
 });

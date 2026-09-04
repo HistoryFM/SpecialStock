@@ -24,6 +24,7 @@ const chart = await sharp({
 }).png().toBuffer();
 
 const compactAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
+const bearishCompactAnalysis = { p: 100, v: "bearish", c: "medium", t: 96, i: 103, q: "clear" };
 const ineligibleCompactAnalysis = { p: 100, v: "no_trade", c: "low", t: null, i: null, q: "partial" };
 const fullAnalysis = {
   setup_type: "Visible VWAP continuation",
@@ -46,6 +47,7 @@ const fullAnalysis = {
   summary: "Bullish visual thesis with high conviction.",
 };
 const providerCalls = { chart: 0, compact: 0, full: 0 };
+const chartRequests = [];
 const providerConcurrency = {
   chart: { active: 0, maximum: 0 },
   compact: { active: 0, maximum: 0 },
@@ -71,9 +73,17 @@ const mockServer = createServer(async (request, response) => {
   for await (const chunk of request) chunks.push(chunk);
   const requestBytes = Buffer.concat(chunks);
   if (request.url === "/chart" && request.method === "POST") {
+    const requestBody = JSON.parse(requestBytes.toString("utf8"));
     providerCalls.chart += 1;
+    chartRequests.push({ symbol: requestBody.symbol, interval: requestBody.interval });
     beginProviderRequest("chart");
     await providerDelay();
+    if (requestBody.symbol === "NASDAQ:AMZN") {
+      response.writeHead(422, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Synthetic per-symbol chart failure." }));
+      endProviderRequest("chart");
+      return;
+    }
     response.writeHead(200, { "Content-Type": "image/png" });
     response.end(chart);
     endProviderRequest("chart");
@@ -103,7 +113,9 @@ const mockServer = createServer(async (request, response) => {
       choices: [{
         message: { content: retryableCompactFailure ? null : JSON.stringify(
           phase === "compact"
-            ? promptText.includes("NASDAQ:MSFT") ? ineligibleCompactAnalysis : compactAnalysis
+            ? promptText.includes("NASDAQ:MSFT")
+              ? ineligibleCompactAnalysis
+              : promptText.includes("NASDAQ:NVDA") ? bearishCompactAnalysis : compactAnalysis
             : fullAnalysis,
         ) },
         finish_reason: "stop",
@@ -122,7 +134,7 @@ const mockServer = createServer(async (request, response) => {
   }
   if (request.url === "/diagnostics" && request.method === "GET") {
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ calls: providerCalls, concurrency: providerConcurrency }));
+    response.end(JSON.stringify({ calls: providerCalls, concurrency: providerConcurrency, chartRequests }));
     return;
   }
   response.writeHead(404);

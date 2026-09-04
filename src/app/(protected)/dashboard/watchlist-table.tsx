@@ -1,19 +1,43 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import type { ManualScanTimeframe } from "@/analysis/types";
 import type { SymbolDashboardItem } from "@/dashboard/data";
 
-type Filter = "all" | "directional" | "no_trade" | "attention";
-type SortKey = "configured" | "symbol" | "verdict" | "automaticScanEnabled" | "price" | "sourceAt" | "scannedAt";
+export type WatchlistFilter = "all" | "bullish" | "bearish";
+type SortKey = "configured" | "symbol" | "verdict" | "conviction" | "automaticScanEnabled" | "price" | "sourceAt" | "scannedAt";
 
-const filters: Array<{ value: Filter; label: string }> = [
+const filters: Array<{ value: WatchlistFilter; label: string }> = [
   { value: "all", label: "All" },
-  { value: "directional", label: "Directional" },
-  { value: "no_trade", label: "No trade" },
-  { value: "attention", label: "Needs attention" },
+  { value: "bullish", label: "Bullish" },
+  { value: "bearish", label: "Bearish" },
 ];
+const MANUAL_TIMEFRAMES_KEY = "specialstock-manual-timeframes-v1";
+const convictionRank = { high: 3, medium: 2, low: 1 } as const;
+
+export type ManualBatchRun = { symbol: string; timeframe: ManualScanTimeframe };
+export type ManualBatchSelectionResult = {
+  results: Array<ManualBatchRun & { outcome: "completed" | "reused" | "already_running" | "failed" }>;
+};
+
+function isManualTimeframe(value: unknown): value is ManualScanTimeframe {
+  return value === "1m" || value === "5m" || value === "10m";
+}
+
+export function parseManualTimeframes(value: string | null): Record<string, ManualScanTimeframe> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([symbol, timeframe]) => Boolean(symbol) && isManualTimeframe(timeframe)),
+    );
+  } catch {
+    return {};
+  }
+}
 
 function price(value: number | null): string {
   return value === null ? "—" : `$${value.toFixed(2)}`;
@@ -50,29 +74,39 @@ export function needsAttention(item: SymbolDashboardItem): boolean {
 
 export function filterAndSortItems(
   items: SymbolDashboardItem[],
-  filter: Filter,
+  filter: WatchlistFilter,
   sortKey: SortKey,
   direction: "asc" | "desc",
 ): SymbolDashboardItem[] {
   const filtered = items.filter((item) => {
-    if (filter === "directional") return item.verdict === "bullish" || item.verdict === "bearish";
-    if (filter === "no_trade") return item.verdict === "no_trade";
-    if (filter === "attention") return needsAttention(item);
+    if (filter === "bullish") return item.verdict === "bullish";
+    if (filter === "bearish") return item.verdict === "bearish";
     return true;
   });
   if (sortKey === "configured") return filtered;
 
-  return [...filtered].sort((a, b) => {
+  return filtered.map((item, index) => ({ item, index })).sort((aEntry, bEntry) => {
+    const a = aEntry.item;
+    const b = bEntry.item;
+    if (sortKey === "conviction") {
+      if (a.conviction === null && b.conviction === null) return aEntry.index - bEntry.index;
+      if (a.conviction === null) return 1;
+      if (b.conviction === null) return -1;
+      const left = convictionRank[a.conviction];
+      const right = convictionRank[b.conviction];
+      if (left !== right) return direction === "desc" ? right - left : left - right;
+      return aEntry.index - bEntry.index;
+    }
     const left = sortKey === "price" ? a.latestPrice : a[sortKey];
     const right = sortKey === "price" ? b.latestPrice : b[sortKey];
-    if (left === null && right === null) return 0;
+    if (left === null && right === null) return aEntry.index - bEntry.index;
     if (left === null) return 1;
     if (right === null) return -1;
     const comparison = typeof left === "number"
       ? left - Number(right)
       : String(left).localeCompare(String(right));
-    return direction === "asc" ? comparison : -comparison;
-  });
+    return comparison === 0 ? aEntry.index - bEntry.index : direction === "asc" ? comparison : -comparison;
+  }).map(({ item }) => item);
 }
 
 function SortButton({
@@ -139,17 +173,20 @@ export function WatchlistTable({
   items,
   busySymbols,
   onRun,
+  onRunSelected,
   onAutomaticScanChange,
 }: {
   items: SymbolDashboardItem[];
   busySymbols: Set<string>;
-  onRun: (symbol: string) => void;
+  onRun: (symbol: string, timeframe: ManualScanTimeframe) => void;
+  onRunSelected: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
   onAutomaticScanChange: (symbols: string[], enabled: boolean) => Promise<boolean>;
 }) {
   const router = useRouter();
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<WatchlistFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("configured");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
+  const [timeframes, setTimeframes] = useState<Record<string, ManualScanTimeframe>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const visible = useMemo(
@@ -161,11 +198,17 @@ export function WatchlistTable({
   const activeSelected = new Set([...selected].filter((symbol) => configuredSymbols.has(symbol)));
   const allVisibleSelected = visibleSymbols.length > 0 && visibleSymbols.every((symbol) => selected.has(symbol));
 
+  useEffect(() => {
+    const saved = parseManualTimeframes(localStorage.getItem(MANUAL_TIMEFRAMES_KEY));
+    const timer = window.setTimeout(() => setTimeframes(saved), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const sort = (next: SortKey) => {
     if (next === sortKey) setDirection((current) => (current === "asc" ? "desc" : "asc"));
     else {
       setSortKey(next);
-      setDirection("asc");
+      setDirection(next === "conviction" ? "desc" : "asc");
     }
   };
 
@@ -198,6 +241,29 @@ export function WatchlistTable({
     if (updated) setSelected(new Set());
   };
 
+  const runSelected = async () => {
+    const runs = items
+      .filter((item) => activeSelected.has(item.symbol))
+      .map((item) => ({ symbol: item.symbol, timeframe: timeframes[item.symbol] ?? "5m" as const }));
+    if (!runs.length) return;
+    setBulkPending(true);
+    const result = await onRunSelected(runs);
+    setBulkPending(false);
+    if (!result) return;
+    const retrySymbols = new Set(
+      result.results.filter(({ outcome }) => outcome === "failed" || outcome === "already_running").map(({ symbol }) => symbol),
+    );
+    setSelected(retrySymbols);
+  };
+
+  const updateTimeframe = (symbol: string, value: ManualScanTimeframe) => {
+    setTimeframes((current) => {
+      const next = { ...current, [symbol]: value };
+      localStorage.setItem(MANUAL_TIMEFRAMES_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   return (
     <section className="watchlist-panel" aria-labelledby="watchlist-title">
       <div className="watchlist-toolbar">
@@ -205,26 +271,31 @@ export function WatchlistTable({
           <h2 id="watchlist-title">Watchlist</h2>
           <span>{items.length} configured symbols</span>
         </div>
-        <div className="filter-group" aria-label="Filter watchlist">
-          {filters.map((option) => (
-            <button
-              aria-pressed={filter === option.value}
-              className={filter === option.value ? "active" : ""}
-              key={option.value}
-              onClick={() => setFilter(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
+        <div className="watchlist-controls">
+          <div className="filter-group" aria-label="Filter watchlist">
+            {filters.map((option) => (
+              <button
+                aria-pressed={filter === option.value}
+                className={filter === option.value ? "active" : ""}
+                key={option.value}
+                onClick={() => setFilter(option.value)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {activeSelected.size ? (
         <div className="bulk-auto-toolbar" aria-live="polite">
           <strong>{activeSelected.size} selected</strong>
-          <span>Change automatic five-minute scanning</span>
+          <span>Manual runs use each selected stock&apos;s row timeframe</span>
           <div>
+            <button className="primary-button compact" disabled={bulkPending} onClick={() => void runSelected()} type="button">
+              {bulkPending ? "Working…" : "Run selected"}
+            </button>
             <button className="secondary-button compact" disabled={bulkPending} onClick={() => void updateSelected(true)} type="button">
               Enable auto
             </button>
@@ -243,12 +314,15 @@ export function WatchlistTable({
                 <input aria-label="Select all visible stocks" checked={allVisibleSelected} onChange={toggleAllVisible} type="checkbox" />
               </th>
               <th><SortButton label="Symbol / price" value="symbol" active={sortKey === "symbol"} direction={direction} onSort={sort} /></th>
-              <th><SortButton label="Signal" value="verdict" active={sortKey === "verdict"} direction={direction} onSort={sort} /></th>
+              <th>
+                <SortButton label="Signal" value="verdict" active={sortKey === "verdict"} direction={direction} onSort={sort} />
+                <SortButton label="Conviction" value="conviction" active={sortKey === "conviction"} direction={direction} onSort={sort} />
+              </th>
               <th><SortButton label="Auto" value="automaticScanEnabled" active={sortKey === "automaticScanEnabled"} direction={direction} onSort={sort} /></th>
               <th>Visual quality</th>
               <th>Target / invalidation</th>
               <th><SortButton label="Data / last scan" value="scannedAt" active={sortKey === "scannedAt"} direction={direction} onSort={sort} /></th>
-              <th><span className="sr-only">Actions</span></th>
+              <th>Manual scan</th>
             </tr>
           </thead>
           <tbody>
@@ -259,6 +333,7 @@ export function WatchlistTable({
               const running = busySymbols.has(item.symbol) || item.attemptIsRunning;
               const runState = runStateCopy(item, running);
               const conviction = convictionCopy(item.conviction);
+              const timeframe = timeframes[item.symbol] ?? "5m";
               return (
                 <tr
                   aria-label={`Open ${item.symbol} analysis`}
@@ -316,17 +391,34 @@ export function WatchlistTable({
                     </small>
                   </td>
                   <td className="action-cell">
-                    <button
-                      className="secondary-button compact"
-                      disabled={running}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onRun(item.symbol);
-                      }}
-                      type="button"
-                    >
-                      {running ? "Running…" : "Run now"}
-                    </button>
+                    <div className="manual-run-controls">
+                      <label>
+                        <span className="sr-only">Manual timeframe for {item.symbol}</span>
+                        <select
+                          aria-label={`Manual timeframe for ${item.symbol}`}
+                          disabled={running}
+                          onChange={(event) => updateTimeframe(item.symbol, event.target.value as ManualScanTimeframe)}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                          value={timeframe}
+                        >
+                          <option value="1m">1 min</option>
+                          <option value="5m">5 min</option>
+                          <option value="10m">10 min</option>
+                        </select>
+                      </label>
+                      <button
+                        className="secondary-button compact"
+                        disabled={running}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRun(item.symbol, timeframe);
+                        }}
+                        type="button"
+                      >
+                        {running ? "Running…" : "Run now"}
+                      </button>
+                    </div>
                     <details className="mobile-row-details" onClick={(event) => event.stopPropagation()}>
                       <summary>More</summary>
                       <dl>

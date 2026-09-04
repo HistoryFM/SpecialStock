@@ -2,7 +2,7 @@ import "server-only";
 
 import sharp from "sharp";
 
-import type { ChartAnalysisInput } from "@/analysis/types";
+import type { ChartAnalysisInput, ChartTimeframe } from "@/analysis/types";
 import { getServerEnv } from "@/config/env";
 import { hashObject, sha256 } from "@/lib/hash";
 import type { WatchlistEntry } from "@/settings/types";
@@ -42,13 +42,14 @@ export type CapturedChart = {
 
 function requestBody(input: {
   chartSymbol: string;
+  interval: ChartTimeframe;
   range: { from: string; to: string };
   width: number;
   height: number;
 }) {
   return {
     symbol: input.chartSymbol,
-    interval: "5m",
+    interval: input.interval,
     width: input.width,
     height: input.height,
     style: "candle",
@@ -155,6 +156,7 @@ export class ChartImgProvider {
     capturedAt: Date;
     range: { from: Date; to: Date };
     barStatus: "open" | "closed";
+    interval: ChartTimeframe;
   }): Promise<CapturedChart> {
     const env = getServerEnv();
     if (!env.CHART_IMG_API_KEY) {
@@ -166,11 +168,11 @@ export class ChartImgProvider {
       to: input.range.to.toISOString(),
     };
     const metadataWithoutHash = {
-      version: "chart-img-input-v1" as const,
+      version: "chart-img-input-v2" as const,
       symbol: input.entry.symbol,
       chartSymbol,
       capturedAt: input.capturedAt.toISOString(),
-      interval: "5m" as const,
+      interval: input.interval,
       session: "regular" as const,
       barStatus: input.barStatus,
       range,
@@ -184,6 +186,7 @@ export class ChartImgProvider {
     };
     const body = requestBody({
       chartSymbol,
+      interval: frozen.interval,
       range,
       width: frozen.width,
       height: frozen.height,

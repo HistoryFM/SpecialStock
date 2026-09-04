@@ -19,6 +19,7 @@ describe("ChartImgProvider", () => {
   it("builds exactly the approved five-minute chart with eight studies", () => {
     const body = chartImgRequestBodyForTest({
       chartSymbol: "NASDAQ:AAPL",
+      interval: "5m",
       range: { from: "2026-08-28T13:30:00.000Z", to: "2026-08-28T20:00:00.000Z" },
       width: 1600,
       height: 1920,
@@ -76,10 +77,13 @@ describe("ChartImgProvider", () => {
         to: new Date("2026-08-28T20:00:00.000Z"),
       },
       barStatus: "closed",
+      interval: "10m",
     });
     expect(new Headers(headers).get("x-api-key")).toBe("chart-img-test-key");
     expect(body).not.toContain("chart-img-test-key");
     expect(result.input.chartSymbol).toBe("NASDAQ:AAPL");
+    expect(result.input.interval).toBe("10m");
+    expect(JSON.parse(body)).toMatchObject({ interval: "10m" });
     expect(result.png.equals(png)).toBe(true);
   });
 
@@ -94,6 +98,7 @@ describe("ChartImgProvider", () => {
         to: new Date("2026-08-28T20:00:00.000Z"),
       },
       barStatus: "closed",
+      interval: "5m",
     })).rejects.toMatchObject({ code: "quota_exceeded" } satisfies Partial<ChartImgError>);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
@@ -114,6 +119,7 @@ describe("ChartImgProvider", () => {
         to: new Date("2026-08-28T20:00:00.000Z"),
       },
       barStatus: "closed",
+      interval: "5m",
     })).resolves.toMatchObject({ input: { chartSymbol: "NASDAQ:AAPL" } });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

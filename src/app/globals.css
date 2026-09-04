@@ -1249,6 +1249,12 @@ h1 {
   gap: 0.25rem;
 }
 
+.watchlist-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
 .filter-group button,
 .chart-toolbar button,
 .studies-menu summary,
@@ -1300,10 +1306,10 @@ h1 {
 .watchlist-table th:nth-child(2) { width: 10%; }
 .watchlist-table th:nth-child(3) { width: 19%; }
 .watchlist-table th:nth-child(4) { width: 8%; }
-.watchlist-table th:nth-child(5) { width: 25%; }
+.watchlist-table th:nth-child(5) { width: 22%; }
 .watchlist-table th:nth-child(6) { width: 12%; }
 .watchlist-table th:nth-child(7) { width: 14%; }
-.watchlist-table th:nth-child(8) { width: 8.5%; }
+.watchlist-table th:nth-child(8) { width: 11.5%; }
 
 .watchlist-table thead {
   position: sticky;
@@ -1433,6 +1439,23 @@ h1 {
 .watchlist-table .run-state.running { color: var(--accent-strong); }
 .watchlist-table .run-state.failed { color: var(--warning); }
 .watchlist-table .run-state.empty { color: var(--muted); }
+
+.manual-run-controls {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.manual-run-controls select {
+  width: 100%;
+  min-height: 1.8rem;
+  border: 1px solid var(--border-bright);
+  border-radius: 0.3rem;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.manual-run-controls .secondary-button { width: 100%; }
 
 .auto-state {
   display: inline-flex;
@@ -1857,16 +1880,17 @@ h1 {
   .workspace-status-strip { margin-inline: -1vw; }
   .workspace-status-strip > .status-message { min-width: 12rem; }
   .watchlist-toolbar { align-items: flex-start; flex-direction: column; padding-block: 0.6rem; }
+  .watchlist-controls { width: 100%; flex-wrap: wrap; }
   .filter-group { width: 100%; overflow-x: auto; }
   .watchlist-table th:nth-child(5), .watchlist-table td:nth-child(5),
   .watchlist-table th:nth-child(6), .watchlist-table td:nth-child(6),
   .watchlist-table th:nth-child(7), .watchlist-table td:nth-child(7) { display: none; }
   .watchlist-table th:nth-child(1) { width: 8%; }
-  .watchlist-table th:nth-child(2) { width: 24%; }
+  .watchlist-table th:nth-child(2) { width: 22%; }
   .watchlist-table th:nth-child(3) { width: 29%; }
   .watchlist-table th:nth-child(4) { width: 17%; }
-  .watchlist-table th:nth-child(8) { width: 22%; }
-  .watchlist-table td { height: 4.25rem; padding-inline: 0.45rem; }
+  .watchlist-table th:nth-child(8) { width: 24%; }
+  .watchlist-table td { height: 5rem; padding-inline: 0.45rem; }
   .bulk-auto-toolbar { align-items: flex-start; flex-wrap: wrap; }
   .bulk-auto-toolbar > div { width: 100%; margin-left: 0; }
   .action-cell .secondary-button { width: 100%; }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MarketDataProvider, MarketSession } from "@/market-data/provider";
-import { chartRangeForTest, resolveChartCaptureWindowForTest } from "@/scans/service";
+import { chartRangeForTest, resolveChartCaptureWindowForTest, scanTimeframeForTest } from "@/scans/service";
 
 describe("Chart-Img capture range", () => {
   const session = {
@@ -10,6 +10,11 @@ describe("Chart-Img capture range", () => {
     closesAt: new Date("2026-08-28T20:00:00.000Z"),
     isRegularSession: true,
   };
+
+  it("forces scheduled scans to 5m while preserving manual choices", () => {
+    expect(scanTimeframeForTest("scheduled", "10m")).toBe("5m");
+    expect(scanTimeframeForTest("manual", "1m")).toBe("1m");
+  });
 
   it("uses only the current regular session during market hours", () => {
     expect(chartRangeForTest(new Date("2026-08-28T17:12:00.000Z"), session)).toEqual({
@@ -36,7 +41,7 @@ describe("Chart-Img capture range", () => {
     });
   });
 
-  it("uses the previous actual session before the first five-minute bar", async () => {
+  it("uses the current session immediately after the open even before three candles exist", async () => {
     const previous: MarketSession = {
       date: "2026-08-27",
       opensAt: new Date("2026-08-27T13:30:00.000Z"),
@@ -54,8 +59,8 @@ describe("Chart-Img capture range", () => {
       mode: "manual",
       marketProvider,
     })).resolves.toEqual({
-      range: { from: previous.opensAt, to: previous.closesAt },
-      barStatus: "closed",
+      range: { from: session.opensAt, to: new Date("2026-08-28T13:32:00.000Z") },
+      barStatus: "open",
     });
   });
 

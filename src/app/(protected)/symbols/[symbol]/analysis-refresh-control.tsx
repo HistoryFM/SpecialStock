@@ -88,7 +88,7 @@ export function AnalysisRefreshControl({
       const response = await fetch(`/api/scans/${encodeURIComponent(symbol)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "manual" }),
+        body: JSON.stringify({ mode: "manual", timeframe: "5m", requestId: crypto.randomUUID() }),
       });
       const payload = (await response.json()) as ScanStatus & { error?: string };
       if (response.status === 409) {

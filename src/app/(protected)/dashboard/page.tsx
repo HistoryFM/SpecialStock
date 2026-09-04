@@ -6,7 +6,8 @@ import { getEligibleSignalHistory } from "@/history/data";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [data, history] = await Promise.all([getDashboardData(), getEligibleSignalHistory()]);
+  const data = await getDashboardData();
+  const history = await getEligibleSignalHistory();
 
   return (
     <main className="page-shell">

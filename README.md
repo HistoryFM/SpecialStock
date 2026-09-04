@@ -11,10 +11,11 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - One-to-20-symbol, exchange-aware watchlist supporting NASDAQ, NYSE, and AMEX symbols.
 - Fresh and untouched legacy installations seed the approved 20-stock universe with automatic scanning enabled for every stock.
 - Prominent bullish, bearish, and no-trade signals based on Gemini's latest valid verdict.
-- Manual **Run now** analysis for every stock, regardless of market state or automatic-scan setting.
+- Per-stock manual **Run now** analysis at a browser-remembered 1, 5, or 10 minutes, defaulting to 5 minutes regardless of market state or automatic-scan setting.
+- Concurrent mixed-timeframe **Run selected** manual analysis for up to 20 selected watchlist stocks.
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
-- Compact-signal history across configured and removed stocks, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
+- A rolling 24-hour eligible-signal dashboard history with bullish/bearish filters and conviction ordering, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
 - Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
 
@@ -25,7 +26,7 @@ Automatic scanning requires an authenticated dashboard tab to remain open. It is
 Every routine or manual scan follows this pipeline:
 
 1. The server requests one Chart-Img TradingView chart for `EXCHANGE:SYMBOL`.
-2. Chart-Img returns a 1600×1920 PNG covering one regular US market session at a five-minute interval.
+2. Chart-Img returns a 1600×1920 PNG covering one regular US market session. Automatic scans are always five-minute; manual scans use the selected one-, five-, or ten-minute interval.
 3. The server validates the response, hashes the exact bytes, and stores the PNG under `.data/chart-artifacts/`.
 4. Gemini receives that exact stored PNG plus only the symbol, interval, capture time, and completed/incomplete-bar metadata.
 5. Gemini returns only observed price, verdict, conviction, target, invalidation, and visual quality. The server validates and stores that compact signal with the chart hash and audit metadata.
@@ -33,7 +34,7 @@ Every routine or manual scan follows this pipeline:
 
 Opening a medium/high bullish or bearish result claims full-analysis work once. Gemini receives the already-stored, hash-verified PNG again—without a new Chart-Img request—and returns narrative/evidence fields only. It cannot change the compact signal's locked verdict, conviction, observed price, target, or invalidation. Low-conviction and no-trade results remain compact and still expose the frozen chart and audit data.
 
-Gemini is explicitly instructed not to reconstruct or calculate technical indicators. If the chart or labels are unclear, the preferred verdict is `no_trade` with readability flags.
+Gemini is explicitly instructed not to reconstruct or calculate technical indicators. The compact prompt requires a structural audit of the last three available candles: real-body velocity and wick rejection, directly matched volume behavior, and acceptance or rejection at VWAP/Keltner lines. A directional result requires those visible structures to agree. If evidence conflicts or chart labels are unclear, the preferred verdict is `no_trade`.
 
 ### Locked chart layout
 
@@ -184,7 +185,7 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 
 ### Manual analysis
 
-Use **Run now** on any watchlist row. Manual scans create a compact signal, work with automatic scanning on or off and while the market is open or closed, and are rejected only when that same symbol already has a scan running.
+Every watchlist row has its own **1 min**, **5 min**, or **10 min** manual timeframe, with **5 min** as the default. The browser remembers each symbol's manual-only choice. Use **Run now** for one row, or select multiple rows and choose **Run selected** to launch their independently selected timeframes together in one server batch. Each available symbol runs concurrently, and one busy or failed symbol does not cancel successful siblings. Manual scans work with automatic scanning on or off and use the current regular session from the opening bell, including an incomplete latest candle when applicable.
 
 Manual scans intentionally do not create alerts, replace the active thesis, or create evaluation outcomes.
 
@@ -195,10 +196,12 @@ Select one or more watchlist rows, then choose **Enable auto** or **Disable auto
 The scheduler:
 
 - Runs only enabled stocks.
+- Always requests five-minute charts regardless of any remembered per-stock manual timeframe.
 - Runs once shortly after each completed five-minute bar from 9:35 through 3:55 Eastern; it does not launch a 4:00 PM scan.
 - Sends one authenticated batch request per due slot; the server launches all enabled symbols together (up to 20) and the dashboard refreshes once after settlement.
 - Uses browser leader election and database idempotency to avoid duplicate scans across tabs.
 - Carries one server-validated slot through the full symbol batch so slow symbols cannot drift into the next bar.
+- Retries an idempotent scheduled slot when a manual run temporarily occupies the same symbol, without overlapping scans or repeating completed siblings.
 - Retains the previous valid analysis if a new scan fails and does not cancel successful siblings when another symbol fails.
 
 Keep the dashboard open, the laptop awake, and the internet connection active.
@@ -211,7 +214,7 @@ visible for cost monitoring.
 
 ### Signal meaning
 
-The watchlist signal is Gemini's latest valid compact visual verdict. It is not a locally calculated crossover or trading signal. The dashboard's cursor-paginated history includes eligible manual signals and removed stocks. Stale or retained results are labeled so a failed new scan cannot masquerade as fresh analysis.
+The watchlist signal is Gemini's latest valid compact visual verdict. It is not a locally calculated crossover or trading signal. Watchlist filters are **All**, **Bullish**, and **Bearish**; optional conviction sorting orders High→Medium→Low with missing values last while preserving configured order for ties. The dashboard's cursor-paginated history includes eligible manual and automatic signals from the rolling last 24 hours, supports the same direction filters, and can order conviction High→Low. Stale or retained results are labeled so a failed new scan cannot masquerade as fresh analysis.
 
 ## Local data and backup
 
@@ -220,6 +223,8 @@ Local state is stored in:
 - `.env.local`: credentials, Auth.js secret, and password hash.
 - `.data/specialstock/`: embedded database.
 - `.data/chart-artifacts/`: exact PNGs used for analyses.
+
+Complete scan graphs in completed, failed, or skipped state are permanently removed after seven rolling days. This cascades through their analysis, review, thesis, outcome, notification, model-run, and chart-artifact records. Shared content-addressed PNGs are retained while any retained chart record still references them, and spend ledgers/reservations remain available for accurate cost reporting.
 
 To back up the app:
 
@@ -294,5 +299,5 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 - Automatic scans stop when the dashboard is closed, the laptop sleeps, or connectivity is lost.
 - Regular US market sessions only; automatic scans run from 9:35 through 3:55 Eastern and extended hours are out of scope.
 - The watchlist supports at most 20 stocks and remains single-user.
-- Chart images and history have no automatic retention deletion.
+- Dashboard history intentionally shows only the rolling last 24 hours; permanent scan-graph retention is seven rolling days.
 - This tool provides visual technical-analysis assistance, not investment advice, order execution, or guarantees of outcome.

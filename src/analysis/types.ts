@@ -58,12 +58,15 @@ export const fullAnalysisResultSchema = z.object({
 export type CompactAnalysisResult = z.infer<typeof compactAnalysisResultSchema>;
 export type FullAnalysisResult = z.infer<typeof fullAnalysisResultSchema>;
 
+export type ManualScanTimeframe = "1m" | "5m" | "10m";
+export type ChartTimeframe = ManualScanTimeframe;
+
 export type ChartAnalysisInput = {
-  version: "chart-img-input-v1";
+  version: "chart-img-input-v1" | "chart-img-input-v2";
   symbol: string;
   chartSymbol: string;
   capturedAt: string;
-  interval: "5m";
+  interval: ChartTimeframe;
   session: "regular";
   barStatus: "open" | "closed";
   range: { from: string; to: string };

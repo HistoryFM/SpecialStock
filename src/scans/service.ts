@@ -8,7 +8,7 @@ import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
 import { AnalysisModelError } from "@/analysis/provider";
-import type { ChartAnalysisInput, CompactModelRunResult, ModelAttemptResult } from "@/analysis/types";
+import type { ChartAnalysisInput, CompactModelRunResult, ManualScanTimeframe, ModelAttemptResult } from "@/analysis/types";
 import { isFullAnalysisEligible } from "@/analysis/validate";
 import { persistChartArtifact, readChartArtifact } from "@/chart/artifact-storage";
 import { ChartImgProvider } from "@/chart/chart-img-provider";
@@ -42,6 +42,10 @@ import type { WatchlistEntry } from "@/settings/types";
 export class ScanNotAvailableError extends Error {}
 export class UnknownWatchlistSymbolError extends Error {}
 export class AutomaticScansDisabledError extends Error {}
+
+export function scanTimeframeForTest(mode: ScanMode, requested?: ManualScanTimeframe): ManualScanTimeframe {
+  return mode === "scheduled" ? "5m" : requested ?? "5m";
+}
 export class ScanAlreadyRunningError extends Error {}
 
 function chartRange(
@@ -76,10 +80,9 @@ async function resolveChartCaptureWindow(input: {
       barStatus: "closed" as const,
     };
   }
-  const fiveMinutesAfterOpen = new Date(input.session.opensAt.getTime() + 5 * 60_000);
   const usableCurrentSession =
     input.session.isRegularSession &&
-    input.now >= fiveMinutesAfterOpen &&
+    input.now >= input.session.opensAt &&
     input.now <= input.session.closesAt;
   const completedCurrentSession =
     input.session.isRegularSession && input.now > input.session.closesAt;
@@ -104,6 +107,8 @@ async function createOrClaimSlot(input: {
   now: Date;
   session: { opensAt: Date; closesAt: Date; isRegularSession: boolean };
   requestedSlotKey?: string;
+  manualRequestId?: string;
+  timeframe: ManualScanTimeframe;
 }) {
   const database = await getDatabase();
   const canonical = input.mode === "scheduled"
@@ -119,7 +124,7 @@ async function createOrClaimSlot(input: {
   const idempotencyKey =
     input.mode === "scheduled"
       ? `${input.entry.symbol}:${canonical!.idempotencyPart}`
-      : `${input.entry.symbol}:manual:${input.now.toISOString().slice(0, 16)}`;
+      : `${input.entry.symbol}:manual:${input.timeframe}:${input.manualRequestId ?? input.now.toISOString()}`;
   const leaseToken = randomUUID();
   const leaseExpiresAt = new Date(input.now.getTime() + 5 * 60_000);
   const [inserted] = await database
@@ -160,7 +165,7 @@ async function createOrClaimSlot(input: {
   if (existing.status === "running" && existing.leaseExpiresAt && existing.leaseExpiresAt > input.now) {
     return { slot: existing, claimed: false, completedThrough };
   }
-  if (input.mode === "scheduled" && ["failed", "skipped"].includes(existing.status)) {
+  if (["failed", "skipped"].includes(existing.status)) {
     return { slot: existing, claimed: false, completedThrough };
   }
   const [reclaimed] = await database
@@ -412,8 +417,10 @@ export async function runScan(input: {
   mode: ScanMode;
   now?: Date;
   requestedSlotKey?: string;
-  scheduledEntry?: WatchlistEntry;
-  scheduledSession?: MarketSession;
+  resolvedEntry?: WatchlistEntry;
+  resolvedSession?: MarketSession;
+  timeframe?: ManualScanTimeframe;
+  manualRequestId?: string;
 }) {
   return Sentry.startSpan(
     {
@@ -427,11 +434,13 @@ export async function runScan(input: {
     async (span) => {
       const started = performance.now();
       const now = input.now ?? new Date();
+      const timeframe = scanTimeframeForTest(input.mode, input.timeframe);
       let stage = "initialize";
       let claimedSlotId: string | null = null;
       Sentry.logger.info("scan.started", {
         "specialstock.symbol": input.symbol,
         "specialstock.scan.mode": input.mode,
+        "specialstock.chart.interval": timeframe,
         "specialstock.scan.requested_slot": input.requestedSlotKey ?? "none",
       });
 
@@ -440,15 +449,15 @@ export async function runScan(input: {
         const database = await getDatabase();
         await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
         const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
-        const entry = input.scheduledEntry ?? settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
+        const entry = input.resolvedEntry ?? settings?.watchlist.find((candidate) => candidate.symbol === input.symbol);
         if (!entry) throw new UnknownWatchlistSymbolError(`${input.symbol} is not in the watchlist.`);
-        if (input.mode === "scheduled" && !input.scheduledEntry && !entry.automaticScanEnabled) {
+        if (input.mode === "scheduled" && !input.resolvedEntry && !entry.automaticScanEnabled) {
           throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
         }
 
         stage = "market_session";
         const marketProvider = createMarketDataProvider();
-        const session = input.scheduledSession ?? await marketProvider.getSession(now);
+        const session = input.resolvedSession ?? await marketProvider.getSession(now);
         stage = "claim_slot";
         const claim = await createOrClaimSlot({
           entry,
@@ -456,6 +465,8 @@ export async function runScan(input: {
           now,
           session,
           requestedSlotKey: input.requestedSlotKey,
+          manualRequestId: input.manualRequestId,
+          timeframe,
         });
         span.setAttributes({
           "specialstock.scan.slot_id": claim.slot.id,
@@ -490,6 +501,7 @@ export async function runScan(input: {
             attributes: {
               "specialstock.symbol": input.symbol,
               "specialstock.scan.slot_id": claim.slot.id,
+              "specialstock.chart.interval": timeframe,
             },
           },
           () => new ChartImgProvider().capture({
@@ -497,6 +509,7 @@ export async function runScan(input: {
             capturedAt: now,
             range: captureWindow.range,
             barStatus: captureWindow.barStatus,
+            interval: timeframe,
           }),
         );
 
@@ -633,6 +646,7 @@ export async function runScan(input: {
           "specialstock.analysis.evaluation_eligible": policy.includeInEvaluation,
           "specialstock.chart.input_hash": capture.input.inputHash,
           "specialstock.chart.image_hash": capture.imageHash,
+          "specialstock.chart.interval": capture.input.interval,
           "specialstock.model.requested": primary.run.requestedModel,
           "specialstock.model.actual": primary.run.actualModel ?? primary.run.requestedModel,
           "specialstock.model.provider": primary.run.actualProvider ?? "openrouter",

@@ -7,7 +7,7 @@ import { getDatabase } from "@/db/client";
 import { appSettings } from "@/db/schema";
 import { createMarketDataProvider } from "@/market-data/factory";
 import { requestedScanSlot } from "@/market-data/time";
-import { runScan, ScanNotAvailableError } from "@/scans/service";
+import { runScan, ScanAlreadyRunningError, ScanNotAvailableError } from "@/scans/service";
 
 export type ScheduledBatchOutcome =
   | "completed"
@@ -96,8 +96,8 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
                 mode: "scheduled",
                 now,
                 requestedSlotKey: slotKey,
-                scheduledEntry: entry,
-                scheduledSession: session,
+                resolvedEntry: entry,
+                resolvedSession: session,
               });
               itemSpan.setAttributes({
                 "specialstock.scan.item_status": result.status,
@@ -126,6 +126,15 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
       const results: ScheduledBatchResult[] = settled.map((result, index) => {
         const entry = entries[index]!;
         if (result.status === "rejected") {
+          if (result.reason instanceof ScanAlreadyRunningError) {
+            return {
+              symbol: entry.symbol,
+              outcome: "already_running",
+              slotId: null,
+              analysisId: null,
+              error: safeMessage(result.reason),
+            };
+          }
           Sentry.captureException(result.reason, {
             tags: {
               route: "api.scans.batch",

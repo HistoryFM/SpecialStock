@@ -20,9 +20,14 @@ export const maxDuration = 60;
 const bodySchema = z.object({
   mode: z.enum(["scheduled", "manual"]).default("scheduled"),
   slotKey: z.string().max(80).optional(),
+  timeframe: z.enum(["1m", "5m", "10m"]).optional(),
+  requestId: z.string().uuid().optional(),
 }).superRefine((value, context) => {
   if (value.mode === "manual" && value.slotKey) {
     context.addIssue({ code: "custom", message: "Manual scans cannot select a scheduled slot." });
+  }
+  if (value.mode === "manual" && (!value.timeframe || !value.requestId)) {
+    context.addIssue({ code: "custom", message: "Manual scans require a timeframe and request ID." });
   }
 });
 const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };
@@ -93,8 +98,14 @@ export async function POST(
     const { symbol: rawSymbol } = await context.params;
     const symbol = tickerSchema.parse(rawSymbol);
     const rawBody = await request.json().catch(() => ({}));
-    const { mode, slotKey } = bodySchema.parse(rawBody);
-    return Response.json(await runScan({ symbol, mode, requestedSlotKey: slotKey }));
+    const { mode, slotKey, timeframe, requestId } = bodySchema.parse(rawBody);
+    return Response.json(await runScan({
+      symbol,
+      mode,
+      requestedSlotKey: slotKey,
+      timeframe,
+      manualRequestId: requestId,
+    }));
   } catch (error) {
     if (error instanceof z.ZodError || error instanceof UnknownWatchlistSymbolError) {
       return Response.json({ error: "Invalid scan request." }, { status: 400 });

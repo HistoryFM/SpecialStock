@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import type { EligibleSignalHistoryPage } from "@/history/data";
+import type { EligibleSignalHistoryPage, SignalHistoryFilter, SignalHistorySort } from "@/history/data";
 
 function money(value: number | null) {
   return value === null ? "—" : `$${value.toFixed(2)}`;
@@ -32,14 +32,38 @@ export function SignalHistory({ initialPage }: { initialPage: EligibleSignalHist
   const [items, setItems] = useState(initialPage.items);
   const [cursor, setCursor] = useState(initialPage.nextCursor);
   const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<SignalHistoryFilter>("all");
+  const [sort, setSort] = useState<SignalHistorySort>("newest");
+
+  async function loadPage(nextFilter: SignalHistoryFilter, nextSort: SignalHistorySort, nextCursor?: string) {
+    const search = new URLSearchParams({ filter: nextFilter, sort: nextSort });
+    if (nextCursor) search.set("cursor", nextCursor);
+    const response = await fetch(`/api/signals/history?${search}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("History could not be loaded.");
+    return response.json() as Promise<EligibleSignalHistoryPage>;
+  }
+
+  async function changeView(nextFilter: SignalHistoryFilter, nextSort: SignalHistorySort) {
+    if (loading || (nextFilter === filter && nextSort === sort)) return;
+    setLoading(true);
+    setFilter(nextFilter);
+    setSort(nextSort);
+    setItems([]);
+    setCursor(null);
+    try {
+      const page = await loadPage(nextFilter, nextSort);
+      setItems(page.items);
+      setCursor(page.nextCursor);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function loadMore() {
     if (!cursor || loading) return;
     setLoading(true);
     try {
-      const response = await fetch(`/api/signals/history?cursor=${encodeURIComponent(cursor)}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("History could not be loaded.");
-      const page = await response.json() as EligibleSignalHistoryPage;
+      const page = await loadPage(filter, sort, cursor);
       setItems((current) => [...current, ...page.items]);
       setCursor(page.nextCursor);
     } finally {
@@ -50,7 +74,19 @@ export function SignalHistory({ initialPage }: { initialPage: EligibleSignalHist
   return (
     <section className="watchlist-panel signal-history" aria-labelledby="signal-history-title">
       <div className="watchlist-toolbar">
-        <div><h2 id="signal-history-title">Eligible signal history</h2><span>Medium and high conviction directional signals</span></div>
+        <div><h2 id="signal-history-title">Eligible signal history</h2><span>Last 24 hours · medium and high conviction</span></div>
+        <div className="watchlist-controls">
+          <div className="filter-group" aria-label="Filter signal history">
+            {(["all", "bullish", "bearish"] as const).map((value) => (
+              <button aria-pressed={filter === value} className={filter === value ? "active" : ""} disabled={loading} key={value} onClick={() => void changeView(value, sort)} type="button">
+                {value[0]!.toUpperCase()}{value.slice(1)}
+              </button>
+            ))}
+          </div>
+          <button className="secondary-button compact" disabled={loading} onClick={() => void changeView(filter, sort === "newest" ? "conviction" : "newest")} type="button">
+            {sort === "conviction" ? "Newest first" : "Conviction High→Low"}
+          </button>
+        </div>
       </div>
       <div className="watchlist-scroll">
         <table className="watchlist-table signal-history-table">
