@@ -87,32 +87,60 @@ export function SchedulerClient({
       if (inFlight.current.has(symbol)) return false;
       inFlight.current.add(symbol);
       setBusySymbols((current) => new Set(current).add(symbol));
-      try {
-        const response = await fetch(`/api/scans/${encodeURIComponent(symbol)}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode,
-            ...(slotKey ? { slotKey } : {}),
-            ...(mode === "manual" ? { timeframe, requestId: crypto.randomUUID() } : {}),
-          }),
-        });
-        const payload = (await response.json()) as { error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "Scan failed");
-        setMessage(`${symbol} ${mode} scan completed.`);
-        if (refresh) router.refresh();
-        return true;
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Scan failed.");
-        return false;
-      } finally {
-        inFlight.current.delete(symbol);
-        setBusySymbols((current) => {
-          const next = new Set(current);
-          next.delete(symbol);
-          return next;
-        });
-      }
+      return Sentry.startNewTrace(() => Sentry.startSpan(
+        {
+          name: `Request ${mode} scan ${symbol}`,
+          op: `specialstock.scan.${mode}.request`,
+          forceTransaction: true,
+          attributes: {
+            "specialstock.symbol": symbol,
+            "specialstock.scan.mode": mode,
+            "specialstock.chart.interval": mode === "manual" ? timeframe : "5m",
+            ...(slotKey ? { "specialstock.scan.slot": slotKey } : {}),
+          },
+        },
+        async (span) => {
+          const started = performance.now();
+          try {
+            const response = await fetch(`/api/scans/${encodeURIComponent(symbol)}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mode,
+                ...(slotKey ? { slotKey } : {}),
+                ...(mode === "manual" ? { timeframe, requestId: crypto.randomUUID() } : {}),
+              }),
+            });
+            const payload = (await response.json()) as { error?: string };
+            if (!response.ok) throw new Error(payload.error ?? "Scan failed");
+            span.setAttributes({
+              "specialstock.scan.request_outcome": "completed",
+              "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+            });
+            span.setStatus({ code: 1 });
+            setMessage(`${symbol} ${mode} scan completed.`);
+            if (refresh) router.refresh();
+            return true;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Scan failed.";
+            span.setAttributes({
+              "specialstock.scan.request_outcome": "failed",
+              "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+              "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+            });
+            span.setStatus({ code: 2, message: message.slice(0, 200) });
+            setMessage(message);
+            return false;
+          } finally {
+            inFlight.current.delete(symbol);
+            setBusySymbols((current) => {
+              const next = new Set(current);
+              next.delete(symbol);
+              return next;
+            });
+          }
+        },
+      ));
     },
     [router],
   );
@@ -122,32 +150,67 @@ export function SchedulerClient({
   ): Promise<ManualBatchSelectionResult | null> => {
     const requestId = crypto.randomUUID();
     const symbols = runs.map(({ symbol }) => symbol);
+    const intervals = new Set(runs.map(({ timeframe }) => timeframe));
+    const intervalProfile = intervals.size === 1 ? runs[0]?.timeframe ?? "5m" : "mixed";
     setBatchBusySymbols(new Set(symbols));
-    try {
-      const response = await fetch("/api/scans/manual-batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runs, requestId }),
-      });
-      const payload = (await response.json()) as ManualBatchSelectionResult & {
-        error?: string;
-        counts?: { completed: number; reused: number; alreadyRunning: number; failed: number };
-      };
-      if (!response.ok || !payload.counts || !payload.results) {
-        throw new Error(payload.error ?? "Manual batch failed.");
-      }
-      const completed = payload.counts.completed + payload.counts.reused;
-      setMessage(
-        `Manual batch settled · ${completed} completed${payload.counts.alreadyRunning ? ` · ${payload.counts.alreadyRunning} already running` : ""}${payload.counts.failed ? ` · ${payload.counts.failed} failed` : ""}.`,
-      );
-      router.refresh();
-      return payload;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Manual batch failed.");
-      return null;
-    } finally {
-      setBatchBusySymbols(new Set());
-    }
+    return Sentry.startNewTrace(() => Sentry.startSpan(
+      {
+        name: "Request manual scan batch",
+        op: "specialstock.scan.manual_batch.request",
+        forceTransaction: true,
+        attributes: {
+          "specialstock.scan.batch_size": runs.length,
+          "specialstock.scan.batch_interval_profile": intervalProfile,
+          "specialstock.scan.batch_interval_1m": runs.filter(({ timeframe }) => timeframe === "1m").length,
+          "specialstock.scan.batch_interval_5m": runs.filter(({ timeframe }) => timeframe === "5m").length,
+          "specialstock.scan.batch_interval_10m": runs.filter(({ timeframe }) => timeframe === "10m").length,
+          "specialstock.scan.symbols": symbols.join(","),
+        },
+      },
+      async (span) => {
+        const started = performance.now();
+        try {
+          const response = await fetch("/api/scans/manual-batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ runs, requestId }),
+          });
+          const payload = (await response.json()) as ManualBatchSelectionResult & {
+            error?: string;
+            counts?: { completed: number; reused: number; alreadyRunning: number; failed: number };
+          };
+          if (!response.ok || !payload.counts || !payload.results) {
+            throw new Error(payload.error ?? "Manual batch failed.");
+          }
+          const completed = payload.counts.completed + payload.counts.reused;
+          span.setAttributes({
+            "specialstock.scan.batch_completed": payload.counts.completed,
+            "specialstock.scan.batch_reused": payload.counts.reused,
+            "specialstock.scan.batch_running": payload.counts.alreadyRunning,
+            "specialstock.scan.batch_failed": payload.counts.failed,
+            "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+          });
+          span.setStatus({ code: 1 });
+          setMessage(
+            `Manual batch settled · ${completed} completed${payload.counts.alreadyRunning ? ` · ${payload.counts.alreadyRunning} already running` : ""}${payload.counts.failed ? ` · ${payload.counts.failed} failed` : ""}.`,
+          );
+          router.refresh();
+          return payload;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Manual batch failed.";
+          span.setAttributes({
+            "specialstock.scan.request_outcome": "failed",
+            "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+            "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+          });
+          span.setStatus({ code: 2, message: message.slice(0, 200) });
+          setMessage(message);
+          return null;
+        } finally {
+          setBatchBusySymbols(new Set());
+        }
+      },
+    ));
   }, [router]);
 
   const runScheduledBatch = useCallback(async (symbols: string[], slotKey: string) => {
@@ -162,7 +225,8 @@ export function SchedulerClient({
     }
     batchInFlight.current = slotKey;
     setBatchBusySymbols(new Set(symbols));
-    return Sentry.startSpan(
+    const retry = pendingScheduledSlot.current === slotKey;
+    return Sentry.startNewTrace(() => Sentry.startSpan(
       {
         name: "Request scheduled scan batch",
         op: "specialstock.scheduler.batch",
@@ -172,6 +236,7 @@ export function SchedulerClient({
           "specialstock.scan.slot": slotKey,
           "specialstock.scan.batch_size": symbols.length,
           "specialstock.scan.symbols": symbols.join(","),
+          "specialstock.scheduler.retry": retry,
         },
       },
       async (span) => {
@@ -278,7 +343,7 @@ export function SchedulerClient({
           setBatchBusySymbols(new Set());
         }
       },
-    );
+    ));
   }, [router]);
 
   useEffect(() => {
@@ -297,7 +362,7 @@ export function SchedulerClient({
         });
       }
       try {
-        const response = await fetch("/api/scans/status", { cache: "no-store" });
+        const response = await Sentry.suppressTracing(() => fetch("/api/scans/status", { cache: "no-store" }));
         if (!response.ok) throw new Error(`Scheduler status returned HTTP ${response.status}.`);
         const status = (await response.json()) as Status;
         if (cancelled) return;
@@ -346,11 +411,11 @@ export function SchedulerClient({
               : "Market session active"
             : "Market closed · manual scans remain available",
         );
-        const heartbeatResponse = await fetch("/api/scans/status", {
+        const heartbeatResponse = await Sentry.suppressTracing(() => fetch("/api/scans/status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tabId: tabId.current, isLeader: leader }),
-        });
+        }));
         if (!heartbeatResponse.ok) throw new Error(`Scheduler heartbeat returned HTTP ${heartbeatResponse.status}.`);
         const slotToRun = pendingScheduledSlot.current ?? (status.due ? status.slotKey : null);
         if (
@@ -390,7 +455,7 @@ export function SchedulerClient({
   }, [acquireLeadership, router, runScheduledBatch]);
 
   const setAutomaticScanning = useCallback(async (symbols: string[], enabled: boolean) => {
-    return Sentry.startSpan(
+    return Sentry.startNewTrace(() => Sentry.startSpan(
       {
         name: "Change automatic scan setting",
         op: "ui.action.click",
@@ -474,7 +539,7 @@ export function SchedulerClient({
           return false;
         }
       },
-    );
+    ));
   }, []);
 
   const enabledCount = items.filter((item) => item.automaticScanEnabled).length;

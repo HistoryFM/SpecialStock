@@ -4,6 +4,7 @@ Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV,
   tracesSampleRate: 1,
+  ignoreSpans: [/^(GET|POST) \/api\/scans\/status$/],
   enableLogs: true,
   includeLocalVariables: false,
   dataCollection: {

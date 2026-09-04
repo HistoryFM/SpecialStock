@@ -629,6 +629,8 @@ export async function runScan(input: {
           "specialstock.analysis.id": primary.analysis.id,
           "specialstock.analysis.verdict": primary.analysis.verdict,
           "specialstock.analysis.conviction": primary.analysis.conviction,
+          "specialstock.analysis.visual_quality": primary.analysis.visualQuality,
+          "specialstock.analysis.bar_status": primary.analysis.barStatus,
           "specialstock.scan.duration_ms": durationMs,
           "specialstock.scan.reused": false,
         });
@@ -642,6 +644,7 @@ export async function runScan(input: {
           "specialstock.analysis.id": primary.analysis.id,
           "specialstock.analysis.verdict": primary.analysis.verdict,
           "specialstock.analysis.conviction": primary.analysis.conviction,
+          "specialstock.analysis.visual_quality": primary.analysis.visualQuality,
           "specialstock.analysis.bar_status": primary.analysis.barStatus,
           "specialstock.analysis.evaluation_eligible": policy.includeInEvaluation,
           "specialstock.chart.input_hash": capture.input.inputHash,

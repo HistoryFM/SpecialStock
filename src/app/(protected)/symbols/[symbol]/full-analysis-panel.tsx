@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type FullPayload = {
@@ -22,11 +23,42 @@ export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
   const request = useCallback(async (retry = false) => {
     setPending(true);
     try {
-      const response = await fetch(`/api/analyses/${initial.analysisId}/full`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retry }),
-      });
-      const next = await response.json() as FullPayload & { error?: string };
-      if (!response.ok && response.status !== 202) throw new Error(next.error ?? "Full analysis failed.");
+      const next = await Sentry.startNewTrace(() => Sentry.startSpan(
+        {
+          name: "Request full analysis",
+          op: "specialstock.analysis.full.request",
+          forceTransaction: true,
+          attributes: {
+            "specialstock.analysis.id": initial.analysisId,
+            "specialstock.analysis.retry": retry,
+          },
+        },
+        async (span) => {
+          const started = performance.now();
+          try {
+            const response = await fetch(`/api/analyses/${initial.analysisId}/full`, {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retry }),
+            });
+            const result = await response.json() as FullPayload & { error?: string };
+            if (!response.ok && response.status !== 202) throw new Error(result.error ?? "Full analysis failed.");
+            span.setAttributes({
+              "specialstock.analysis.state": result.state,
+              "specialstock.analysis.duration_ms": Math.round(performance.now() - started),
+            });
+            span.setStatus({ code: 1 });
+            return result;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Full analysis failed.";
+            span.setAttributes({
+              "specialstock.analysis.state": "failed",
+              "specialstock.analysis.duration_ms": Math.round(performance.now() - started),
+              "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+            });
+            span.setStatus({ code: 2, message: message.slice(0, 200) });
+            throw error;
+          }
+        },
+      ));
       setPayload(next);
     } catch (error) {
       setPayload((current) => ({ ...current, state: "failed", error: error instanceof Error ? error.message : "Full analysis failed." }));
@@ -45,7 +77,10 @@ export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
   useEffect(() => {
     if (payload.state !== "running") return;
     const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/analyses/${initial.analysisId}/full`, { cache: "no-store" });
+      const response = await Sentry.suppressTracing(() => fetch(
+        `/api/analyses/${initial.analysisId}/full`,
+        { cache: "no-store" },
+      ));
       if (response.ok) setPayload(await response.json() as FullPayload);
     }, 1_500);
     return () => window.clearInterval(timer);

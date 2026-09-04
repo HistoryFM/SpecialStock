@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SchedulerClient } from "@/app/(protected)/dashboard/scheduler-client";
@@ -13,10 +13,14 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
 const sentryMocks = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
+  startNewTrace: vi.fn((callback: () => unknown) => callback()),
+  suppressTracing: vi.fn((callback: () => unknown) => callback()),
   spans: [] as Array<{ options: { op?: string }; setAttributes: ReturnType<typeof vi.fn> }>,
 }));
 vi.mock("@sentry/nextjs", () => ({
   logger: { info: sentryMocks.info, warn: sentryMocks.warn },
+  startNewTrace: sentryMocks.startNewTrace,
+  suppressTracing: sentryMocks.suppressTracing,
   startSpan: vi.fn(async (options, callback) => {
     const span = { setAttribute: vi.fn(), setAttributes: vi.fn(), setStatus: vi.fn() };
     sentryMocks.spans.push({ options, setAttributes: span.setAttributes });
@@ -61,6 +65,8 @@ describe("automatic scan scheduler", () => {
     refresh.mockReset();
     sentryMocks.info.mockReset();
     sentryMocks.warn.mockReset();
+    sentryMocks.startNewTrace.mockClear();
+    sentryMocks.suppressTracing.mockClear();
     sentryMocks.spans.length = 0;
     localStorage.clear();
     vi.stubGlobal("crypto", { randomUUID: () => "11111111-1111-4111-8111-111111111111" });
@@ -126,6 +132,10 @@ describe("automatic scan scheduler", () => {
 
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/batch")).toHaveLength(1);
+    expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(1);
+    expect(sentryMocks.suppressTracing).toHaveBeenCalledTimes(
+      fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/status").length,
+    );
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(sentryMocks.info).toHaveBeenCalledWith(
       "scheduler.leadership.changed",
@@ -203,7 +213,89 @@ describe("automatic scan scheduler", () => {
     expect(batchCalls).toBe(1);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(batchCalls).toBe(2);
+    expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(2);
+    expect(sentryMocks.suppressTracing).toHaveBeenCalledTimes(
+      fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/status").length,
+    );
     await vi.advanceTimersByTimeAsync(10_000);
     expect(batchCalls).toBe(2);
+  });
+
+  it("starts independent traces for manual and Auto-setting actions", async () => {
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request);
+      if (url === "/api/scans/status" && !init?.method) {
+        return Response.json({
+          due: false,
+          slotKey: null,
+          nextScanAt: null,
+          marketOpen: true,
+          automaticSymbols: ["AAPL", "MSFT"],
+          enabledCount: 2,
+          configuredCount: 2,
+          runningScans: [],
+          scanRevision: null,
+        });
+      }
+      if (url === "/api/scans/status" && init?.method === "POST") return Response.json({ ok: true });
+      if (url === "/api/scans/AAPL") return Response.json({ status: "completed" });
+      if (url === "/api/scans/manual-batch") {
+        return Response.json({
+          total: 1,
+          counts: { completed: 1, reused: 0, alreadyRunning: 0, failed: 0 },
+          results: [{ symbol: "AAPL", timeframe: "5m", outcome: "completed" }],
+        });
+      }
+      if (url === "/api/settings/automatic-scans") {
+        return Response.json({
+          watchlist: [
+            { symbol: "AAPL", automaticScanEnabled: false },
+            { symbol: "MSFT", automaticScanEnabled: true },
+          ],
+          enabledCount: 1,
+          updatedAt: "2026-09-04T13:00:00.000Z",
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SchedulerClient
+        initialItems={[item("AAPL"), item("MSFT")]}
+        database={{ engine: "PGlite", status: "connected" }}
+        budget={{ todayUsd: 0, monthUsd: 0, targetUsd: 1 }}
+        demoMode={false}
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/scans/status", { cache: "no-store" }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]!);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scans/AAPL",
+      expect.objectContaining({ method: "POST" }),
+    ));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select AAPL" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/scans/manual-batch",
+      expect.objectContaining({ method: "POST" }),
+    ));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Run selected" })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select AAPL" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disable auto" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/automatic-scans",
+      expect.objectContaining({ method: "PATCH" }),
+    ));
+
+    expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(3);
+    expect(sentryMocks.spans.map(({ options }) => options.op)).toEqual(expect.arrayContaining([
+      "specialstock.scan.manual.request",
+      "specialstock.scan.manual_batch.request",
+      "ui.action.click",
+    ]));
   });
 });
