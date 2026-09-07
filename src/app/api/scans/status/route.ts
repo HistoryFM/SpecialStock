@@ -9,9 +9,11 @@ import { automaticScanSymbols } from "@/settings/automatic-scans";
 import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };
+
 export async function GET() {
   if (!isAuthorizedSession(await auth())) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+    return Response.json({ error: "Unauthorized" }, { status: 401, headers: PRIVATE_HEADERS });
   }
   const now = new Date();
   const provider = createMarketDataProvider();
@@ -32,7 +34,7 @@ export async function GET() {
     : [];
   const runningScans = configuredSymbols.length
     ? await database
-        .select({ symbol: scanSlots.symbol, startedAt: scanSlots.startedAt })
+        .select({ symbol: scanSlots.symbol, timeframe: scanSlots.scanInterval, startedAt: scanSlots.startedAt })
         .from(scanSlots)
         .where(and(
           inArray(scanSlots.symbol, configuredSymbols),
@@ -52,12 +54,13 @@ export async function GET() {
     configuredCount: settings?.watchlist.length ?? 0,
     runningScans: runningScans.map((scan) => ({
       symbol: scan.symbol,
+      timeframe: scan.timeframe,
       startedAt: scan.startedAt?.toISOString() ?? null,
     })),
     scanRevision: latestScan?.updatedAt.toISOString() ?? null,
     provider: provider.id,
     demoMode: isDemoMode(),
-  });
+  }, { headers: PRIVATE_HEADERS });
 }
 
 const heartbeatSchema = z.object({
@@ -67,15 +70,15 @@ const heartbeatSchema = z.object({
 
 export async function POST(request: Request) {
   if (!isAuthorizedSession(await auth())) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+    return Response.json({ error: "Unauthorized" }, { status: 401, headers: PRIVATE_HEADERS });
   }
   const parsed = heartbeatSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return Response.json({ error: "Invalid heartbeat" }, { status: 400 });
+  if (!parsed.success) return Response.json({ error: "Invalid heartbeat" }, { status: 400, headers: PRIVATE_HEADERS });
   const database = await getDatabase();
   await database.insert(schedulerHeartbeats).values({
     tabId: parsed.data.tabId,
     marketDate: marketDate(new Date()),
     isLeader: parsed.data.isLeader,
   });
-  return Response.json({ ok: true });
+  return Response.json({ ok: true }, { headers: PRIVATE_HEADERS });
 }

@@ -8,6 +8,7 @@ import {
   analyses,
   chartArtifacts,
   modelRuns,
+  modelAttempts,
   notificationEvents,
   outcomes,
   reviewLabels,
@@ -151,6 +152,17 @@ export async function getSymbolDetail(
         .where(eq(theses.id, selectedHistory.thesis.supersedesThesisId))
         .limit(1)
     : [];
+  const compactPromptAttempts = selectedHistory
+    ? await database.select({ attemptNumber: modelAttempts.attemptNumber, promptSnapshot: modelAttempts.promptSnapshot, promptHash: modelAttempts.promptHash })
+      .from(modelAttempts).where(eq(modelAttempts.modelRunId, selectedHistory.run.id)).orderBy(desc(modelAttempts.attemptNumber))
+    : [];
+  const [fullRun] = selectedHistory?.analysis.fullModelRunId
+    ? await database.select().from(modelRuns).where(eq(modelRuns.id, selectedHistory.analysis.fullModelRunId)).limit(1)
+    : [];
+  const fullPromptAttempts = fullRun
+    ? await database.select({ attemptNumber: modelAttempts.attemptNumber, promptSnapshot: modelAttempts.promptSnapshot, promptHash: modelAttempts.promptHash })
+      .from(modelAttempts).where(eq(modelAttempts.modelRunId, fullRun.id)).orderBy(desc(modelAttempts.attemptNumber))
+    : [];
   const now = new Date();
   let marketOpen = false;
   try {
@@ -172,5 +184,9 @@ export async function getSymbolDetail(
     history,
     dailyHighConviction,
     selectedMarketDate: marketDate,
+    promptAudit: {
+      compact: { run: selectedHistory?.run ?? null, attempts: compactPromptAttempts },
+      full: { run: fullRun ?? null, attempts: fullPromptAttempts },
+    },
   };
 }

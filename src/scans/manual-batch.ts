@@ -4,8 +4,9 @@ import * as Sentry from "@sentry/nextjs";
 import { eq } from "drizzle-orm";
 
 import type { ManualScanTimeframe } from "@/analysis/types";
+import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { getDatabase } from "@/db/client";
-import { appSettings } from "@/db/schema";
+import { appSettings, manualScanGroups } from "@/db/schema";
 import { createMarketDataProvider } from "@/market-data/factory";
 import { runScan, ScanAlreadyRunningError } from "@/scans/service";
 
@@ -18,6 +19,7 @@ export type ManualBatchResult = {
   slotId: string | null;
   analysisId: string | null;
   error: string | null;
+  groupId: string;
 };
 
 export class InvalidManualBatchError extends Error {}
@@ -60,6 +62,24 @@ export async function runManualBatch(input: {
         throw new InvalidManualBatchError("Every symbol must currently exist in the watchlist.");
       }
 
+      const bySymbol = new Map<string, ManualScanTimeframe[]>();
+      for (const run of input.runs) bySymbol.set(run.symbol, [...(bySymbol.get(run.symbol) ?? []), run.timeframe]);
+      const groups = new Map<string, string>();
+      for (const [symbol, requestedIntervals] of bySymbol) {
+        const orderedIntervals = [...requestedIntervals].sort((left, right) => ["1m", "5m", "10m"].indexOf(left) - ["1m", "5m", "10m"].indexOf(right));
+        const [group] = await database.insert(manualScanGroups).values({
+          requestId: input.requestId,
+          symbol,
+          requestedIntervals: orderedIntervals,
+        }).onConflictDoUpdate({
+          target: [manualScanGroups.requestId, manualScanGroups.symbol],
+          set: { requestedIntervals: orderedIntervals },
+        }).returning();
+        if (!group) throw new Error("The manual comparison group could not be created.");
+        groups.set(symbol, group.id);
+      }
+      const promptRevision = await getActivePromptRevision("compact");
+
       const session = await createMarketDataProvider().getSession(now);
       let inFlight = 0;
       let peakInFlight = 0;
@@ -92,6 +112,8 @@ export async function runManualBatch(input: {
               manualRequestId: input.requestId,
               resolvedEntry: entriesBySymbol.get(symbol),
               resolvedSession: session,
+              manualScanGroupId: groups.get(symbol),
+              promptRevision,
             });
             itemSpan.setAttributes({
               "specialstock.scan.item_status": result.status,
@@ -114,10 +136,10 @@ export async function runManualBatch(input: {
         const { symbol, timeframe } = input.runs[index]!;
         if (result.status === "rejected") {
           if (result.reason instanceof ScanAlreadyRunningError) {
-            return { symbol, timeframe, outcome: "already_running", slotId: null, analysisId: null, error: safeMessage(result.reason) };
+            return { symbol, timeframe, outcome: "already_running", slotId: null, analysisId: null, error: safeMessage(result.reason), groupId: groups.get(symbol)! };
           }
           Sentry.captureException(result.reason, { tags: { route: "api.scans.manual_batch", symbol } });
-          return { symbol, timeframe, outcome: "failed", slotId: null, analysisId: null, error: safeMessage(result.reason) };
+          return { symbol, timeframe, outcome: "failed", slotId: null, analysisId: null, error: safeMessage(result.reason), groupId: groups.get(symbol)! };
         }
         const value = result.value;
         const outcome: ManualBatchOutcome = value.reused
@@ -130,6 +152,7 @@ export async function runManualBatch(input: {
           slotId: value.slotId,
           analysisId: "analysisId" in value ? value.analysisId ?? null : null,
           error: outcome === "failed" ? value.status : null,
+          groupId: groups.get(symbol)!,
         };
       });
       const counts = {

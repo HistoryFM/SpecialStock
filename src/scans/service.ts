@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
+import type { PromptRevisionSnapshot } from "@/analysis/prompt";
+import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
 import type { ChartAnalysisInput, CompactModelRunResult, ManualScanTimeframe, ModelAttemptResult } from "@/analysis/types";
 import { isFullAnalysisEligible } from "@/analysis/validate";
@@ -108,6 +110,7 @@ async function createOrClaimSlot(input: {
   session: { opensAt: Date; closesAt: Date; isRegularSession: boolean };
   requestedSlotKey?: string;
   manualRequestId?: string;
+  manualScanGroupId?: string;
   timeframe: ManualScanTimeframe;
 }) {
   const database = await getDatabase();
@@ -132,6 +135,8 @@ async function createOrClaimSlot(input: {
     .values({
       idempotencyKey,
       symbol: input.entry.symbol,
+      scanInterval: input.timeframe,
+      manualScanGroupId: input.manualScanGroupId,
       scheduledFor,
       slotKind,
       status: "running",
@@ -154,7 +159,9 @@ async function createOrClaimSlot(input: {
     .where(eq(scanSlots.idempotencyKey, idempotencyKey));
   if (!existing) {
     const [active] = await database.select().from(scanSlots).where(and(
-      eq(scanSlots.symbol, input.entry.symbol), eq(scanSlots.status, "running"),
+      eq(scanSlots.symbol, input.entry.symbol),
+      eq(scanSlots.scanInterval, input.timeframe),
+      eq(scanSlots.status, "running"),
     )).limit(1);
     if (active) throw new ScanAlreadyRunningError(`${input.entry.symbol} already has a scan in progress.`);
     throw new Error("The scan slot could not be loaded after claiming.");
@@ -204,6 +211,8 @@ async function persistAttempts(runId: string, attempts: ModelAttemptResult[]) {
     estimatedCostUsd: attempt.estimatedCostUsd === null ? null : String(attempt.estimatedCostUsd),
     errorCode: attempt.errorCode,
     rawResponse: attempt.rawResponse,
+    promptSnapshot: attempt.promptSnapshot ?? null,
+    promptHash: attempt.promptHash ?? null,
   }))).onConflictDoNothing();
 }
 
@@ -254,7 +263,7 @@ export async function persistModelResult(input: {
           rawResponse: input.result.rawResponse, validationErrors: [], completedAt,
         })
         .onConflictDoUpdate({
-          target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
+          target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase, modelRuns.operationKey],
           set: {
             chartArtifactId: input.chartArtifactId,
             actualModel: input.result.actualModel,
@@ -306,15 +315,26 @@ async function runModel(input: {
   frozen: ChartAnalysisInput;
   png: Buffer;
   usageClass: "routine_compact" | "manual_compact";
+  promptRevision: PromptRevisionSnapshot;
 }) {
   const database = await getDatabase();
   const [pendingRun] = await database.insert(modelRuns).values({
     scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
     phase: "compact", requestedModel: input.model, promptVersion: COMPACT_PROMPT_VERSION,
+    promptRevisionId: input.promptRevision.id,
     inputHash: input.frozen.inputHash, status: "pending",
   }).onConflictDoUpdate({
-    target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
-    set: { chartArtifactId: input.chartArtifactId, status: "pending", startedAt: new Date(), completedAt: null },
+    target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase, modelRuns.operationKey],
+    set: {
+      chartArtifactId: input.chartArtifactId,
+      promptVersion: COMPACT_PROMPT_VERSION,
+      promptRevisionId: input.promptRevision.id,
+      inputHash: input.frozen.inputHash,
+      status: "pending",
+      startedAt: new Date(),
+      completedAt: null,
+      validationErrors: [],
+    },
   }).returning();
   if (!pendingRun) throw new Error("The model run could not be claimed.");
   const reservation = await reserveAnalysisBudget({
@@ -421,6 +441,8 @@ export async function runScan(input: {
   resolvedSession?: MarketSession;
   timeframe?: ManualScanTimeframe;
   manualRequestId?: string;
+  manualScanGroupId?: string;
+  promptRevision?: PromptRevisionSnapshot;
 }) {
   return Sentry.startSpan(
     {
@@ -454,6 +476,7 @@ export async function runScan(input: {
         if (input.mode === "scheduled" && !input.resolvedEntry && !entry.automaticScanEnabled) {
           throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
         }
+        const promptRevision = input.promptRevision ?? await getActivePromptRevision("compact");
 
         stage = "market_session";
         const marketProvider = createMarketDataProvider();
@@ -467,6 +490,7 @@ export async function runScan(input: {
           requestedSlotKey: input.requestedSlotKey,
           manualRequestId: input.manualRequestId,
           timeframe,
+          manualScanGroupId: input.manualScanGroupId,
         });
         span.setAttributes({
           "specialstock.scan.slot_id": claim.slot.id,
@@ -574,6 +598,7 @@ export async function runScan(input: {
             frozen: capture.input,
             png: storedPng,
             usageClass: input.mode === "scheduled" ? "routine_compact" : "manual_compact",
+            promptRevision,
           }),
         );
         stage = "thesis_and_outcomes";

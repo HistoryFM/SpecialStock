@@ -4,6 +4,7 @@ import * as Sentry from "@sentry/nextjs";
 import { eq } from "drizzle-orm";
 
 import { getDatabase } from "@/db/client";
+import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { appSettings } from "@/db/schema";
 import { createMarketDataProvider } from "@/market-data/factory";
 import { requestedScanSlot } from "@/market-data/time";
@@ -53,6 +54,7 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
       await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
       const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
       const entries = settings?.watchlist.filter((entry) => entry.automaticScanEnabled).slice(0, 20) ?? [];
+      const promptRevision = await getActivePromptRevision("compact");
       const enabledSymbols = entries.map((entry) => entry.symbol).join(",");
 
       span.setAttributes({
@@ -98,6 +100,7 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
                 requestedSlotKey: slotKey,
                 resolvedEntry: entry,
                 resolvedSession: session,
+                promptRevision,
               });
               itemSpan.setAttributes({
                 "specialstock.scan.item_status": result.status,

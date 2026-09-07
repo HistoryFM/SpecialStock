@@ -29,6 +29,10 @@ vi.mock("@/scans/service", () => ({
   runScan: mocks.runScan,
 }));
 
+vi.mock("@/analysis/prompt-revisions", () => ({
+  getActivePromptRevision: vi.fn(async () => ({ id: "compact-revision", phase: "compact", revisionNumber: 1, instructions: "default", templateVersion: "chart-compact-v2", instructionsHash: "hash" })),
+}));
+
 const session = {
   date: "2026-09-01",
   opensAt: new Date("2026-09-01T13:30:00.000Z"),
@@ -82,6 +86,7 @@ describe("scheduled scan batch", () => {
     );
 
     expect(starts).toEqual(DEFAULT_WATCHLIST.map((entry) => entry.symbol));
+    expect(mocks.runScan.mock.calls.every(([input]) => input.promptRevision.id === "compact-revision")).toBe(true);
     expect(result.counts).toEqual({
       completed: 19,
       alreadyCompleted: 0,

@@ -57,6 +57,7 @@ function item(symbol: string): SymbolDashboardItem {
     costUsd: null,
     error: null,
     resultIsCurrent: false,
+    manualGroup: null,
   };
 }
 
@@ -174,7 +175,7 @@ describe("automatic scan scheduler", () => {
           automaticSymbols: symbols,
           enabledCount: symbols.length,
           configuredCount: symbols.length,
-          runningScans: batchCalls ? [] : [{ symbol: "MSFT", startedAt: "2026-08-31T15:55:00.000Z" }],
+          runningScans: batchCalls ? [] : [{ symbol: "MSFT", timeframe: "5m", startedAt: "2026-08-31T15:55:00.000Z" }],
           scanRevision: null,
         });
       }
@@ -272,8 +273,8 @@ describe("automatic scan scheduler", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]!);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      "/api/scans/AAPL",
-      expect.objectContaining({ method: "POST" }),
+      "/api/scans/manual-batch",
+      expect.objectContaining({ method: "POST", body: expect.stringContaining('"symbol":"AAPL"') }),
     ));
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select AAPL" }));
@@ -293,7 +294,7 @@ describe("automatic scan scheduler", () => {
 
     expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(3);
     expect(sentryMocks.spans.map(({ options }) => options.op)).toEqual(expect.arrayContaining([
-      "specialstock.scan.manual.request",
+      "specialstock.scan.manual_batch.request",
       "specialstock.scan.manual_batch.request",
       "ui.action.click",
     ]));

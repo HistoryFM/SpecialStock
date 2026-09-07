@@ -143,10 +143,11 @@ export default async function SymbolPage({
         ) : (
           <div className="table-wrap">
             <table className="daily-conviction-table">
-              <thead><tr><th>Time (ET)</th><th>Thesis</th><th>At analysis</th><th>Target</th><th>Invalidation</th><th>Source</th><th>Outcome</th><th>Review</th><th></th></tr></thead>
+              <thead><tr><th>Time (ET)</th><th>Interval</th><th>Thesis</th><th>At analysis</th><th>Target</th><th>Invalidation</th><th>Source</th><th>Outcome</th><th>Review</th><th></th></tr></thead>
               <tbody>{data.dailyHighConviction.map((row) => (
                 <tr key={row.analysis.id}>
                   <td>{etTime(row.slot.scheduledFor)}</td>
+                  <td>{row.slot.scanInterval}</td>
                   <td><strong>{row.analysis.verdict}</strong><small>{row.analysis.setupType}</small></td>
                   <td>{money(row.analysis.observedPrice)}</td>
                   <td>{money(row.analysis.primaryTarget)}</td>
@@ -158,13 +159,13 @@ export default async function SymbolPage({
                     outcome: row.outcome?.result,
                   })}</td>
                   <td>{reviewLabel(row.latestReview?.assessment)}</td>
-                  <td><Link
+                  <td>{row.slot.manualScanGroupId ? <Link className="text-button" href={`/symbols/${symbol}/comparisons/${row.slot.manualScanGroupId}`}>Compare</Link> : <Link
                     className="text-button"
                     href={analysisUrl(symbol, row.analysis.id, {
                       date: data.selectedMarketDate,
                       tab: "review",
                     })}
-                  >Review thesis</Link></td>
+                  >Review thesis</Link>}</td>
                 </tr>
               ))}</tbody>
             </table>
@@ -174,17 +175,18 @@ export default async function SymbolPage({
       <div className="section-heading"><div><p className="eyebrow">Measured history</p><h3>Prior analyses</h3></div><span className="status-pill neutral">{data.history.length} runs</span></div>
       <div className="table-wrap">
         <table className="history-table">
-          <thead><tr><th>Time (ET)</th><th>Verdict</th><th>Conviction</th><th>Target</th><th>Outcome</th><th>Review</th><th>Model</th><th></th></tr></thead>
+          <thead><tr><th>Time (ET)</th><th>Interval</th><th>Verdict</th><th>Conviction</th><th>Target</th><th>Outcome</th><th>Review</th><th>Model</th><th></th></tr></thead>
           <tbody>{data.history.map((row) => (
             <tr className={row.analysis.id === selected.analysis.id ? "selected" : ""} key={row.analysis.id}>
               <td>{etTime(row.slot.scheduledFor)}</td>
+              <td>{row.slot.scanInterval}</td>
               <td>{row.analysis.verdict.replace("_", " ")}</td>
               <td>{row.analysis.conviction}</td>
               <td>{money(row.analysis.primaryTarget)}</td>
               <td>{outcomeLabel(row.slot.slotKind, row.outcome?.result)}</td>
               <td>{reviewLabel(row.latestReview?.assessment)}</td>
               <td>{row.run.actualModel ?? row.run.requestedModel}</td>
-              <td><Link className="text-button" href={analysisUrl(symbol, row.analysis.id)}>{row.analysis.id === selected.analysis.id ? "Viewing" : "Load"}</Link></td>
+              <td>{row.slot.manualScanGroupId ? <><Link className="text-button" href={`/symbols/${symbol}/comparisons/${row.slot.manualScanGroupId}`}>Compare</Link> · </> : null}<Link className="text-button" href={analysisUrl(symbol, row.analysis.id)}>{row.analysis.id === selected.analysis.id ? "Viewing" : "Load"}</Link></td>
             </tr>
           ))}</tbody>
         </table>
@@ -216,9 +218,13 @@ export default async function SymbolPage({
               <div><dt>Renderer</dt><dd>{selected.artifact.rendererVersion}</dd></div>
               <div><dt>Interval</dt><dd>{chartInterval}</dd></div>
               <div><dt>Prompt</dt><dd>{selected.run.promptVersion}</dd></div>
+              <div><dt>Compact revision</dt><dd><code>{selected.run.promptRevisionId ?? "legacy version-only"}</code></dd></div>
+              {data.promptAudit.full.run ? <div><dt>Full revision</dt><dd><code>{data.promptAudit.full.run.promptRevisionId ?? "legacy version-only"}</code></dd></div> : null}
               <div><dt>Model</dt><dd>{modelName}</dd></div>
               <div><dt>Latency / cost</dt><dd>{(selected.run.latencyMs ?? 0).toLocaleString()} ms · ${Number(selected.run.costUsd ?? 0).toFixed(6)}</dd></div>
             </dl>
+            <details className="prompt-audit"><summary>Exact compact prompt</summary>{data.promptAudit.compact.attempts[0]?.promptSnapshot ? <><code>{data.promptAudit.compact.attempts[0].promptHash}</code><pre>{data.promptAudit.compact.attempts[0].promptSnapshot}</pre></> : <p className="muted">Legacy version-only record.</p>}</details>
+            {data.promptAudit.full.run ? <details className="prompt-audit"><summary>Exact full-analysis prompt</summary>{data.promptAudit.full.attempts[0]?.promptSnapshot ? <><code>{data.promptAudit.full.attempts[0].promptHash}</code><pre>{data.promptAudit.full.attempts[0].promptSnapshot}</pre></> : <p className="muted">Legacy version-only record.</p>}</details> : null}
           </aside>
         </div>
       ) : <div className="table-empty">This historical analysis has no chart artifact.</div>}
@@ -259,6 +265,7 @@ export default async function SymbolPage({
       <header className="symbol-header">
         <Link className="back-link" href={data.alertEvent ? "/alerts" : "/dashboard"}>← {data.alertEvent ? "Alerts" : "Watchlist"}</Link>
         <div className="symbol-identity"><span className="eyebrow">AI analysis</span><h1>{symbol}</h1></div>
+        {selected.analysis.fullAnalysisState === "available" ? <a className="analysis-chat-shortcut" href="#analysis-chat-heading">Ask AI</a> : null}
         <span className="snapshot-header-price"><small>At analysis</small><strong>{money(snapshotPrice)}</strong></span>
         <span className={`status-pill verdict ${selected.analysis.verdict}`}>{selected.analysis.verdict.replace("_", " ")}</span>
         <span>{selected.analysis.conviction} conviction</span>
@@ -309,25 +316,25 @@ export default async function SymbolPage({
             />
           ) : <div className="chart-missing">Stored chart unavailable for this historical analysis.</div>}
         </aside>
-      </section>
 
-      <FullAnalysisPanel key={`full:${selected.analysis.id}`} initial={{
-        analysisId: selected.analysis.id,
-        state: selected.analysis.fullAnalysisState,
-        error: selected.analysis.fullError,
-        full: selected.analysis.fullAnalysisState === "available" ? {
-          setupType: selected.analysis.setupType,
-          immediateBias: selected.analysis.immediateBias,
-          broaderTrend: selected.analysis.broaderTrend,
-          candlestickAnalysis: selected.analysis.candlestickAnalysis,
-          vwapKeltnerAnalysis: selected.analysis.vwapKeltnerAnalysis,
-          cciAnalysis: selected.analysis.cciAnalysis,
-          supportingEvidence: selected.analysis.supportingEvidence,
-          conflictingEvidence: selected.analysis.conflictingEvidence,
-          deeperScenario: selected.analysis.deeperScenario,
-          summary: selected.analysis.summary,
-        } : null,
-      }} />
+        <FullAnalysisPanel capturedAt={String(selected.artifact?.frozenInput.capturedAt ?? selected.slot.scheduledFor.toISOString())} key={`full:${selected.analysis.id}`} initial={{
+          analysisId: selected.analysis.id,
+          state: selected.analysis.fullAnalysisState,
+          error: selected.analysis.fullError,
+          full: selected.analysis.fullAnalysisState === "available" ? {
+            setupType: selected.analysis.setupType,
+            immediateBias: selected.analysis.immediateBias,
+            broaderTrend: selected.analysis.broaderTrend,
+            candlestickAnalysis: selected.analysis.candlestickAnalysis,
+            vwapKeltnerAnalysis: selected.analysis.vwapKeltnerAnalysis,
+            cciAnalysis: selected.analysis.cciAnalysis,
+            supportingEvidence: selected.analysis.supportingEvidence,
+            conflictingEvidence: selected.analysis.conflictingEvidence,
+            deeperScenario: selected.analysis.deeperScenario,
+            summary: selected.analysis.summary,
+          } : null,
+        }} />
+      </section>
 
       <WorkspaceTabs
         audit={auditPanel}

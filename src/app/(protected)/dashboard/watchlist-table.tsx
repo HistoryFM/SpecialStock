@@ -15,6 +15,8 @@ const filters: Array<{ value: WatchlistFilter; label: string }> = [
   { value: "bearish", label: "Bearish" },
 ];
 const MANUAL_TIMEFRAMES_KEY = "specialstock-manual-timeframes-v1";
+const MANUAL_INTERVALS_KEY = "specialstock-manual-intervals-v2";
+const MANUAL_INTERVALS: ManualScanTimeframe[] = ["1m", "5m", "10m"];
 const convictionRank = { high: 3, medium: 2, low: 1 } as const;
 
 export type ManualBatchRun = { symbol: string; timeframe: ManualScanTimeframe };
@@ -37,6 +39,19 @@ export function parseManualTimeframes(value: string | null): Record<string, Manu
   } catch {
     return {};
   }
+}
+
+export function parseManualIntervalSelections(value: string | null): Record<string, ManualScanTimeframe[]> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).flatMap(([symbol, intervals]) => {
+      if (!symbol || !Array.isArray(intervals)) return [];
+      const valid = MANUAL_INTERVALS.filter((interval) => intervals.includes(interval));
+      return valid.length ? [[symbol, valid]] : [];
+    }));
+  } catch { return {}; }
 }
 
 function price(value: number | null): string {
@@ -79,8 +94,8 @@ export function filterAndSortItems(
   direction: "asc" | "desc",
 ): SymbolDashboardItem[] {
   const filtered = items.filter((item) => {
-    if (filter === "bullish") return item.verdict === "bullish";
-    if (filter === "bearish") return item.verdict === "bearish";
+    if (filter === "bullish") return item.manualGroup ? item.manualGroup.members.some((member) => member.verdict === "bullish") : item.verdict === "bullish";
+    if (filter === "bearish") return item.manualGroup ? item.manualGroup.members.some((member) => member.verdict === "bearish") : item.verdict === "bearish";
     return true;
   });
   if (sortKey === "configured") return filtered;
@@ -140,6 +155,13 @@ function convictionCopy(value: SymbolDashboardItem["conviction"]): string | null
   return value ? `${value[0].toUpperCase()}${value.slice(1)} conviction` : null;
 }
 
+function comparisonVerdictCopy(value: SymbolDashboardItem["verdict"], status: string) {
+  if (value === "bullish") return { icon: "↑", label: "Bullish" };
+  if (value === "bearish") return { icon: "↓", label: "Bearish" };
+  if (value === "no_trade") return { icon: "—", label: "No trade" };
+  return { icon: "·", label: status.replaceAll("_", " ") };
+}
+
 export function runStateCopy(
   item: SymbolDashboardItem,
   running: boolean,
@@ -171,14 +193,14 @@ export function runStateCopy(
 
 export function WatchlistTable({
   items,
-  busySymbols,
+  busyRuns,
   onRun,
   onRunSelected,
   onAutomaticScanChange,
 }: {
   items: SymbolDashboardItem[];
-  busySymbols: Set<string>;
-  onRun: (symbol: string, timeframe: ManualScanTimeframe) => void;
+  busyRuns: Set<string>;
+  onRun: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
   onRunSelected: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
   onAutomaticScanChange: (symbols: string[], enabled: boolean) => Promise<boolean>;
 }) {
@@ -186,7 +208,7 @@ export function WatchlistTable({
   const [filter, setFilter] = useState<WatchlistFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("configured");
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
-  const [timeframes, setTimeframes] = useState<Record<string, ManualScanTimeframe>>({});
+  const [timeframes, setTimeframes] = useState<Record<string, ManualScanTimeframe[]>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
   const visible = useMemo(
@@ -197,10 +219,14 @@ export function WatchlistTable({
   const configuredSymbols = new Set(items.map((item) => item.symbol));
   const activeSelected = new Set([...selected].filter((symbol) => configuredSymbols.has(symbol)));
   const allVisibleSelected = visibleSymbols.length > 0 && visibleSymbols.every((symbol) => selected.has(symbol));
+  const selectedJobCount = items.filter((item) => activeSelected.has(item.symbol))
+    .reduce((count, item) => count + (timeframes[item.symbol]?.length ?? 1), 0);
 
   useEffect(() => {
-    const saved = parseManualTimeframes(localStorage.getItem(MANUAL_TIMEFRAMES_KEY));
-    const timer = window.setTimeout(() => setTimeframes(saved), 0);
+    const saved = parseManualIntervalSelections(localStorage.getItem(MANUAL_INTERVALS_KEY));
+    const legacy = parseManualTimeframes(localStorage.getItem(MANUAL_TIMEFRAMES_KEY));
+    const migrated = Object.fromEntries(Object.entries(legacy).map(([symbol, timeframe]) => [symbol, [timeframe]]));
+    const timer = window.setTimeout(() => setTimeframes({ ...migrated, ...saved }), 0);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -244,7 +270,7 @@ export function WatchlistTable({
   const runSelected = async () => {
     const runs = items
       .filter((item) => activeSelected.has(item.symbol))
-      .map((item) => ({ symbol: item.symbol, timeframe: timeframes[item.symbol] ?? "5m" as const }));
+      .flatMap((item) => (timeframes[item.symbol] ?? ["5m"] as const).map((timeframe) => ({ symbol: item.symbol, timeframe })));
     if (!runs.length) return;
     setBulkPending(true);
     const result = await onRunSelected(runs);
@@ -258,8 +284,11 @@ export function WatchlistTable({
 
   const updateTimeframe = (symbol: string, value: ManualScanTimeframe) => {
     setTimeframes((current) => {
-      const next = { ...current, [symbol]: value };
-      localStorage.setItem(MANUAL_TIMEFRAMES_KEY, JSON.stringify(next));
+      const selected = current[symbol] ?? ["5m"];
+      const nextSelected = selected.includes(value) ? selected.filter((candidate) => candidate !== value) : MANUAL_INTERVALS.filter((candidate) => [...selected, value].includes(candidate));
+      if (!nextSelected.length) return current;
+      const next = { ...current, [symbol]: nextSelected };
+      localStorage.setItem(MANUAL_INTERVALS_KEY, JSON.stringify(next));
       return next;
     });
   };
@@ -291,9 +320,9 @@ export function WatchlistTable({
       {activeSelected.size ? (
         <div className="bulk-auto-toolbar" aria-live="polite">
           <strong>{activeSelected.size} selected</strong>
-          <span>Manual runs use each selected stock&apos;s row timeframe</span>
+          <span>{selectedJobCount} manual interval job{selectedJobCount === 1 ? "" : "s"}{selectedJobCount > 20 ? " · maximum is 20" : ""}</span>
           <div>
-            <button className="primary-button compact" disabled={bulkPending} onClick={() => void runSelected()} type="button">
+            <button className="primary-button compact" disabled={bulkPending || selectedJobCount > 20} onClick={() => void runSelected()} type="button">
               {bulkPending ? "Working…" : "Run selected"}
             </button>
             <button className="secondary-button compact" disabled={bulkPending} onClick={() => void updateSelected(true)} type="button">
@@ -315,8 +344,11 @@ export function WatchlistTable({
               </th>
               <th><SortButton label="Symbol / price" value="symbol" active={sortKey === "symbol"} direction={direction} onSort={sort} /></th>
               <th>
-                <SortButton label="Signal" value="verdict" active={sortKey === "verdict"} direction={direction} onSort={sort} />
-                <SortButton label="Conviction" value="conviction" active={sortKey === "conviction"} direction={direction} onSort={sort} />
+                <div className="signal-sort-group">
+                  <SortButton label="Signal" value="verdict" active={sortKey === "verdict"} direction={direction} onSort={sort} />
+                  <span aria-hidden="true">/</span>
+                  <SortButton label="Conviction" value="conviction" active={sortKey === "conviction"} direction={direction} onSort={sort} />
+                </div>
               </th>
               <th><SortButton label="Auto" value="automaticScanEnabled" active={sortKey === "automaticScanEnabled"} direction={direction} onSort={sort} /></th>
               <th>Visual quality</th>
@@ -327,17 +359,18 @@ export function WatchlistTable({
           </thead>
           <tbody>
             {visible.map((item) => {
-              const href = `/symbols/${item.symbol}`;
+              const href = item.manualGroup ? `/symbols/${item.symbol}/comparisons/${item.manualGroup.id}` : `/symbols/${item.symbol}`;
               const attention = needsAttention(item);
               const signal = signalCopy(item);
-              const running = busySymbols.has(item.symbol) || item.attemptIsRunning;
+              const running = MANUAL_INTERVALS.some((timeframe) => busyRuns.has(`${item.symbol}:${timeframe}`)) || item.attemptIsRunning;
               const runState = runStateCopy(item, running);
               const conviction = convictionCopy(item.conviction);
-              const timeframe = timeframes[item.symbol] ?? "5m";
+              const selectedIntervals = timeframes[item.symbol] ?? ["5m"];
+              const completedGroupMembers = item.manualGroup?.members.filter((member) => member.status === "completed").length ?? 0;
               return (
                 <tr
                   aria-label={`Open ${item.symbol} analysis`}
-                  className={`${attention ? "needs-attention" : ""} ${running ? "is-running" : ""} signal-${item.verdict ?? "neutral"}`}
+                  className={`${attention ? "needs-attention" : ""} ${running ? "is-running" : ""} ${item.manualGroup ? "has-comparison" : ""} signal-${item.verdict ?? "neutral"}`}
                   key={item.symbol}
                   onClick={() => router.push(href)}
                   onKeyDown={(event) => {
@@ -358,11 +391,14 @@ export function WatchlistTable({
                     </a>
                   </td>
                   <td>
-                    <div className={`signal-badge ${item.verdict ?? "neutral"}`}>
-                      <span aria-hidden="true">{signal.icon}</span>
-                      <strong>{signal.label}</strong>
-                      {conviction ? <span className="conviction-label">{conviction}</span> : null}
-                    </div>
+                    {item.manualGroup ? <div className="grouped-signal">{item.manualGroup.members.map((member) => {
+                      const memberSignal = comparisonVerdictCopy(member.verdict, member.status);
+                      return <span aria-label={`${member.timeframe} ${memberSignal.label}${member.conviction ? `, ${member.conviction} conviction` : ""}`} className={`interval-result ${member.verdict ?? "neutral"}`} key={member.timeframe}>
+                        <strong className="interval-result-timeframe">{member.timeframe}</strong>
+                        <span className="interval-result-direction"><span aria-hidden="true">{memberSignal.icon}</span>{memberSignal.label}</span>
+                        <span className="interval-result-conviction">{member.conviction ?? member.status.replaceAll("_", " ")}</span>
+                      </span>;
+                    })}</div> : <div className={`signal-badge ${item.verdict ?? "neutral"}`}><span aria-hidden="true">{signal.icon}</span><strong>{signal.label}</strong>{conviction ? <span className="conviction-label">{conviction}</span> : null}</div>}
                     <small className={`run-state ${runState.tone}`}>{runState.label}</small>
                   </td>
                   <td>
@@ -371,7 +407,7 @@ export function WatchlistTable({
                     </span>
                   </td>
                   <td className="summary-cell">
-                    <span>{item.visualQuality ? `${item.visualQuality[0]!.toUpperCase()}${item.visualQuality.slice(1)}` : "Run a scan to assess the chart."}</span>
+                    {item.manualGroup ? <span className="comparison-completion"><strong>{completedGroupMembers}/{item.manualGroup.requestedIntervals.length}</strong><small>completed</small></span> : <span>{item.visualQuality ? `${item.visualQuality[0]!.toUpperCase()}${item.visualQuality.slice(1)}` : "Run a scan to assess the chart."}</span>}
                     {item.error ? (
                       <details onClick={(event) => event.stopPropagation()}>
                         <summary>Latest scan failed</summary>
@@ -380,8 +416,7 @@ export function WatchlistTable({
                     ) : null}
                   </td>
                   <td className="numeric-cell">
-                    <span className="positive">{price(item.target)}</span>
-                    <span className="negative">{price(item.invalidation)}</span>
+                    {item.manualGroup ? <span className="comparison-link-copy">View levels <span aria-hidden="true">→</span></span> : <><span className="positive">{price(item.target)}</span><span className="negative">{price(item.invalidation)}</span></>}
                   </td>
                   <td>
                     <span>{freshnessLabel(item)}</span>
@@ -392,31 +427,19 @@ export function WatchlistTable({
                   </td>
                   <td className="action-cell">
                     <div className="manual-run-controls">
-                      <label>
-                        <span className="sr-only">Manual timeframe for {item.symbol}</span>
-                        <select
-                          aria-label={`Manual timeframe for ${item.symbol}`}
-                          disabled={running}
-                          onChange={(event) => updateTimeframe(item.symbol, event.target.value as ManualScanTimeframe)}
-                          onClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => event.stopPropagation()}
-                          value={timeframe}
-                        >
-                          <option value="1m">1 min</option>
-                          <option value="5m">5 min</option>
-                          <option value="10m">10 min</option>
-                        </select>
-                      </label>
+                      <div className="interval-picker" aria-label={`Manual intervals for ${item.symbol}`}>
+                        {MANUAL_INTERVALS.map((timeframe) => <button aria-pressed={selectedIntervals.includes(timeframe)} className={selectedIntervals.includes(timeframe) ? "active" : ""} disabled={busyRuns.has(`${item.symbol}:${timeframe}`)} key={timeframe} onClick={(event) => { event.stopPropagation(); updateTimeframe(item.symbol, timeframe); }} type="button">{busyRuns.has(`${item.symbol}:${timeframe}`) ? "…" : timeframe}</button>)}
+                      </div>
                       <button
                         className="secondary-button compact"
-                        disabled={running}
+                        disabled={selectedIntervals.every((timeframe) => busyRuns.has(`${item.symbol}:${timeframe}`))}
                         onClick={(event) => {
                           event.stopPropagation();
-                          onRun(item.symbol, timeframe);
+                          void onRun(selectedIntervals.map((timeframe) => ({ symbol: item.symbol, timeframe })));
                         }}
                         type="button"
                       >
-                        {running ? "Running…" : "Run now"}
+                        {running ? "Run available" : `Run ${selectedIntervals.length === 1 ? "now" : `${selectedIntervals.length} intervals`}`}
                       </button>
                     </div>
                     <details className="mobile-row-details" onClick={(event) => event.stopPropagation()}>

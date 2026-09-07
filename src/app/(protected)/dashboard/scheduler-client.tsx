@@ -20,7 +20,7 @@ type Status = {
   automaticSymbols: string[];
   enabledCount: number;
   configuredCount: number;
-  runningScans: Array<{ symbol: string; startedAt: string | null }>;
+  runningScans: Array<{ symbol: string; timeframe: ManualScanTimeframe; startedAt: string | null }>;
   scanRevision: string | null;
 };
 
@@ -39,7 +39,7 @@ export function SchedulerClient({
     todayUsd: number;
     monthUsd: number;
     targetUsd: number;
-    byClass?: { routine_compact?: number; manual_compact?: number; full_analysis?: number };
+    byClass?: { routine_compact?: number; manual_compact?: number; full_analysis?: number; chat_followup?: number };
     routineProjectionUsd?: number | null;
   };
   demoMode: boolean;
@@ -52,14 +52,12 @@ export function SchedulerClient({
   const nextBatchRetryAt = useRef(0);
   const scanRevision = useRef<string | null>(null);
   const revisionInitialized = useRef(false);
-  const inFlight = useRef(new Set<string>());
   const tickInFlight = useRef(false);
   const lastLeadershipState = useRef<boolean | null>(null);
   const lastStatusSignature = useRef<string | null>(null);
   const schedulerStatusHealthy = useRef(true);
   const [message, setMessage] = useState("Scheduler is checking the market session…");
   const [automaticOverrides, setAutomaticOverrides] = useState<Map<string, boolean>>(new Map());
-  const [busySymbols, setBusySymbols] = useState<Set<string>>(new Set());
   const [batchBusySymbols, setBatchBusySymbols] = useState<Set<string>>(new Set());
   const [remoteBusySymbols, setRemoteBusySymbols] = useState<Set<string>>(new Set());
   const items = useMemo(() => initialItems.map((item) => ({
@@ -82,77 +80,14 @@ export function SchedulerClient({
     return false;
   }, []);
 
-  const run = useCallback(
-    async (symbol: string, mode: "manual" | "scheduled", slotKey?: string, refresh = true, timeframe: ManualScanTimeframe = "5m") => {
-      if (inFlight.current.has(symbol)) return false;
-      inFlight.current.add(symbol);
-      setBusySymbols((current) => new Set(current).add(symbol));
-      return Sentry.startNewTrace(() => Sentry.startSpan(
-        {
-          name: `Request ${mode} scan ${symbol}`,
-          op: `specialstock.scan.${mode}.request`,
-          forceTransaction: true,
-          attributes: {
-            "specialstock.symbol": symbol,
-            "specialstock.scan.mode": mode,
-            "specialstock.chart.interval": mode === "manual" ? timeframe : "5m",
-            ...(slotKey ? { "specialstock.scan.slot": slotKey } : {}),
-          },
-        },
-        async (span) => {
-          const started = performance.now();
-          try {
-            const response = await fetch(`/api/scans/${encodeURIComponent(symbol)}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                mode,
-                ...(slotKey ? { slotKey } : {}),
-                ...(mode === "manual" ? { timeframe, requestId: crypto.randomUUID() } : {}),
-              }),
-            });
-            const payload = (await response.json()) as { error?: string };
-            if (!response.ok) throw new Error(payload.error ?? "Scan failed");
-            span.setAttributes({
-              "specialstock.scan.request_outcome": "completed",
-              "specialstock.scan.duration_ms": Math.round(performance.now() - started),
-            });
-            span.setStatus({ code: 1 });
-            setMessage(`${symbol} ${mode} scan completed.`);
-            if (refresh) router.refresh();
-            return true;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : "Scan failed.";
-            span.setAttributes({
-              "specialstock.scan.request_outcome": "failed",
-              "specialstock.scan.duration_ms": Math.round(performance.now() - started),
-              "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
-            });
-            span.setStatus({ code: 2, message: message.slice(0, 200) });
-            setMessage(message);
-            return false;
-          } finally {
-            inFlight.current.delete(symbol);
-            setBusySymbols((current) => {
-              const next = new Set(current);
-              next.delete(symbol);
-              return next;
-            });
-          }
-        },
-      ));
-    },
-    [router],
-  );
-
   const runManualBatch = useCallback(async (
     runs: ManualBatchRun[],
   ): Promise<ManualBatchSelectionResult | null> => {
     const requestId = crypto.randomUUID();
-    const symbols = runs.map(({ symbol }) => symbol);
+    const symbols = [...new Set(runs.map(({ symbol }) => symbol))];
     const intervals = new Set(runs.map(({ timeframe }) => timeframe));
     const intervalProfile = intervals.size === 1 ? runs[0]?.timeframe ?? "5m" : "mixed";
-    setBatchBusySymbols(new Set(symbols));
+    setBatchBusySymbols(new Set(runs.map(({ symbol, timeframe }) => `${symbol}:${timeframe}`)));
     return Sentry.startNewTrace(() => Sentry.startSpan(
       {
         name: "Request manual scan batch",
@@ -224,7 +159,7 @@ export function SchedulerClient({
       return false;
     }
     batchInFlight.current = slotKey;
-    setBatchBusySymbols(new Set(symbols));
+    setBatchBusySymbols(new Set(symbols.map((symbol) => `${symbol}:5m`)));
     const retry = pendingScheduledSlot.current === slotKey;
     return Sentry.startNewTrace(() => Sentry.startSpan(
       {
@@ -372,7 +307,7 @@ export function SchedulerClient({
           status.marketOpen,
           status.enabledCount,
           status.configuredCount,
-          status.runningScans.map((scan) => scan.symbol).sort().join(","),
+          status.runningScans.map((scan) => `${scan.symbol}:${scan.timeframe}`).sort().join(","),
         ].join("|");
         if (lastStatusSignature.current !== statusSignature) {
           lastStatusSignature.current = statusSignature;
@@ -387,6 +322,7 @@ export function SchedulerClient({
             "specialstock.scheduler.automatic_symbols": status.automaticSymbols.join(","),
             "specialstock.scheduler.running_count": status.runningScans.length,
             "specialstock.scheduler.running_symbols": status.runningScans.map((scan) => scan.symbol).join(",") || "none",
+            "specialstock.scheduler.running_pairs": status.runningScans.map((scan) => `${scan.symbol}:${scan.timeframe}`).join(",") || "none",
             "specialstock.scheduler.next_scan_at": status.nextScanAt ?? "none",
           });
         }
@@ -396,7 +332,7 @@ export function SchedulerClient({
             "specialstock.scheduler.tab_id": tabId.current,
           });
         }
-        setRemoteBusySymbols(new Set(status.runningScans.map((scan) => scan.symbol)));
+        setRemoteBusySymbols(new Set(status.runningScans.map((scan) => `${scan.symbol}:${scan.timeframe}`)));
         if (!revisionInitialized.current) {
           scanRevision.current = status.scanRevision;
           revisionInitialized.current = true;
@@ -543,8 +479,8 @@ export function SchedulerClient({
   }, []);
 
   const enabledCount = items.filter((item) => item.automaticScanEnabled).length;
-  const allBusySymbols = new Set([...remoteBusySymbols, ...busySymbols, ...batchBusySymbols]);
-  const busySymbolList = [...allBusySymbols];
+  const allBusyRuns = new Set([...remoteBusySymbols, ...batchBusySymbols]);
+  const busySymbolList = [...new Set([...allBusyRuns].map((run) => run.split(":")[0]!))];
   const busyLabel = `${busySymbolList.length} stock${busySymbolList.length === 1 ? "" : "s"}`;
 
   return (
@@ -564,16 +500,16 @@ export function SchedulerClient({
         <span><strong>Auto</strong> {enabledCount} of {items.length} · {enabledCount ? "Browser active" : "Off"}</span>
         <span><strong>Database</strong> {database.engine} · {database.status}</span>
         <span className="tabular"><strong>Spend</strong> ${budget.todayUsd.toFixed(4)} today · ${budget.targetUsd.toFixed(2)} target</span>
-        <span className="tabular" title="Scheduled compact · manual compact · full analysis">
-          <strong>By use</strong> ${(budget.byClass?.routine_compact ?? 0).toFixed(4)} · ${(budget.byClass?.manual_compact ?? 0).toFixed(4)} · ${(budget.byClass?.full_analysis ?? 0).toFixed(4)}
+        <span className="tabular" title="Scheduled compact · manual compact · full analysis · chat follow-up">
+          <strong>By use</strong> ${(budget.byClass?.routine_compact ?? 0).toFixed(4)} · ${(budget.byClass?.manual_compact ?? 0).toFixed(4)} · ${(budget.byClass?.full_analysis ?? 0).toFixed(4)} · ${(budget.byClass?.chat_followup ?? 0).toFixed(4)}
         </span>
         <span className="tabular"><strong>2k routine</strong> {budget.routineProjectionUsd === null || budget.routineProjectionUsd === undefined ? "Collecting data" : `$${budget.routineProjectionUsd.toFixed(2)}`}</span>
       </div>
       <WatchlistTable
         items={items}
-        busySymbols={allBusySymbols}
+        busyRuns={allBusyRuns}
         onAutomaticScanChange={setAutomaticScanning}
-        onRun={(symbol, timeframe) => void run(symbol, "manual", undefined, true, timeframe)}
+        onRun={runManualBatch}
         onRunSelected={runManualBatch}
       />
     </>

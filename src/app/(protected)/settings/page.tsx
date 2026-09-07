@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 
 import { SettingsForm } from "@/app/(protected)/settings/settings-form";
+import { PromptStudio, type PromptStudioPhase } from "@/app/(protected)/settings/prompt-studio";
+import { getPromptStudioState } from "@/analysis/prompt-revisions";
 import { isDemoMode } from "@/config/env";
 import { OpenRouterModelCatalogProvider } from "@/models/openrouter-catalog";
 import { DrizzleSettingsRepository } from "@/settings/repository";
@@ -9,14 +11,15 @@ import { getSettingsSnapshot } from "@/settings/service";
 export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
-  const [snapshot, modelStatuses] = await Promise.all([
+  const [snapshot, modelStatuses, prompts] = await Promise.all([
     getSettingsSnapshot(new DrizzleSettingsRepository()),
     new OpenRouterModelCatalogProvider().getAvailability(),
+    getPromptStudioState(),
   ]);
   const demoMode = isDemoMode();
 
   return (
-    <main className="page-shell narrow">
+    <main className="page-shell settings-shell">
       <section className="page-heading">
         <div>
           <p className="eyebrow">Workspace controls</p>
@@ -48,23 +51,23 @@ export default async function SettingsPage() {
           reason,
         }))}
         persistenceAvailable={snapshot.persistence === "connected"}
+        promptStudio={<PromptStudio initial={prompts as PromptStudioPhase[]} />}
+        providerCard={<section className="settings-card provider-card">
+          <div>
+            <p className="eyebrow">Visual analysis pipeline</p>
+            <h2>Chart-Img + Gemini 2.5 Pro</h2>
+            <p className="muted">
+              {demoMode
+                ? "Add rotated Chart-Img and OpenRouter keys to .env.local before running a manual scan."
+                : "Chart capture and Gemini credentials remain server-side. Alpaca is optional for live calendar and outcome data."}
+            </p>
+          </div>
+          <span className={`status-pill ${demoMode ? "warning" : "live"}`}>
+            {demoMode ? "Not configured" : "Configured"}
+          </span>
+        </section>}
         settings={snapshot.settings}
       />
-
-      <section className="settings-card provider-card">
-        <div>
-          <p className="eyebrow">Visual analysis pipeline</p>
-          <h2>Chart-Img + Gemini 2.5 Pro</h2>
-          <p className="muted">
-            {demoMode
-              ? "Add rotated Chart-Img and OpenRouter keys to .env.local before running a manual scan."
-              : "Chart capture and Gemini credentials remain server-side. Alpaca is optional for live calendar and outcome data."}
-          </p>
-        </div>
-        <span className={`status-pill ${demoMode ? "warning" : "live"}`}>
-          {demoMode ? "Not configured" : "Configured"}
-        </span>
-      </section>
     </main>
   );
 }

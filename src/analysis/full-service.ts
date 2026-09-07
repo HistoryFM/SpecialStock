@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { FULL_PROMPT_VERSION } from "@/analysis/prompt";
+import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
 import type { ChartAnalysisInput, ModelAttemptResult } from "@/analysis/types";
 import { readChartArtifact } from "@/chart/artifact-storage";
@@ -75,6 +76,8 @@ async function saveAttempts(runId: string, attempts: ModelAttemptResult[]) {
     estimatedCostUsd: attempt.estimatedCostUsd === null ? null : String(attempt.estimatedCostUsd),
     errorCode: attempt.errorCode,
     rawResponse: attempt.rawResponse,
+    promptSnapshot: attempt.promptSnapshot ?? null,
+    promptHash: attempt.promptHash ?? null,
   }))).onConflictDoNothing();
   const [totals] = await database.select({
     inputTokens: sql<string>`coalesce(sum(${modelAttempts.inputTokens}), 0)`,
@@ -99,6 +102,7 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
   if (!loaded.artifact?.storageReference) throw new Error("The verified chart artifact is unavailable.");
 
   const database = await getDatabase();
+  const promptRevision = await getActivePromptRevision("full");
   const now = new Date();
   const leaseToken = randomUUID();
   const [claimed] = await database.update(analyses).set({
@@ -123,11 +127,21 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     phase: "full",
     requestedModel: loaded.compactRun.requestedModel,
     promptVersion: FULL_PROMPT_VERSION,
+    promptRevisionId: promptRevision.id,
     inputHash: loaded.compactRun.inputHash,
     status: "pending",
   }).onConflictDoUpdate({
-    target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
-    set: { status: "pending", startedAt: now, completedAt: null, validationErrors: [] },
+    target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase, modelRuns.operationKey],
+    set: {
+      chartArtifactId: loaded.artifact.id,
+      promptVersion: FULL_PROMPT_VERSION,
+      promptRevisionId: promptRevision.id,
+      inputHash: loaded.compactRun.inputHash,
+      status: "pending",
+      startedAt: now,
+      completedAt: null,
+      validationErrors: [],
+    },
   }).returning();
   if (!run) throw new Error("The full model run could not be claimed.");
   const reservation = await reserveAnalysisBudget({
@@ -146,6 +160,7 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
         target: loaded.analysis.primaryTarget === null ? null : Number(loaded.analysis.primaryTarget),
         invalidation: loaded.analysis.invalidationLevel === null ? null : Number(loaded.analysis.invalidationLevel),
       },
+      promptRevision,
     });
     if (result.phase !== "full") throw new Error("Full analysis returned the wrong model phase.");
     await settleAnalysisBudget(reservation, result.costUsd, "settled");

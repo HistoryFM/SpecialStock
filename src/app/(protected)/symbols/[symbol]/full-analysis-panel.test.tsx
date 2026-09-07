@@ -10,6 +10,9 @@ const sentryMocks = vi.hoisted(() => ({
   suppressTracing: vi.fn((callback: () => unknown) => callback()),
   spans: [] as Array<{ options: { op?: string } }>,
 }));
+const routerMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+
+vi.mock("next/navigation", () => ({ useRouter: () => routerMocks }));
 
 vi.mock("@sentry/nextjs", () => ({
   startNewTrace: sentryMocks.startNewTrace,
@@ -31,6 +34,7 @@ describe("full analysis tracing", () => {
     sentryMocks.startNewTrace.mockClear();
     sentryMocks.suppressTracing.mockClear();
     sentryMocks.spans.length = 0;
+    routerMocks.refresh.mockClear();
   });
 
   afterEach(() => {
@@ -49,6 +53,7 @@ describe("full analysis tracing", () => {
     render(<FullAnalysisPanel initial={{ ...base, state: "not_requested" }} />);
 
     await waitFor(() => expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(routerMocks.refresh).toHaveBeenCalledTimes(1));
     expect(sentryMocks.spans).toContainEqual({
       options: expect.objectContaining({ op: "specialstock.analysis.full.request", forceTransaction: true }),
     });

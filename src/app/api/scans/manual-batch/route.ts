@@ -14,8 +14,8 @@ const bodySchema = z.object({
     symbol: tickerSchema,
     timeframe: z.enum(["1m", "5m", "10m"]),
   }).strict()).min(1).max(20).refine(
-    (runs) => new Set(runs.map(({ symbol }) => symbol)).size === runs.length,
-    "Symbols must be unique.",
+    (runs) => new Set(runs.map(({ symbol, timeframe }) => `${symbol}:${timeframe}`)).size === runs.length,
+    "Symbol and timeframe pairs must be unique.",
   ),
   requestId: z.string().uuid(),
 }).strict();

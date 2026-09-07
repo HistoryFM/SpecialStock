@@ -5,7 +5,7 @@ import { and, inArray, lt, sql } from "drizzle-orm";
 
 import { removeUnreferencedChartArtifacts } from "@/chart/artifact-storage";
 import { getDatabase } from "@/db/client";
-import { chartArtifacts, scanSlots } from "@/db/schema";
+import { chartArtifacts, manualScanGroups, scanSlots } from "@/db/schema";
 
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 const MAINTENANCE_INTERVAL_MS = 60 * 60_000;
@@ -31,6 +31,10 @@ export async function purgeExpiredScanGraphs(input: {
     .innerJoin(scanSlots, sql`${scanSlots.id} = ${chartArtifacts.scanSlotId}`)
     .where(terminalBeforeCutoff);
   const deletedSlots = await database.delete(scanSlots).where(terminalBeforeCutoff).returning({ id: scanSlots.id });
+  await database.delete(manualScanGroups).where(and(
+    lt(manualScanGroups.createdAt, cutoff),
+    sql`not exists (select 1 from ${scanSlots} where ${scanSlots.manualScanGroupId} = ${manualScanGroups.id})`,
+  ));
   const retainedArtifacts = await database.select({ reference: chartArtifacts.storageReference }).from(chartArtifacts);
   const referenced = new Set(retainedArtifacts.flatMap(({ reference }) => reference ? [reference] : []));
   const files = await removeUnreferencedChartArtifacts({

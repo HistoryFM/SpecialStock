@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCompactAnalysisPrompt, COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
+import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt, COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
 import type { ChartAnalysisInput } from "@/analysis/types";
 
 function input(interval: ChartAnalysisInput["interval"]): ChartAnalysisInput {
@@ -65,5 +65,42 @@ Return no narratives, evidence, indicator readings, or extra fields.`);
     expect(prompt).toContain(`contains ${wording} candles`);
     expect(prompt).toContain(`Interval/session: ${interval}, regular`);
     expect(prompt).toContain("Latest bar status: open");
+  });
+});
+
+describe("full analysis prompt", () => {
+  it("keeps the default locked prompt byte-for-byte stable", () => {
+    expect(buildFullAnalysisPrompt(input("5m"), {
+      observedPrice: 100,
+      verdict: "bullish",
+      conviction: "high",
+      target: 104,
+      invalidation: 97,
+    })).toBe(`Explain the already-locked technical signal using only the attached frozen TradingView chart and return only the narrative JSON object requested by the schema.
+
+Capture metadata:
+- Symbol: NASDAQ:AAPL
+- Captured at: 2026-09-03T13:35:16.321Z
+- Interval/session: 5m, regular
+- Latest bar status: closed
+
+Locked compact signal:
+- Verdict / conviction: bullish, high
+- Observed price / target / invalidation: 100, 104, 97
+
+The chart is the sole technical evidence. Describe only visible price action, VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF. Never calculate indicator values, infer unavailable data, discuss execution mechanics, or invent signals. Complete every indicator reading, using unreadable where necessary. Do not return verdict, conviction, observed price, target, or invalidation: those fields are locked by the compact signal.`);
+  });
+
+  it("changes only the editable instruction block", () => {
+    const prompt = buildFullAnalysisPrompt(input("5m"), {
+      observedPrice: 100,
+      verdict: "bullish",
+      conviction: "high",
+      target: 104,
+      invalidation: 97,
+    }, "Focus on rejection wicks and volume contraction.");
+    expect(prompt).toContain("Focus on rejection wicks and volume contraction.");
+    expect(prompt).toContain("The chart is the sole technical evidence.");
+    expect(prompt).toContain("those fields are locked by the compact signal");
   });
 });

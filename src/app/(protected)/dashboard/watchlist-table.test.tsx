@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ManualBatchRun,
   type ManualBatchSelectionResult,
+  parseManualIntervalSelections,
   parseManualTimeframes,
   WatchlistTable,
 } from "@/app/(protected)/dashboard/watchlist-table";
@@ -45,6 +46,7 @@ function item(index: number, overrides: Partial<SymbolDashboardItem> = {}): Symb
     costUsd: 0.001,
     error: null,
     resultIsCurrent: true,
+    manualGroup: null,
     ...overrides,
   };
 }
@@ -58,17 +60,17 @@ describe("WatchlistTable", () => {
   const renderTable = (
     items: SymbolDashboardItem[],
     options: {
-      busySymbols?: Set<string>;
-      onRun?: (symbol: string, timeframe: "1m" | "5m" | "10m") => void;
+      busyRuns?: Set<string>;
+      onRun?: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
       onRunSelected?: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
       onAutomaticScanChange?: (symbols: string[], enabled: boolean) => Promise<boolean>;
     } = {},
   ) => render(
     <WatchlistTable
       items={items}
-      busySymbols={options.busySymbols ?? new Set()}
+      busyRuns={options.busyRuns ?? new Set()}
       onAutomaticScanChange={options.onAutomaticScanChange ?? vi.fn(async () => true)}
-      onRun={options.onRun ?? vi.fn()}
+      onRun={options.onRun ?? vi.fn(async () => ({ results: [] }))}
       onRunSelected={options.onRunSelected ?? vi.fn(async () => ({ results: [] }))}
     />,
   );
@@ -94,24 +96,47 @@ describe("WatchlistTable", () => {
     expect(screen.queryByRole("button", { name: "Needs attention" })).not.toBeInTheDocument();
   });
 
+  it("matches a raw comparison when any completed interval has the selected direction", () => {
+    renderTable([item(1, {
+      verdict: "bearish",
+      manualGroup: {
+        id: "group-1",
+        createdAt: "2026-09-03T14:00:00.000Z",
+        requestedIntervals: ["1m", "5m", "10m"],
+        members: [
+          { timeframe: "1m", status: "completed", verdict: "bullish", conviction: "high", analysisId: "one" },
+          { timeframe: "5m", status: "completed", verdict: "no_trade", conviction: "low", analysisId: "five" },
+          { timeframe: "10m", status: "failed", verdict: null, conviction: null, analysisId: null },
+        ],
+      },
+    })]);
+    fireEvent.click(screen.getByRole("button", { name: "Bullish" }));
+    const groupedRow = screen.getByRole("row", { name: "Open S01 analysis" });
+    expect(groupedRow).toBeVisible();
+    expect(groupedRow.querySelector(".interval-result.bullish")).toHaveTextContent("1m↑Bullishhigh");
+    expect(within(groupedRow).getByLabelText("1m Bullish, high conviction")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Bearish" }));
+    expect(screen.getAllByRole("row")).toHaveLength(1);
+  });
+
   it("navigates from a row while isolating Run now", () => {
-    const onRun = vi.fn();
+    const onRun = vi.fn(async () => ({ results: [] }));
     renderTable([item(1)], { onRun });
     const row = screen.getByRole("row", { name: "Open S01 analysis" });
     fireEvent.keyDown(row, { key: "Enter" });
     expect(push).toHaveBeenCalledWith("/symbols/S01");
 
     fireEvent.click(within(row).getByRole("button", { name: "Run now" }));
-    expect(onRun).toHaveBeenCalledWith("S01", "5m");
+    expect(onRun).toHaveBeenCalledWith([{ symbol: "S01", timeframe: "5m" }]);
     expect(push).toHaveBeenCalledTimes(1);
   });
 
   it("shows running feedback and disables only the same stock", () => {
-    renderTable([item(1), item(2)], { busySymbols: new Set(["S01"]) });
-    expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
-    expect(screen.getByLabelText("Manual timeframe for S01")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
-    expect(screen.getByLabelText("Manual timeframe for S02")).toBeEnabled();
+    renderTable([item(1), item(2)], { busyRuns: new Set(["S01:5m"]) });
+    expect(within(screen.getByRole("row", { name: "Open S01 analysis" })).getByRole("button", { name: "Run available" })).toBeDisabled();
+    expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "…" })).toBeDisabled();
+    expect(within(screen.getByRole("row", { name: "Open S02 analysis" })).getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "5m" })).toBeEnabled();
     expect(screen.getAllByText(/New analysis running · showing previous/)[0]).toBeVisible();
   });
 
@@ -138,7 +163,7 @@ describe("WatchlistTable", () => {
 
   it("uses server-observed running state even when this tab did not launch the scan", () => {
     renderTable([item(1, { status: "running", attemptIsRunning: true, resultIsCurrent: false })]);
-    expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run available" })).toBeEnabled();
     expect(screen.getAllByText(/New analysis running · showing previous/)[0]).toBeVisible();
   });
 
@@ -165,7 +190,7 @@ describe("WatchlistTable", () => {
   });
 
   it("remembers independent row timeframes and uses them for row and selected runs", async () => {
-    const onRun = vi.fn();
+    const onRun = vi.fn(async () => ({ results: [] }));
     const onRunSelected = vi.fn(async () => ({
       results: [
         { symbol: "S01", timeframe: "1m" as const, outcome: "completed" as const },
@@ -173,12 +198,13 @@ describe("WatchlistTable", () => {
       ],
     }));
     renderTable([item(1), item(2)], { onRun, onRunSelected });
-    expect(screen.getByLabelText("Manual timeframe for S01")).toHaveValue("5m");
-    expect(screen.getByLabelText("Manual timeframe for S02")).toHaveValue("5m");
-    fireEvent.change(screen.getByLabelText("Manual timeframe for S01"), { target: { value: "1m" } });
-    fireEvent.change(screen.getByLabelText("Manual timeframe for S02"), { target: { value: "10m" } });
+    expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "5m" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "1m" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "5m" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "10m" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "5m" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]!);
-    expect(onRun).toHaveBeenCalledWith("S01", "1m");
+    expect(onRun).toHaveBeenCalledWith([{ symbol: "S01", timeframe: "1m" }]);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all visible stocks" }));
     fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
     await waitFor(() => expect(onRunSelected).toHaveBeenCalledWith([
@@ -187,15 +213,16 @@ describe("WatchlistTable", () => {
     ]));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select S01" })).not.toBeChecked());
     expect(screen.getByRole("checkbox", { name: "Select S02" })).toBeChecked();
-    expect(JSON.parse(localStorage.getItem("specialstock-manual-timeframes-v1")!)).toEqual({ S01: "1m", S02: "10m" });
+    expect(JSON.parse(localStorage.getItem("specialstock-manual-intervals-v2")!)).toEqual({ S01: ["1m"], S02: ["10m"] });
   });
 
   it("restores valid per-stock preferences and rejects invalid stored values", async () => {
     localStorage.setItem("specialstock-manual-timeframe", "10m");
     localStorage.setItem("specialstock-manual-timeframes-v1", JSON.stringify({ S01: "1m", S02: "15m" }));
     renderTable([item(1), item(2)]);
-    await waitFor(() => expect(screen.getByLabelText("Manual timeframe for S01")).toHaveValue("1m"));
-    expect(screen.getByLabelText("Manual timeframe for S02")).toHaveValue("5m");
+    await waitFor(() => expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true"));
+    expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "5m" })).toHaveAttribute("aria-pressed", "true");
     expect(parseManualTimeframes("not-json")).toEqual({});
+    expect(parseManualIntervalSelections(JSON.stringify({ S01: ["10m", "bogus", "1m"] }))).toEqual({ S01: ["1m", "10m"] });
   });
 });

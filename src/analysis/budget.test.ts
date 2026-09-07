@@ -24,6 +24,7 @@ const migrations = [
   "0004_enable_automatic_scans.sql",
   "0005_colossal_morgan_stark.sql",
   "0006_groovy_expediter.sql",
+  "0007_tough_swarm.sql",
 ] as const;
 
 async function createDatabase() {

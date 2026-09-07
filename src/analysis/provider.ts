@@ -1,5 +1,6 @@
 import type { UsageClass } from "@/analysis/budget";
 import type { ChartAnalysisInput, ModelAttemptResult, ModelRunResult } from "@/analysis/types";
+import type { PromptRevisionSnapshot } from "@/analysis/prompt";
 
 export type AnalysisModelFailureMetadata = {
   status: "invalid" | "failed" | "timed_out";
@@ -40,5 +41,6 @@ export interface AnalysisModelProvider {
       invalidation: number | null;
     };
     maxAttempts?: 1 | 2;
+    promptRevision?: PromptRevisionSnapshot;
   }): Promise<ModelRunResult>;
 }

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsForm } from "@/app/(protected)/settings/settings-form";
 import { DEFAULT_MODEL_ID } from "@/models/catalog";
@@ -15,6 +15,8 @@ vi.mock("@sentry/nextjs", () => ({
 vi.mock("@/app/(protected)/settings/actions", () => ({
   saveSettingsAction: vi.fn(async () => ({ status: "success", message: "Saved" })),
 }));
+
+afterEach(cleanup);
 
 const settings = {
   watchlist: [{ symbol: "AAPL", exchange: "NASDAQ" as const, automaticScanEnabled: true }],
@@ -29,6 +31,28 @@ const settings = {
 };
 
 describe("Settings stock editor", () => {
+  it("organizes settings into focused sections without unmounting their content", async () => {
+    const user = userEvent.setup();
+    render(<SettingsForm
+      modelStatuses={[]}
+      persistenceAvailable
+      promptStudio={<div>Prompt workspace</div>}
+      providerCard={<div>Provider pipeline</div>}
+      settings={settings}
+    />);
+
+    expect(screen.getByLabelText("Watchlist symbol 1")).toBeVisible();
+    expect(screen.getByText("Prompt workspace")).not.toBeVisible();
+
+    await user.click(screen.getByRole("tab", { name: /AI analysis/ }));
+    expect(screen.getByText("Prompt workspace")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /Preferences/ }));
+    expect(screen.getByText("Provider pipeline")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeVisible();
+  });
+
   it("adds/removes rows, normalizes symbols, and blocks duplicates without losing edits", async () => {
     const user = userEvent.setup();
     render(<SettingsForm settings={settings} modelStatuses={[]} persistenceAvailable />);

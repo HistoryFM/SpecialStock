@@ -24,6 +24,10 @@ vi.mock("@/scans/service", () => ({
   runScan: mocks.runScan,
 }));
 
+vi.mock("@/analysis/prompt-revisions", () => ({
+  getActivePromptRevision: vi.fn(async () => ({ id: "compact-revision", phase: "compact", revisionNumber: 1, instructions: "default", templateVersion: "chart-compact-v2", instructionsHash: "hash" })),
+}));
+
 const session = {
   date: "2026-09-03",
   opensAt: new Date("2026-09-03T13:30:00.000Z"),
@@ -38,7 +42,10 @@ vi.mock("@/market-data/factory", () => ({
 
 vi.mock("@/db/client", () => ({
   getDatabase: vi.fn(async () => ({
-    insert: () => ({ values: () => ({ onConflictDoNothing: async () => undefined }) }),
+    insert: () => ({ values: () => ({
+      onConflictDoNothing: async () => undefined,
+      onConflictDoUpdate: () => ({ returning: async () => [{ id: "manual-group" }] }),
+    }) }),
     select: () => ({ from: () => ({ where: async () => [{ watchlist: DEFAULT_WATCHLIST }] }) }),
   })),
 }));
@@ -55,44 +62,46 @@ describe("manual scan batch", () => {
   });
 
   it("starts siblings concurrently, forwards idempotency and preserves partial outcomes", async () => {
-    const symbols = ["AAPL", "MSFT", "AMZN"];
+    const timeframes = ["1m", "5m", "10m"];
     const starts: string[] = [];
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    mocks.runScan.mockImplementation(async (input: { symbol: string }) => {
-      starts.push(input.symbol);
-      if (starts.length === symbols.length) release?.();
+    mocks.runScan.mockImplementation(async (input: { symbol: string; timeframe: string }) => {
+      starts.push(input.timeframe);
+      if (starts.length === timeframes.length) release?.();
       await gate;
-      if (input.symbol === "AMZN") throw new Error("provider failed");
-      if (input.symbol === "MSFT") throw new ScanAlreadyRunningError("MSFT is busy");
+      if (input.timeframe === "10m") throw new Error("provider failed");
+      if (input.timeframe === "5m") throw new ScanAlreadyRunningError("AAPL 5m is busy");
       return { slotId: "slot-AAPL", analysisId: "analysis-AAPL", status: "completed", reused: false };
     });
 
     const result = await runManualBatch({
       runs: [
         { symbol: "AAPL", timeframe: "1m" },
-        { symbol: "MSFT", timeframe: "5m" },
-        { symbol: "AMZN", timeframe: "10m" },
+        { symbol: "AAPL", timeframe: "5m" },
+        { symbol: "AAPL", timeframe: "10m" },
       ],
       requestId: "55c30fd4-8adb-4982-97df-8bdbecead050",
       now: new Date("2026-09-03T14:02:00.000Z"),
     });
 
-    expect(starts).toEqual(symbols);
+    expect(starts).toEqual(timeframes);
     expect(mocks.runScan).toHaveBeenCalledTimes(3);
     expect(mocks.runScan).toHaveBeenCalledWith(expect.objectContaining({
       symbol: "AAPL",
       timeframe: "1m",
       manualRequestId: "55c30fd4-8adb-4982-97df-8bdbecead050",
       resolvedSession: session,
+      manualScanGroupId: "manual-group",
+      promptRevision: expect.objectContaining({ id: "compact-revision" }),
     }));
-    expect(mocks.runScan).toHaveBeenCalledWith(expect.objectContaining({ symbol: "MSFT", timeframe: "5m" }));
-    expect(mocks.runScan).toHaveBeenCalledWith(expect.objectContaining({ symbol: "AMZN", timeframe: "10m" }));
+    expect(mocks.runScan).toHaveBeenCalledWith(expect.objectContaining({ symbol: "AAPL", timeframe: "5m" }));
+    expect(mocks.runScan).toHaveBeenCalledWith(expect.objectContaining({ symbol: "AAPL", timeframe: "10m" }));
     expect(result.counts).toEqual({ completed: 1, reused: 0, alreadyRunning: 1, failed: 1 });
     expect(result.results).toEqual(expect.arrayContaining([
       expect.objectContaining({ symbol: "AAPL", timeframe: "1m", outcome: "completed" }),
-      expect.objectContaining({ symbol: "MSFT", timeframe: "5m", outcome: "already_running" }),
-      expect.objectContaining({ symbol: "AMZN", timeframe: "10m", outcome: "failed" }),
+      expect.objectContaining({ symbol: "AAPL", timeframe: "5m", outcome: "already_running" }),
+      expect.objectContaining({ symbol: "AAPL", timeframe: "10m", outcome: "failed" }),
     ]));
     const batchSpan = mocks.spans.find(({ options }) => options.op === "specialstock.scan.manual_batch");
     expect(batchSpan?.span.setAttributes).toHaveBeenCalledWith(expect.objectContaining({

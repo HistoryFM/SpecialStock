@@ -70,7 +70,7 @@ describe("model-run retry persistence", () => {
     });
 
     expect(onConflictDoUpdate).toHaveBeenCalledWith({
-      target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase],
+      target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase, modelRuns.operationKey],
       set: expect.objectContaining({
         chartArtifactId: "new-artifact-id",
         inputHash: "new-input-hash",

@@ -7,7 +7,7 @@ import { getDatabase } from "@/db/client";
 import { appSettings, budgetReservations, dailyBudgetLedger } from "@/db/schema";
 import { marketDate } from "@/market-data/time";
 
-export type UsageClass = "routine_compact" | "manual_compact" | "full_analysis";
+export type UsageClass = "routine_compact" | "manual_compact" | "full_analysis" | "chat_followup";
 
 const DEFAULT_DAILY_BUDGET_USD = 12;
 const ROUTINE_COST_TARGET_USD = 10;
@@ -16,6 +16,7 @@ const RESERVED_COST_USD: Record<UsageClass, number> = {
   routine_compact: 0.02,
   manual_compact: 0.02,
   full_analysis: 0.08,
+  chat_followup: 0.08,
 };
 
 export async function reserveAnalysisBudget(input: {
@@ -107,7 +108,7 @@ export async function getBudgetSummary(now = new Date()) {
     routineCostTargetMet:
       routineProjectionUsd === null ? null : routineProjectionUsd < ROUTINE_COST_TARGET_USD,
     byClass: Object.fromEntries(await Promise.all(
-      (["routine_compact", "manual_compact", "full_analysis"] as const).map(async (usageClass) => {
+      (["routine_compact", "manual_compact", "full_analysis", "chat_followup"] as const).map(async (usageClass) => {
         const [row] = await database.select({
           total: sql<string>`coalesce(sum(coalesce(${budgetReservations.actualUsd}, ${budgetReservations.reservedUsd})), 0)`,
         }).from(budgetReservations).where(and(

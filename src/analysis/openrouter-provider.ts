@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { AnalysisModelError, type AnalysisModelProvider } from "@/analysis/provider";
-import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt } from "@/analysis/prompt";
+import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt, COMPACT_PROMPT_VERSION, FULL_PROMPT_VERSION } from "@/analysis/prompt";
 import {
   fullAnalysisResultSchema,
   type ModelAttemptResult,
@@ -150,34 +150,6 @@ function total(attempts: ModelAttemptResult[], field: "inputTokens" | "outputTok
 
 type AttemptSpan = Parameters<Parameters<typeof Sentry.startSpan>[1]>[0];
 
-function sentryInputMessages(prompt: string, png: Buffer, chartSha256: string) {
-  return JSON.stringify([
-    {
-      role: "user",
-      parts: [
-        { type: "text", content: prompt },
-        {
-          type: "image",
-          content: JSON.stringify({
-            mime_type: "image/png",
-            byte_length: png.byteLength,
-            sha256: chartSha256,
-          }),
-        },
-      ],
-    },
-  ]);
-}
-
-function sentryOutputMessages(content: string) {
-  return JSON.stringify([
-    {
-      role: "assistant",
-      parts: [{ type: "text", content }],
-    },
-  ]);
-}
-
 function correctivePrompt(error: unknown) {
   if (error instanceof AnalysisValidationError) {
     return `The previous JSON failed validation: ${error.issues.join("; ").slice(0, 500)}. Return a corrected object matching the schema exactly.`;
@@ -189,6 +161,17 @@ function correctivePrompt(error: unknown) {
     return "The previous response did not match the required JSON structure. Return a corrected object matching the schema exactly.";
   }
   return null;
+}
+
+function safeProviderError(error: unknown) {
+  if (!(error instanceof Error)) return "OpenRouter analysis failed.";
+  if (/^OpenRouter returned HTTP \d{3}\.$/.test(error.message)) return error.message;
+  if (error.name === "AbortError") return "OpenRouter analysis timed out.";
+  if (error.message === "OpenRouter response exceeded the structured-output token budget.") return error.message;
+  if (error.message === "OpenRouter returned an empty response.") return error.message;
+  if (error instanceof AnalysisValidationError) return "OpenRouter response failed structured analysis validation.";
+  if (error instanceof SyntaxError || error instanceof z.ZodError) return "OpenRouter response did not match the required structure.";
+  return "OpenRouter analysis request failed.";
 }
 
 async function resolveUsage(
@@ -283,12 +266,14 @@ function usageLogAttributes(input: {
 export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
   readonly id = "openrouter";
 
-  async analyze({ frozen, png, model, phase, usageClass, lockedSignal, maxAttempts = 2 }: Parameters<AnalysisModelProvider["analyze"]>[0]) {
+  async analyze({ frozen, png, model, phase, usageClass, lockedSignal, maxAttempts = 2, promptRevision }: Parameters<AnalysisModelProvider["analyze"]>[0]) {
     if (model !== DEFAULT_MODEL_ID) throw new Error(`Only ${DEFAULT_MODEL_ID} is allowed for visual analysis.`);
     const apiKey = getServerEnv().OPENROUTER_API_KEY;
     if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured.");
     const compact = phase === "compact";
-    const prompt = compact ? buildCompactAnalysisPrompt(frozen) : buildFullAnalysisPrompt(frozen, lockedSignal);
+    const prompt = compact
+      ? buildCompactAnalysisPrompt(frozen, promptRevision?.instructions)
+      : buildFullAnalysisPrompt(frozen, lockedSignal, promptRevision?.instructions);
     const maxTokens = compact ? 256 : FULL_MAX_TOKENS;
     const estimate = compact ? COMPACT_ESTIMATE_USD : FULL_ESTIMATE_USD;
     const chartSha256 = createHash("sha256").update(png).digest("hex");
@@ -298,7 +283,11 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
 
     for (let index = 0; index < maxAttempts; index += 1) {
       const attemptPrompt: string = correction ? `${prompt}\n\nRetry correction:\n${correction}` : prompt;
-      const inputMessages = sentryInputMessages(attemptPrompt, png, chartSha256);
+      const promptHash = createHash("sha256").update(attemptPrompt).digest("hex");
+      const inputMessages = JSON.stringify([{ role: "user", parts: [
+        { type: "text", content: JSON.stringify({ template: compact ? COMPACT_PROMPT_VERSION : FULL_PROMPT_VERSION, revision_id: promptRevision?.id ?? null, sha256: promptHash, byte_length: Buffer.byteLength(attemptPrompt) }) },
+        { type: "image", content: JSON.stringify({ mime_type: "image/png", byte_length: png.byteLength, sha256: chartSha256 }) },
+      ] }]);
       let nextCorrection: string | null = null;
       const spanAttributes: Record<string, string | number | boolean> = {
         "gen_ai.operation.name": "chat",
@@ -318,6 +307,10 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
         "specialstock.chart.input_hash": frozen.inputHash,
         "specialstock.chart.sha256": chartSha256,
         "specialstock.chart.byte_length": png.byteLength,
+        "specialstock.prompt.revision_id": promptRevision?.id ?? "legacy",
+        "specialstock.prompt.template_version": compact ? COMPACT_PROMPT_VERSION : FULL_PROMPT_VERSION,
+        "specialstock.prompt.sha256": promptHash,
+        "specialstock.prompt.byte_length": Buffer.byteLength(attemptPrompt),
       };
       if (compact) {
         spanAttributes["specialstock.request.thinking_budget_tokens"] = 128;
@@ -361,13 +354,13 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             const analysis = compact
               ? validateCompactAnalysis(parsedContent)
               : validateFullAnalysis(parsedContent);
-            span.setAttribute("gen_ai.output.messages", sentryOutputMessages(JSON.stringify(parsedContent)));
+            span.setAttribute("gen_ai.output.messages", JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: JSON.stringify({ schema: compact ? "compact_signal" : "full_analysis", byte_length: content.length }) }] }]));
             const usage = await resolveUsage(apiKey, raw);
             const attempt: ModelAttemptResult = {
               attemptNumber: index + 1, responseId: raw.id ?? null, status: "valid",
               latencyMs: Math.round(performance.now() - started), ...usage,
               estimatedCostUsd: usage.costUsd === null ? estimate : null,
-              errorCode: null, rawResponse: raw,
+              errorCode: null, rawResponse: raw, promptSnapshot: attemptPrompt, promptHash,
             };
             setAttemptSpanAttributes(span, raw, attempt, false);
             span.setStatus({ code: 1 });
@@ -386,11 +379,10 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               latencyMs: Math.round(performance.now() - started), ...usage,
               estimatedCostUsd: usage.costUsd === null && (shouldRetry || response?.ok) ? estimate : null,
               errorCode: error instanceof Error ? error.message.slice(0, 180) : "provider_error",
-              rawResponse: providerResponse ?? raw,
+              rawResponse: providerResponse ?? raw, promptSnapshot: attemptPrompt, promptHash,
             };
             setAttemptSpanAttributes(span, raw, attempt, willRetry);
-            const message = error instanceof Error ? error.message : "OpenRouter analysis failed.";
-            span.setStatus({ code: 2, message });
+            span.setStatus({ code: 2, message: timedOut ? "provider_timeout" : response && !response.ok ? `provider_http_${response.status}` : "provider_response_invalid" });
             Sentry.logger.warn("Gemini visual analysis failed", {
               ...usageLogAttributes({
                 phase, usageClass, symbol: frozen.symbol, chartSha256, maxAttempts,
@@ -436,7 +428,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
     }
 
     const last = attempts.at(-1)!;
-    throw new AnalysisModelError(lastError instanceof Error ? lastError.message : "OpenRouter analysis failed.", {
+    throw new AnalysisModelError(safeProviderError(lastError), {
       status: last.status === "valid" ? "invalid" : last.status, requestedModel: model, actualModel: null, actualProvider: "openrouter",
       latencyMs: attempts.reduce((sum, attempt) => sum + attempt.latencyMs, 0),
       inputTokens: total(attempts, "inputTokens"), outputTokens: total(attempts, "outputTokens"),

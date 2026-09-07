@@ -138,7 +138,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       },
     });
     const telemetryInput = String(span.attributes["gen_ai.input.messages"]);
-    expect(telemetryInput).toContain("chart is the sole source");
+    expect(telemetryInput).not.toContain("chart is the sole source");
     const telemetryMessages = JSON.parse(telemetryInput) as Array<{
       parts: Array<{ type: string; content: string }>;
     }>;
@@ -148,7 +148,8 @@ describe("OpenRouterAnalysisModelProvider", () => {
     expect(imageMetadata.byte_length).toBe(9);
     expect(telemetryInput).not.toContain("data:image/png;base64");
     expect(telemetryInput).not.toContain("test-openrouter-key");
-    expect(String(span.attributes["gen_ai.output.messages"])).toContain("bullish");
+    expect(String(span.attributes["gen_ai.output.messages"])).toContain("compact_signal");
+    expect(String(span.attributes["gen_ai.output.messages"])).not.toContain("bullish");
     expect(span.attributes["specialstock.cost.estimated"]).toBe(true);
     expect(span.attributes["specialstock.cost.source"]).toBe("estimated");
     expect(span.statuses).toEqual([{ code: 1 }]);
@@ -258,7 +259,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     }>;
     expect(secondMessages[0]?.content[0]?.text).toContain("Retry correction:");
     expect(secondMessages[0]?.content[0]?.text).toContain("directional analysis requires observed price");
-    expect(String(sentry.spans[1]?.attributes["gen_ai.input.messages"])).toContain("Retry correction:");
+    expect(String(sentry.spans[1]?.attributes["gen_ai.input.messages"])).not.toContain("Retry correction:");
     expect(sentry.spans[0]?.attributes["gen_ai.output.messages"]).toBeUndefined();
     expect(JSON.stringify(sentry.spans)).not.toContain("test-openrouter-key");
     expect(JSON.stringify(sentry.spans)).not.toContain("data:image/png;base64");
@@ -325,9 +326,10 @@ describe("OpenRouterAnalysisModelProvider", () => {
       "gen_ai.request.max_tokens": 3_200,
       "gen_ai.request.reasoning.level": "low",
     });
-    expect(String(span.attributes["gen_ai.input.messages"])).toContain("Locked compact signal");
+    expect(String(span.attributes["gen_ai.input.messages"])).not.toContain("Locked compact signal");
     expect(String(span.attributes["gen_ai.input.messages"])).not.toContain("data:image/png;base64");
-    expect(String(span.attributes["gen_ai.output.messages"])).toContain("Bullish visual structure");
+    expect(String(span.attributes["gen_ai.output.messages"])).toContain("full_analysis");
+    expect(String(span.attributes["gen_ai.output.messages"])).not.toContain("Bullish visual structure");
     expect(span.attributes["gen_ai.cost.total_tokens"]).toBe(0.02);
   });
 

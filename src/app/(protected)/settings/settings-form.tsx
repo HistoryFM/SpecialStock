@@ -1,7 +1,7 @@
 "use client";
 
 import * as Sentry from "@sentry/nextjs";
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { saveSettingsAction } from "@/app/(protected)/settings/actions";
 import type { ModelId } from "@/models/catalog";
@@ -12,6 +12,7 @@ import { WATCHLIST_EXCHANGES } from "@/settings/types";
 type ModelStatusView = { id: ModelId; status: ModelAvailabilityStatus; reason: string };
 type EditableRow = WatchlistEntry & { key: string };
 type EditableState = { rows: EditableRow[]; dailyBudgetUsd: number; notificationsEnabled: boolean };
+type SettingsSection = "watchlist" | "analysis" | "preferences";
 
 function editable(settings: AppSettings): EditableState {
   return {
@@ -33,14 +34,17 @@ function comparable(value: EditableState) {
   });
 }
 
-export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: {
+export function SettingsForm({ settings, modelStatuses, persistenceAvailable, promptStudio, providerCard }: {
   settings: AppSettings;
   modelStatuses: ModelStatusView[];
   persistenceAvailable: boolean;
+  promptStudio?: ReactNode;
+  providerCard?: ReactNode;
 }) {
   const initial = useMemo(() => editable(settings), [settings]);
   const [initialFingerprint] = useState(() => comparable(initial));
   const [value, setValue] = useState(initial);
+  const [section, setSection] = useState<SettingsSection>("watchlist");
   const [state, action, isPending] = useActionState(saveSettingsAction, { status: "idle" as const, message: "" });
   const lastReportedResult = useRef<string | null>(null);
   const baseline = state.fingerprint ?? initialFingerprint;
@@ -132,7 +136,20 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
       }
     }}>
       <input name="updatedAt" type="hidden" value={version} />
-      <section className="settings-card" aria-labelledby="watchlist-heading">
+      <div className="settings-section-nav" role="tablist" aria-label="Settings sections">
+        <button aria-controls="settings-watchlist-panel" aria-selected={section === "watchlist"} className={section === "watchlist" ? "active" : ""} onClick={() => setSection("watchlist")} role="tab" type="button">
+          <span>Watchlist</span><small>{value.rows.length} stocks{dirty ? " · unsaved" : ""}</small>
+        </button>
+        <button aria-controls="settings-analysis-panel" aria-selected={section === "analysis"} className={section === "analysis" ? "active" : ""} onClick={() => setSection("analysis")} role="tab" type="button">
+          <span>AI analysis</span><small>Model and prompts</small>
+        </button>
+        <button aria-controls="settings-preferences-panel" aria-selected={section === "preferences"} className={section === "preferences" ? "active" : ""} onClick={() => setSection("preferences")} role="tab" type="button">
+          <span>Preferences</span><small>Budget and alerts</small>
+        </button>
+      </div>
+
+      <div className="settings-section-panel" hidden={section !== "watchlist"} id="settings-watchlist-panel" role="tabpanel">
+      <section className="settings-card settings-watchlist" aria-labelledby="watchlist-heading">
         <div className="settings-card-heading">
           <div><p className="eyebrow">Universe</p><h2 id="watchlist-heading">Watchlist</h2></div>
           <span className="status-pill neutral">{value.rows.length} / 20</span>
@@ -186,7 +203,7 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
                   "specialstock.settings.updated_count": value.rows.length - 1,
                 });
                 setValue((current) => ({ ...current, rows: current.rows.filter((candidate) => candidate.key !== row.key) }));
-              }} type="button">Remove</button>
+              }} title="Remove stock" type="button">×</button>
             </div>
           ))}
         </div>
@@ -199,23 +216,30 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable }: 
         }} type="button">Add stock</button>
         {clientError ? <p className="form-error" role="alert">{clientError}</p> : null}
       </section>
+      </div>
 
+      <div className="settings-section-panel settings-analysis-panel" hidden={section !== "analysis"} id="settings-analysis-panel" role="tabpanel">
       <section className="settings-card" aria-labelledby="model-heading">
         <div className="settings-card-heading"><div><p className="eyebrow">OpenRouter</p><h2 id="model-heading">Analysis model</h2></div><span className="status-pill live">Gemini 2.5 Pro only</span></div>
         <p className="muted">Routine scans create compact signals. Eligible details generate a separate full analysis from the same stored chart.</p>
         {modelStatuses.map((model) => <div className="model-option" key={model.id}><span className="model-copy"><strong>{model.id}</strong><small>{model.reason}</small></span></div>)}
       </section>
+      {promptStudio}
+      </div>
 
+      <div className="settings-section-panel" hidden={section !== "preferences"} id="settings-preferences-panel" role="tabpanel">
       <section className="settings-card">
         <div className="settings-card-heading"><div><p className="eyebrow">Controls</p><h2>Notifications and budget</h2></div><span className="status-pill neutral">Informational target</span></div>
         <div className="control-grid"><label><span>Daily AI spend target (USD)</span><input max="100" min="1" name="dailyBudgetUsd" onChange={(event) => setValue((current) => ({ ...current, dailyBudgetUsd: Number(event.target.value) }))} step="1" type="number" value={value.dailyBudgetUsd} /></label></div>
         <label className="toggle-row"><input checked={value.notificationsEnabled} name="notificationsEnabled" onChange={(event) => setValue((current) => ({ ...current, notificationsEnabled: event.target.checked }))} type="checkbox" /><span><strong>Browser alert events</strong><small>Alerts still require an eligible automatic compact signal.</small></span></label>
       </section>
+      {providerCard}
+      </div>
 
-      <div className="save-bar">
+      {section !== "analysis" ? <div className="save-bar">
         <div aria-live="polite">{state.message ? <p className={state.status === "error" ? "form-error" : "form-success"}>{state.message}</p> : <p className="muted">{dirty ? "Unsaved changes" : "Settings are up to date"}</p>}</div>
         <div><button className="secondary-button" disabled={!dirty || isPending} onClick={reset} type="button">Reset</button> <button className="primary-button" disabled={!persistenceAvailable || isPending || !dirty || Boolean(clientError)} type="submit">{isPending ? "Saving…" : "Save settings"}</button></div>
-      </div>
+      </div> : null}
     </form>
   );
 }

@@ -24,6 +24,7 @@ import {
 } from "@/models/catalog";
 import type { WatchlistEntry } from "@/settings/types";
 import type { IndicatorReadings } from "@/analysis/types";
+import type { ManualScanTimeframe } from "@/analysis/types";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -39,7 +40,11 @@ export const scanStatusEnum = pgEnum("scan_status", [
   "skipped",
 ]);
 export const runRoleEnum = pgEnum("run_role", ["primary", "comparison", "fallback"]);
-export const modelRunPhaseEnum = pgEnum("model_run_phase", ["compact", "full"]);
+export const modelRunPhaseEnum = pgEnum("model_run_phase", ["compact", "full", "chat"]);
+export const promptPhaseEnum = pgEnum("prompt_phase", ["compact", "full"]);
+export const scanIntervalEnum = pgEnum("scan_interval", ["1m", "5m", "10m"]);
+export const chatConversationStatusEnum = pgEnum("chat_conversation_status", ["active", "archived"]);
+export const chatTurnStatusEnum = pgEnum("chat_turn_status", ["pending", "completed", "failed"]);
 export const visualQualityEnum = pgEnum("visual_quality", ["clear", "partial", "unreadable"]);
 export const fullAnalysisStateEnum = pgEnum("full_analysis_state", [
   "ineligible",
@@ -52,6 +57,7 @@ export const usageClassEnum = pgEnum("usage_class", [
   "routine_compact",
   "manual_compact",
   "full_analysis",
+  "chat_followup",
 ]);
 export const modelRunStatusEnum = pgEnum("model_run_status", [
   "pending",
@@ -133,6 +139,48 @@ export const appSettings = pgTable(
   ],
 );
 
+export const promptRevisions = pgTable(
+  "prompt_revisions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    phase: promptPhaseEnum("phase").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    instructions: text("instructions").notNull(),
+    instructionsHash: text("instructions_hash").notNull(),
+    templateVersion: text("template_version").notNull(),
+    createdAt: timestamps.createdAt,
+  },
+  (table) => [
+    uniqueIndex("prompt_revisions_phase_number_unique").on(table.phase, table.revisionNumber),
+    index("prompt_revisions_phase_created_idx").on(table.phase, table.createdAt),
+  ],
+);
+
+export const activePromptRevisions = pgTable("active_prompt_revisions", {
+  phase: promptPhaseEnum("phase").primaryKey(),
+  activeRevisionId: uuid("active_revision_id")
+    .references(() => promptRevisions.id)
+    .notNull(),
+  updatedAt: timestamps.updatedAt,
+});
+
+export const manualScanGroups = pgTable(
+  "manual_scan_groups",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    requestId: uuid("request_id").notNull(),
+    symbol: text("symbol").notNull(),
+    requestedIntervals: jsonb("requested_intervals")
+      .$type<ManualScanTimeframe[]>()
+      .notNull(),
+    createdAt: timestamps.createdAt,
+  },
+  (table) => [
+    uniqueIndex("manual_scan_groups_request_symbol_unique").on(table.requestId, table.symbol),
+    index("manual_scan_groups_symbol_created_idx").on(table.symbol, table.createdAt),
+  ],
+);
+
 export const marketBars = pgTable(
   "market_bars",
   {
@@ -176,6 +224,10 @@ export const scanSlots = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     idempotencyKey: text("idempotency_key").notNull(),
     symbol: text("symbol").notNull(),
+    scanInterval: scanIntervalEnum("scan_interval").default("5m").notNull(),
+    manualScanGroupId: uuid("manual_scan_group_id").references(() => manualScanGroups.id, {
+      onDelete: "set null",
+    }),
     scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
     slotKind: text("slot_kind").notNull(),
     status: scanStatusEnum("status").default("scheduled").notNull(),
@@ -195,8 +247,8 @@ export const scanSlots = pgTable(
   },
   (table) => [
     uniqueIndex("scan_slots_idempotency_key_unique").on(table.idempotencyKey),
-    uniqueIndex("scan_slots_one_running_per_symbol_unique")
-      .on(table.symbol)
+    uniqueIndex("scan_slots_one_running_per_symbol_interval_unique")
+      .on(table.symbol, table.scanInterval)
       .where(sql`${table.status} = 'running'`),
     index("scan_slots_symbol_scheduled_idx").on(table.symbol, table.scheduledFor),
   ],
@@ -259,6 +311,10 @@ export const modelRuns = pgTable(
     chartArtifactId: uuid("chart_artifact_id").references(() => chartArtifacts.id),
     runRole: runRoleEnum("run_role").notNull(),
     phase: modelRunPhaseEnum("phase").default("compact").notNull(),
+    operationKey: text("operation_key").default("default").notNull(),
+    promptRevisionId: uuid("prompt_revision_id").references(() => promptRevisions.id, {
+      onDelete: "set null",
+    }),
     requestedModel: text("requested_model").notNull(),
     actualModel: text("actual_model"),
     actualProvider: text("actual_provider"),
@@ -281,6 +337,7 @@ export const modelRuns = pgTable(
       table.runRole,
       table.requestedModel,
       table.phase,
+      table.operationKey,
     ),
   ],
 );
@@ -302,6 +359,8 @@ export const modelAttempts = pgTable(
     estimatedCostUsd: numeric("estimated_cost_usd", { precision: 16, scale: 8 }),
     errorCode: text("error_code"),
     rawResponse: jsonb("raw_response").$type<unknown>(),
+    promptSnapshot: text("prompt_snapshot"),
+    promptHash: text("prompt_hash"),
     createdAt: timestamps.createdAt,
   },
   (table) => [
@@ -351,6 +410,51 @@ export const analyses = pgTable("analyses", {
   summary: text("summary"),
   createdAt: timestamps.createdAt,
 });
+
+export const analysisChatConversations = pgTable(
+  "analysis_chat_conversations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    analysisId: uuid("analysis_id")
+      .references(() => analyses.id, { onDelete: "cascade" })
+      .notNull(),
+    status: chatConversationStatusEnum("status").default("active").notNull(),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("analysis_chat_one_active_unique")
+      .on(table.analysisId)
+      .where(sql`${table.status} = 'active'`),
+    index("analysis_chat_analysis_idx").on(table.analysisId, table.createdAt),
+  ],
+);
+
+export const analysisChatTurns = pgTable(
+  "analysis_chat_turns",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    conversationId: uuid("conversation_id")
+      .references(() => analysisChatConversations.id, { onDelete: "cascade" })
+      .notNull(),
+    requestId: uuid("request_id").notNull(),
+    question: text("question").notNull(),
+    answer: text("answer"),
+    status: chatTurnStatusEnum("status").default("pending").notNull(),
+    error: text("error"),
+    contextTurnIds: jsonb("context_turn_ids").$type<string[]>().default([]).notNull(),
+    modelRunId: uuid("model_run_id").references(() => modelRuns.id, { onDelete: "set null" }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("analysis_chat_turns_request_unique").on(table.requestId),
+    uniqueIndex("analysis_chat_one_pending_unique")
+      .on(table.conversationId)
+      .where(sql`${table.status} = 'pending'`),
+    index("analysis_chat_turns_conversation_idx").on(table.conversationId, table.createdAt),
+  ],
+);
 
 export const theses = pgTable(
   "theses",

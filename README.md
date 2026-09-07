@@ -11,8 +11,11 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - One-to-20-symbol, exchange-aware watchlist supporting NASDAQ, NYSE, and AMEX symbols.
 - Fresh and untouched legacy installations seed the approved 20-stock universe with automatic scanning enabled for every stock.
 - Prominent bullish, bearish, and no-trade signals based on Gemini's latest valid verdict.
-- Per-stock manual **Run now** analysis at a browser-remembered 1, 5, or 10 minutes, defaulting to 5 minutes regardless of market state or automatic-scan setting.
-- Concurrent mixed-timeframe **Run selected** manual analysis for up to 20 selected watchlist stocks.
+- Per-stock manual analysis at any browser-remembered combination of 1-, 5-, and 10-minute intervals, defaulting to 5 minutes regardless of market state or automatic-scan setting.
+- Concurrent mixed-interval manual batches of up to 20 symbol–interval jobs, including simultaneous 1m, 5m, and 10m scans for one symbol.
+- Raw grouped comparison pages for multi-interval actions, without a combined signal or alignment judgment.
+- Global versioned compact/full analysis instructions with immutable system guardrails and exact prompt audit provenance.
+- One retained, grounded Gemini follow-up conversation for each completed full analysis.
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
 - A rolling 24-hour eligible-signal dashboard history with bullish/bearish filters and conviction ordering, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
@@ -33,6 +36,10 @@ Every routine or manual scan follows this pipeline:
 6. Authenticated UI routes verify the stored hash before returning the chart image.
 
 Opening a medium/high bullish or bearish result claims full-analysis work once. Gemini receives the already-stored, hash-verified PNG again—without a new Chart-Img request—and returns narrative/evidence fields only. It cannot change the compact signal's locked verdict, conviction, observed price, target, or invalidation. Low-conviction and no-trade results remain compact and still expose the frozen chart and audit data.
+
+Compact and full prompts each combine a locked system contract, one active versioned analysis-instructions revision, and immutable runtime metadata. A scheduled or manual batch snapshots one compact revision before fan-out; a full analysis snapshots its revision when claimed. Every provider attempt stores the revision, exact rendered prompt, and SHA-256 prompt hash. The Settings prompt studio can preview, save, restore the default text, inspect history, and reactivate an earlier revision without making response schemas or safety boundaries editable.
+
+After a full analysis succeeds, follow-up chat re-verifies and resends the same stored PNG together with the locked compact signal and stored full analysis. Gemini sees at most the six most recent completed exchanges, cannot browse or access current prices/news, and cannot mutate analysis, thesis, alert, review, or evaluation state. Clearing chat archives the visible conversation until the source analysis expires.
 
 Gemini is explicitly instructed not to reconstruct or calculate technical indicators. The compact prompt requires a structural audit of the last three available candles: real-body velocity and wick rejection, directly matched volume behavior, and acceptance or rejection at VWAP/Keltner lines. A directional result requires those visible structures to agree. If evidence conflicts or chart labels are unclear, the preferred verdict is `no_trade`.
 
@@ -82,7 +89,7 @@ The model is locked to `google/gemini-2.5-pro` through OpenRouter. Compact reque
 | Analysis provider | OpenRouter using only `google/gemini-2.5-pro` |
 | Chart storage | Content-addressed local PNG files with SHA-256 verification |
 | Calendar/outcomes | Alpaca when configured; never used for chart indicators or Gemini numeric context |
-| Scheduling | Authenticated browser leader, concurrent due-slot batch (up to 20), database idempotency and per-symbol exclusion |
+| Scheduling | Authenticated browser leader, concurrent due-slot batch (up to 20), database idempotency and per-symbol–interval exclusion |
 
 The application is currently designed for local execution. PGlite and chart images use the local filesystem; a serverless deployment requires deliberate migration to durable Postgres and private object storage.
 
@@ -94,7 +101,7 @@ Sentry receives 100% tracing, structured logs, and replay coverage for the local
 - Server batch spans record the settings version and enabled-symbol snapshot, one child span per symbol, each launch offset, peak in-flight work, launch spread, per-symbol outcome, and total duration. Use `span.op:specialstock.scan.batch` for the batch and `span.op:specialstock.scan.batch.item` for its concurrent children.
 - Quick dashboard Auto changes record the browser request and the server's authoritative before/after enabled counts, changed count, symbols, duration, and settings versions.
 - Full Settings edits record local add/remove/symbol/exchange/Auto intent, client validation or submission, and the server's added, removed, reordered, exchange-changed, and Auto-changed symbols. Optimistic-concurrency failures include the expected and observed versions.
-- Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, and safe prompt/output capture.
+- Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, revision IDs, and prompt hashes. Customized prompts, chat text, and model response bodies are excluded from Sentry.
 
 Useful log searches begin with `scheduler.`, `scan.batch.`, `settings.auto.`, or `settings.watchlist.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
 
@@ -185,9 +192,17 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 
 ### Manual analysis
 
-Every watchlist row has its own **1 min**, **5 min**, or **10 min** manual timeframe, with **5 min** as the default. The browser remembers each symbol's manual-only choice. Use **Run now** for one row, or select multiple rows and choose **Run selected** to launch their independently selected timeframes together in one server batch. Each available symbol runs concurrently, and one busy or failed symbol does not cancel successful siblings. Manual scans work with automatic scanning on or off and use the current regular session from the opening bell, including an incomplete latest candle when applicable.
+Every watchlist row has selectable **1m**, **5m**, and **10m** chips, with **5m** selected by default. At least one remains selected, and the browser remembers each symbol's combination. A row can launch all of its selected intervals together; **Run selected** expands every selected stock and interval into one server batch and disables submission above 20 jobs. Different intervals for one symbol can run concurrently. The same symbol and interval cannot overlap, so scheduled and manual 5m work remain mutually exclusive while manual 1m or 10m work may coexist with scheduled 5m.
+
+A multi-interval action becomes the symbol's latest dashboard event and links to a comparison page ordered 1m, 5m, 10m. The page shows each independent compact signal, status, levels, quality, capture time, cost, and frozen chart. The app does not calculate alignment, a combined target, or a group thesis. Bullish and Bearish filters match a group when any completed member matches. Opening a comparison never starts full analysis.
 
 Manual scans intentionally do not create alerts, replace the active thesis, or create evaluation outcomes.
+
+### Prompt studio and analysis chat
+
+Settings includes Compact Scan and Full Analysis prompt tabs. The editable method text is limited to 8,000 characters; saving creates and immediately activates an immutable global revision. Compact revisions affect future automatic and manual compact batches. Full revisions affect future claimed full analyses. In-flight work retains its captured revision, and prior revisions remain available for audit and reactivation.
+
+Eligible detail pages show chat only after full analysis is available. Questions are plain text from 1–2,000 trimmed characters. Responses are non-streaming and grounded only in that analysis's capture-time chart and stored analysis; requests for newer market state, current prices, or news are explicitly out of scope. One turn may be pending at a time, failed turns can be retried, and **Clear chat** starts a new visible conversation while retaining the archived record until normal analysis retention removes it.
 
 ### Automatic analysis
 
@@ -270,8 +285,8 @@ The end-to-end suite uses local mock providers. It verifies that the exact store
 ## Project map
 
 - `src/chart/`: Chart-Img request construction, response validation, hashing, and artifact storage.
-- `src/analysis/`: Gemini prompt, OpenRouter transport, schema, and visual-output validation.
-- `src/scans/`: manual/scheduled policy, capture-to-analysis orchestration, persistence, and idempotency.
+- `src/analysis/`: versioned prompt composition, grounded chat, Gemini/OpenRouter transport, schema, budget accounting, and visual-output validation.
+- `src/scans/`: manual/scheduled policy, grouped comparisons, capture-to-analysis orchestration, persistence, and symbol–interval idempotency.
 - `src/settings/`: exchange-aware watchlist and per-stock automatic state.
 - `src/market-data/`: Alpaca/demo calendar and outcome provider support; no indicator calculation.
 - `src/app/`: authenticated Next.js UI and API routes.
@@ -292,7 +307,7 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 - Do not reintroduce local indicator calculations, deterministic chart rendering, numeric companion inputs, comparison models, or Bollinger studies.
 - Keep new secrets server-only and extend the browser-bundle secret scan when adding any server credential.
 - Ask before adding production dependencies or triggering real paid/provider activity.
-- Run `pnpm validate` after changes and the mocked E2E flow when scan or UI behavior changes.
+- Run `pnpm validate` after changes. Use mocked browser validation by default; live validation requires explicit approval and stated hard limits for both providers.
 
 ## Known limitations
 

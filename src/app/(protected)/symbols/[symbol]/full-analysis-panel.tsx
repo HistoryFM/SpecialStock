@@ -1,7 +1,9 @@
 "use client";
 
 import * as Sentry from "@sentry/nextjs";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnalysisChat } from "@/app/(protected)/symbols/[symbol]/analysis-chat";
 
 type FullPayload = {
   analysisId: string;
@@ -15,10 +17,12 @@ type FullPayload = {
   };
 };
 
-export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
+export function FullAnalysisPanel({ initial, capturedAt }: { initial: FullPayload; capturedAt?: string }) {
+  const router = useRouter();
   const [payload, setPayload] = useState(initial);
   const [pending, setPending] = useState(false);
   const started = useRef(false);
+  const refreshedAvailable = useRef(initial.state === "available");
 
   const request = useCallback(async (retry = false) => {
     setPending(true);
@@ -86,6 +90,12 @@ export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
     return () => window.clearInterval(timer);
   }, [initial.analysisId, payload.state]);
 
+  useEffect(() => {
+    if (payload.state !== "available" || refreshedAvailable.current) return;
+    refreshedAvailable.current = true;
+    router.refresh();
+  }, [payload.state, router]);
+
   if (payload.state === "ineligible") {
     return <section className="deep-analysis"><div className="table-empty">This compact signal is not eligible for full analysis. The chart and audit record remain available.</div></section>;
   }
@@ -96,7 +106,7 @@ export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
     return <section className="deep-analysis" aria-live="polite"><div className="table-empty">Generating full analysis from the stored, hash-verified chart…</div></section>;
   }
   const full = payload.full;
-  return (
+  return (<>
     <section className="deep-analysis" aria-labelledby="deep-analysis-heading">
       <div className="deep-analysis-heading"><div><p className="eyebrow">Full AI reasoning · cached</p><h2 id="deep-analysis-heading">{full.setupType ?? "Technical explanation"}</h2></div></div>
       {full.summary ? <p className="decision-summary">{full.summary}</p> : null}
@@ -108,5 +118,7 @@ export function FullAnalysisPanel({ initial }: { initial: FullPayload }) {
         <article><span>05</span><h3>Risks and alternate scenario</h3><ul>{(full.conflictingEvidence ?? []).map((item) => <li key={item}>{item}</li>)}</ul><p>{full.deeperScenario}</p></article>
       </div>
     </section>
+    {capturedAt ? <AnalysisChat analysisId={initial.analysisId} capturedAt={capturedAt} /> : null}
+    </>
   );
 }

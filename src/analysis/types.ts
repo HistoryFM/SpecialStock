@@ -96,6 +96,8 @@ export type ModelAttemptResult = {
   estimatedCostUsd: number | null;
   errorCode: string | null;
   rawResponse: unknown;
+  promptSnapshot?: string;
+  promptHash?: string;
 };
 
 type ModelRunMetadata = {

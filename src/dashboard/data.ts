@@ -6,7 +6,8 @@ import { getBudgetSummary } from "@/analysis/budget";
 import { requireAuthorizedUser } from "@/auth/require-user";
 import { isDemoMode } from "@/config/env";
 import { checkDatabaseHealth, getDatabase } from "@/db/client";
-import { analyses, appSettings, chartArtifacts, modelRuns, scanSlots } from "@/db/schema";
+import { analyses, appSettings, chartArtifacts, manualScanGroups, modelRuns, scanSlots } from "@/db/schema";
+import type { ManualScanTimeframe } from "@/analysis/types";
 import { maybeRunRetention } from "@/history/retention";
 import { getModelDefinition } from "@/models/catalog";
 
@@ -39,6 +40,18 @@ export type SymbolDashboardItem = {
   costUsd: number | null;
   error: string | null;
   resultIsCurrent: boolean;
+  manualGroup: null | {
+    id: string;
+    createdAt: string;
+    requestedIntervals: ManualScanTimeframe[];
+    members: Array<{
+      timeframe: ManualScanTimeframe;
+      status: string;
+      verdict: "bullish" | "bearish" | "no_trade" | null;
+      conviction: "low" | "medium" | "high" | null;
+      analysisId: string | null;
+    }>;
+  };
 };
 
 export async function getDashboardData() {
@@ -88,6 +101,7 @@ export async function getDashboardData() {
         costUsd: null,
         error: null,
         resultIsCurrent: false,
+        manualGroup: null,
       });
       continue;
     }
@@ -111,6 +125,37 @@ export async function getDashboardData() {
       )
       .orderBy(desc(scanSlots.scheduledFor), desc(modelRuns.completedAt))
       .limit(1);
+    const [latestGroup] = await database.select().from(manualScanGroups)
+      .where(eq(manualScanGroups.symbol, symbol))
+      .orderBy(desc(manualScanGroups.createdAt)).limit(1);
+    let manualGroup: SymbolDashboardItem["manualGroup"] = null;
+    if (latestGroup && latestGroup.requestedIntervals.length > 1 && latestGroup.createdAt >= slot.scheduledFor) {
+      const members = await database.select({
+        timeframe: scanSlots.scanInterval,
+        status: scanSlots.status,
+        verdict: analyses.verdict,
+        conviction: analyses.conviction,
+        analysisId: analyses.id,
+      }).from(scanSlots)
+        .leftJoin(modelRuns, and(eq(modelRuns.scanSlotId, scanSlots.id), eq(modelRuns.phase, "compact")))
+        .leftJoin(analyses, eq(analyses.modelRunId, modelRuns.id))
+        .where(eq(scanSlots.manualScanGroupId, latestGroup.id));
+      manualGroup = {
+        id: latestGroup.id,
+        createdAt: latestGroup.createdAt.toISOString(),
+        requestedIntervals: latestGroup.requestedIntervals,
+        members: latestGroup.requestedIntervals.map((timeframe) => {
+          const member = members.find((candidate) => candidate.timeframe === timeframe);
+          return {
+            timeframe,
+            status: member?.status ?? "running",
+            verdict: member?.verdict ?? null,
+            conviction: member?.conviction ?? null,
+            analysisId: member?.analysisId ?? null,
+          };
+        }),
+      };
+    }
     items.push({
       symbol,
       exchange: entry.exchange,
@@ -145,6 +190,7 @@ export async function getDashboardData() {
       costUsd: joined?.run.costUsd ? Number(joined.run.costUsd) : null,
       error: slot.errorCode,
       resultIsCurrent: joined?.resultSlot.id === slot.id,
+      manualGroup,
     });
   }
   return {
