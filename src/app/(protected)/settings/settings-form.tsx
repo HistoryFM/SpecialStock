@@ -219,12 +219,12 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable, pr
       </div>
 
       <div className="settings-section-panel settings-analysis-panel" hidden={section !== "analysis"} id="settings-analysis-panel" role="tabpanel">
-      <section className="settings-card" aria-labelledby="model-heading">
+      {promptStudio}
+      <section className="settings-card settings-model-summary" aria-labelledby="model-heading">
         <div className="settings-card-heading"><div><p className="eyebrow">OpenRouter</p><h2 id="model-heading">Analysis model</h2></div><span className="status-pill live">Gemini 2.5 Pro only</span></div>
         <p className="muted">Routine scans create compact signals. Eligible details generate a separate full analysis from the same stored chart.</p>
         {modelStatuses.map((model) => <div className="model-option" key={model.id}><span className="model-copy"><strong>{model.id}</strong><small>{model.reason}</small></span></div>)}
       </section>
-      {promptStudio}
       </div>
 
       <div className="settings-section-panel" hidden={section !== "preferences"} id="settings-preferences-panel" role="tabpanel">
