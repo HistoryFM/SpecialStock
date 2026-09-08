@@ -15,7 +15,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Concurrent mixed-interval manual batches of up to 20 symbol–interval jobs, including simultaneous 1m, 5m, and 10m scans for one symbol.
 - Raw grouped comparison pages for multi-interval actions, without a combined signal or alignment judgment.
 - Global versioned compact/full analysis instructions with immutable system guardrails and exact prompt audit provenance.
-- One retained, grounded Gemini follow-up conversation for each completed full analysis.
+- One active, grounded Gemini follow-up conversation for each completed full analysis, with cleared conversations retained as archived audit history.
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
 - A rolling 24-hour eligible-signal dashboard history with bullish/bearish filters and conviction ordering, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
@@ -39,7 +39,9 @@ Opening a medium/high bullish or bearish result claims full-analysis work once. 
 
 Compact and full prompts each combine a locked system contract, one active versioned analysis-instructions revision, and immutable runtime metadata. A scheduled or manual batch snapshots one compact revision before fan-out; a full analysis snapshots its revision when claimed. Every provider attempt stores the revision, exact rendered prompt, and SHA-256 prompt hash. The Settings prompt studio can preview, save, restore the default text, inspect history, and reactivate an earlier revision without making response schemas or safety boundaries editable.
 
-After a full analysis succeeds, follow-up chat re-verifies and resends the same stored PNG together with the locked compact signal and stored full analysis. Gemini sees at most the six most recent completed exchanges, cannot browse or access current prices/news, and cannot mutate analysis, thesis, alert, review, or evaluation state. Clearing chat archives the visible conversation until the source analysis expires.
+After a full analysis succeeds, follow-up chat re-verifies and resends the same stored PNG together with the locked compact signal and stored full analysis. Gemini sees at most the six most recent completed exchanges, cannot browse or access current prices/news, and cannot mutate analysis, thesis, alert, review, or evaluation state. Each client-generated request ID is idempotent, only one turn may be pending per conversation, and partial provider output is never displayed. Clearing chat archives the visible conversation until the source analysis expires.
+
+Chat uses the same `google/gemini-2.5-pro` OpenRouter path with temperature 0.1, low reasoning, non-streaming responses, and a 1,200-token response ceiling. Chat usage is recorded separately as `chat_followup`; the retained $0.08 estimate is used only when exact provider cost cannot be reconciled and never blocks a request.
 
 Gemini is explicitly instructed not to reconstruct or calculate technical indicators. The compact prompt requires a structural audit of the last three available candles: real-body velocity and wick rejection, directly matched volume behavior, and acceptance or rejection at VWAP/Keltner lines. A directional result requires those visible structures to agree. If evidence conflicts or chart labels are unclear, the preferred verdict is `no_trade`.
 
@@ -95,15 +97,18 @@ The application is currently designed for local execution. PGlite and chart imag
 
 ### Sentry diagnostic coverage
 
-Sentry receives 100% tracing, structured logs, and replay coverage for the local production app. The telemetry is designed to reconstruct scheduler and Settings complaints without provider keys, chart bytes, cookies, request bodies, or password fields.
+Sentry receives 100% tracing, structured logs, and replay coverage for the local production app. The telemetry is designed to reconstruct scheduler, manual-scan, prompt, Settings, and Ask AI complaints without provider keys, chart bytes, cookies, request bodies, password fields, customized instructions, questions, or answers. Prompt editors/previews and chat inputs/transcripts are masked from Replay.
 
 - Browser scheduler logs record leadership changes, material slot/status changes, enabled and running symbols, batch requests, retries, response outcomes, and recovery after heartbeat failures.
 - Server batch spans record the settings version and enabled-symbol snapshot, one child span per symbol, each launch offset, peak in-flight work, launch spread, per-symbol outcome, and total duration. Use `span.op:specialstock.scan.batch` for the batch and `span.op:specialstock.scan.batch.item` for its concurrent children.
+- Manual batches correlate client request, server workflow, and one child scan tree per symbol–interval through `specialstock.scan.request_id`. Their spans and logs retain interval counts/profile, completion counts, peak concurrency, duration, and per-item outcome without retaining request bodies.
+- Prompt revision creation and activation correlate client/server traces with the phase, revision ID, instruction length/hash, prior active revision, and outcome. Instruction text and rendered prompts remain only in the authenticated audit store, not Sentry.
+- Ask AI traces correlate the client request, server chat workflow, and `gen_ai.chat` attempt through analysis, conversation, turn, and request IDs. Model settings, prompt/chart hashes, latency, token usage, cost, retry state, and outcome are observable; questions, answers, rendered prompts, and PNG bytes are not.
 - Quick dashboard Auto changes record the browser request and the server's authoritative before/after enabled counts, changed count, symbols, duration, and settings versions.
 - Full Settings edits record local add/remove/symbol/exchange/Auto intent, client validation or submission, and the server's added, removed, reordered, exchange-changed, and Auto-changed symbols. Optimistic-concurrency failures include the expected and observed versions.
 - Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, revision IDs, and prompt hashes. Customized prompts, chat text, and model response bodies are excluded from Sentry.
 
-Useful log searches begin with `scheduler.`, `scan.batch.`, `settings.auto.`, or `settings.watchlist.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
+Useful log searches begin with `scheduler.`, `scan.batch.`, `scan.manual_batch.`, `prompt.revision.`, `chat.`, `settings.auto.`, or `settings.watchlist.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
 
 ## Requirements
 
@@ -213,7 +218,7 @@ The scheduler:
 - Runs only enabled stocks.
 - Always requests five-minute charts regardless of any remembered per-stock manual timeframe.
 - Runs once shortly after each completed five-minute bar from 9:35 through 3:55 Eastern; it does not launch a 4:00 PM scan.
-- Sends one authenticated batch request per due slot; the server launches all enabled symbols together (up to 20) and the dashboard refreshes once after settlement.
+- Submits each due slot as one authenticated batch containing all enabled symbols (up to 20), and the dashboard refreshes once after settlement. Dashboard navigation or recovery can resubmit the same slot request; database idempotency returns the existing work without repeating completed Chart-Img or Gemini operations.
 - Uses browser leader election and database idempotency to avoid duplicate scans across tabs.
 - Carries one server-validated slot through the full symbol batch so slow symbols cannot drift into the next bar.
 - Retries an idempotent scheduled slot when a manual run temporarily occupies the same symbol, without overlapping scans or repeating completed siblings.
@@ -239,7 +244,7 @@ Local state is stored in:
 - `.data/specialstock/`: embedded database.
 - `.data/chart-artifacts/`: exact PNGs used for analyses.
 
-Complete scan graphs in completed, failed, or skipped state are permanently removed after seven rolling days. This cascades through their analysis, review, thesis, outcome, notification, model-run, and chart-artifact records. Shared content-addressed PNGs are retained while any retained chart record still references them, and spend ledgers/reservations remain available for accurate cost reporting.
+Complete scan graphs in completed, failed, or skipped state are permanently removed after seven rolling days. This cascades through their analyses, chat conversations/turns, reviews, theses, outcomes, notifications, model runs, and chart-artifact records; orphaned manual comparison groups are removed with the same cleanup. Shared content-addressed PNGs are retained while any retained chart record still references them, and spend ledgers/reservations remain available for accurate cost reporting. Prompt revisions are retained indefinitely, with one persistent active pointer for each prompt phase.
 
 To back up the app:
 
@@ -312,6 +317,7 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 ## Known limitations
 
 - Automatic scans stop when the dashboard is closed, the laptop sleeps, or connectivity is lost.
+- Reloading or revisiting the dashboard can produce another idempotent server request for the current scheduled slot; existing completed/running work is reused, so provider operations and analysis records are not duplicated.
 - Regular US market sessions only; automatic scans run from 9:35 through 3:55 Eastern and extended hours are out of scope.
 - The watchlist supports at most 20 stocks and remains single-user.
 - Dashboard history intentionally shows only the rolling last 24 hours; permanent scan-graph retention is seven rolling days.
