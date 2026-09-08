@@ -12,13 +12,21 @@ const mocks = vi.hoisted(() => ({
   settle: vi.fn(async () => undefined),
   info: vi.fn(),
   warn: vi.fn(),
+  spans: [] as Array<{ options: { op?: string; attributes?: Record<string, unknown> }; span: { setAttribute: ReturnType<typeof vi.fn>; setAttributes: ReturnType<typeof vi.fn>; setStatus: ReturnType<typeof vi.fn> } }>,
 }));
 
 vi.mock("@/db/client", () => ({ getDatabase: mocks.getDatabase }));
 vi.mock("@/chart/artifact-storage", () => ({ readChartArtifact: mocks.readChartArtifact }));
 vi.mock("@/analysis/budget", () => ({ reserveAnalysisBudget: mocks.reserve, settleAnalysisBudget: mocks.settle }));
 vi.mock("@/config/env", () => ({ getServerEnv: () => ({ OPENROUTER_API_KEY: "test-key", OPENROUTER_API_URL: "https://openrouter.test/chat" }) }));
-vi.mock("@sentry/nextjs", () => ({ logger: { info: mocks.info, warn: mocks.warn } }));
+vi.mock("@sentry/nextjs", () => ({
+  logger: { info: mocks.info, warn: mocks.warn },
+  startSpan: vi.fn(async (options, callback) => {
+    const span = { setAttribute: vi.fn(), setAttributes: vi.fn(), setStatus: vi.fn() };
+    mocks.spans.push({ options, span });
+    return callback(span);
+  }),
+}));
 
 import { getAnalysisChat, resetAnalysisChat, retryAnalysisChat, submitAnalysisChat } from "@/analysis/chat-service";
 
@@ -64,6 +72,7 @@ async function setupDatabase() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.spans.length = 0;
 });
 
 afterEach(async () => {
@@ -106,6 +115,18 @@ describe("analysis-grounded chat", () => {
     expect(serialized).toContain("question 8");
     expect(serialized).toContain("data:image/png;base64");
     expect(JSON.stringify(mocks.info.mock.calls)).not.toContain("question 8");
+    const genAiSpans = mocks.spans.filter(({ options }) => options.op === "gen_ai.chat");
+    expect(genAiSpans).toHaveLength(8);
+    expect(genAiSpans.at(-1)?.options.attributes).toMatchObject({
+      "specialstock.telemetry.origin": "server",
+      "specialstock.analysis.id": analysisId,
+      "specialstock.chat.context_count": 6,
+      "gen_ai.provider.name": "openrouter",
+      "gen_ai.request.model": "google/gemini-2.5-pro",
+      "gen_ai.response.streaming": false,
+    });
+    expect(mocks.spans.some(({ options }) => options.op === "specialstock.analysis.chat")).toBe(true);
+    expect(JSON.stringify(genAiSpans.map(({ options }) => options.attributes))).not.toContain("question 8");
   });
 
   it("persists a failed turn, offsets explicit retry attempts, and archives on reset", async () => {

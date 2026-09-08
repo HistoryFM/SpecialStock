@@ -145,6 +145,7 @@ async function executeTurnUnsafe(input: { analysisId: string; turnId: string }) 
   await database.update(analysisChatTurns).set({ modelRunId: run.id, contextTurnIds: recent.map((item) => item.id), updatedAt: new Date() }).where(eq(analysisChatTurns.id, turn.id));
   const env = getServerEnv();
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not configured.");
+  const apiKey = env.OPENROUTER_API_KEY;
   const [latestAttempt] = await database.select({ attemptNumber: modelAttempts.attemptNumber }).from(modelAttempts)
     .where(eq(modelAttempts.modelRunId, run.id)).orderBy(desc(modelAttempts.attemptNumber)).limit(1);
   const attemptOffset = latestAttempt?.attemptNumber ?? 0;
@@ -154,112 +155,225 @@ async function executeTurnUnsafe(input: { analysisId: string; turnId: string }) 
   let totalCostUsd = 0;
   let estimatedUsage = false;
   let lastError: unknown;
+  Sentry.logger.info("chat.turn.started", {
+    "specialstock.telemetry.origin": "server",
+    "specialstock.analysis.id": input.analysisId,
+    "specialstock.chat.conversation_id": conversation.id,
+    "specialstock.chat.turn_id": turn.id,
+    "specialstock.chat.request_id": turn.requestId,
+    "specialstock.chat.question_length": turn.question.length,
+    "specialstock.chat.context_count": recent.length,
+    "specialstock.chat.input_hash": inputHash,
+    "specialstock.chart.image_hash": grounding.artifact.imageHash,
+  });
   for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber += 1) {
-    const started = performance.now();
-    let raw: z.infer<typeof responseSchema> | null = null;
-    let response: Response | null = null;
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45_000);
-      try {
-        response = await fetch(env.OPENROUTER_API_URL, {
-          method: "POST", cache: "no-store", signal: controller.signal,
-          headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": "http://localhost:3000", "X-Title": "SpecialStock" },
-          body: JSON.stringify({ model: DEFAULT_MODEL_ID, temperature: 0.1, max_tokens: 1_200, reasoning: { effort: "low" }, response_format: { type: "json_schema", json_schema: { name: "analysis_chat_answer", strict: true, schema: { type: "object", additionalProperties: false, required: ["answer"], properties: { answer: { type: "string" } } } } }, messages: [
-            ...textMessages.slice(0, -1),
-            { role: "user", content: [{ type: "text", text: turn.question }, { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } }] },
-          ] }),
-        });
-      } finally { clearTimeout(timeout); }
-      if (!response.ok) throw new Error(`OpenRouter returned HTTP ${response.status}.`);
-      raw = responseSchema.parse(await response.json());
-      const content = raw.choices[0]!.message.content;
-      if (!content) throw new Error("OpenRouter returned an empty chat response.");
-      const parsed = answerSchema.parse(JSON.parse(content));
-      const usage = await resolveUsage(env.OPENROUTER_API_KEY, raw);
-      totalInputTokens += usage.inputTokens ?? 0;
-      totalOutputTokens += usage.outputTokens ?? 0;
-      totalCostUsd += usage.costUsd ?? 0.08;
-      estimatedUsage ||= usage.costUsd === null;
-      const latencyMs = Math.round(performance.now() - started);
-      await database.insert(modelAttempts).values({ modelRunId: run.id, attemptNumber: attemptOffset + attemptNumber, responseId: raw.id ?? null, status: "valid", latencyMs, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: usage.costUsd == null ? null : String(usage.costUsd), estimatedCostUsd: usage.costUsd == null ? "0.08" : null, rawResponse: raw, promptSnapshot: inputSnapshot, promptHash: inputHash });
-      Sentry.logger.info("chat.model.attempt", {
+    const attempt = attemptOffset + attemptNumber;
+    const outcome = await Sentry.startSpan({
+      name: `chat ${DEFAULT_MODEL_ID}`,
+      op: "gen_ai.chat",
+      attributes: {
+        "specialstock.telemetry.origin": "server",
+        "specialstock.analysis.id": input.analysisId,
         "specialstock.analysis.phase": "chat",
-        "specialstock.analysis.status": "valid",
         "specialstock.analysis.usage_class": "chat_followup",
-        "specialstock.analysis.attempt": attemptOffset + attemptNumber,
-        "specialstock.analysis.will_retry": false,
+        "specialstock.analysis.attempt": attempt,
+        "specialstock.chat.conversation_id": conversation.id,
         "specialstock.chat.turn_id": turn.id,
+        "specialstock.chat.request_id": turn.requestId,
+        "specialstock.chat.question_length": turn.question.length,
+        "specialstock.chat.context_count": recent.length,
         "specialstock.prompt.template_version": CHAT_PROMPT_VERSION,
         "specialstock.prompt.sha256": inputHash,
         "specialstock.prompt.byte_length": Buffer.byteLength(inputSnapshot),
         "specialstock.chart.image_hash": grounding.artifact.imageHash,
+        "gen_ai.operation.name": "chat",
+        "gen_ai.operation.type": "ai_client",
+        "gen_ai.provider.name": "openrouter",
         "gen_ai.request.model": DEFAULT_MODEL_ID,
-        "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
-        "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
-        "gen_ai.cost.total_tokens": usage.costUsd ?? 0.08,
-        "specialstock.cost.estimated": usage.costUsd === null,
-      });
-      await settleAnalysisBudget(reservation, totalCostUsd, estimatedUsage ? "estimated" : "settled");
-      await database.update(modelRuns).set({ actualModel: raw.model ?? DEFAULT_MODEL_ID, actualProvider: raw.provider ?? "openrouter", status: "valid", latencyMs, inputTokens: totalInputTokens || null, outputTokens: totalOutputTokens || null, costUsd: String(totalCostUsd), rawResponse: raw, completedAt: new Date() }).where(eq(modelRuns.id, run.id));
-      const [saved] = await database.update(analysisChatTurns).set({ answer: parsed.answer, status: "completed", error: null, completedAt: new Date(), updatedAt: new Date() }).where(eq(analysisChatTurns.id, turn.id)).returning();
-      Sentry.logger.info("chat.turn.completed", { "specialstock.analysis.id": input.analysisId, "specialstock.chat.turn_id": turn.id, "specialstock.chat.input_hash": inputHash, "specialstock.chart.image_hash": grounding.artifact.imageHash, "specialstock.chat.context_count": recent.length, "specialstock.model.input_tokens": totalInputTokens, "specialstock.model.output_tokens": totalOutputTokens, "specialstock.model.cost_usd": totalCostUsd, "specialstock.model.cost_estimated": estimatedUsage });
-      return publicTurn(saved!);
-    } catch (error) {
-      lastError = error;
-      const latencyMs = Math.round(performance.now() - started);
-      const retryable = !response || response.ok || [408, 409, 429].includes(response.status) || response.status >= 500;
-      const usage = await resolveUsage(env.OPENROUTER_API_KEY, raw);
-      const billed = Boolean(response?.ok || raw);
-      totalInputTokens += usage.inputTokens ?? 0;
-      totalOutputTokens += usage.outputTokens ?? 0;
-      if (billed) {
+        "gen_ai.request.temperature": 0.1,
+        "gen_ai.request.max_tokens": 1_200,
+        "gen_ai.request.reasoning.level": "low",
+        "gen_ai.response.streaming": false,
+        "gen_ai.conversation.id": conversation.id,
+        "gen_ai.prompt.name": "specialstock.analysis-chat",
+        "gen_ai.function_id": "specialstock.ask-analysis",
+        "gen_ai.pipeline.name": "specialstock.grounded-analysis-chat",
+        "gen_ai.input.messages": JSON.stringify([{ role: "user", parts: [
+          { type: "text", content: JSON.stringify({ template: CHAT_PROMPT_VERSION, sha256: inputHash, byte_length: Buffer.byteLength(inputSnapshot), question_length: turn.question.length, context_count: recent.length }) },
+          { type: "image", content: JSON.stringify({ mime_type: "image/png", byte_length: png.byteLength, sha256: grounding.artifact.imageHash }) },
+        ] }]),
+      },
+    }, async (span) => {
+      const started = performance.now();
+      let raw: z.infer<typeof responseSchema> | null = null;
+      let response: Response | null = null;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 45_000);
+        try {
+          response = await fetch(env.OPENROUTER_API_URL, {
+            method: "POST", cache: "no-store", signal: controller.signal,
+            headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": "http://localhost:3000", "X-Title": "SpecialStock" },
+            body: JSON.stringify({ model: DEFAULT_MODEL_ID, temperature: 0.1, max_tokens: 1_200, reasoning: { effort: "low" }, response_format: { type: "json_schema", json_schema: { name: "analysis_chat_answer", strict: true, schema: { type: "object", additionalProperties: false, required: ["answer"], properties: { answer: { type: "string" } } } } }, messages: [
+              ...textMessages.slice(0, -1),
+              { role: "user", content: [{ type: "text", text: turn.question }, { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } }] },
+            ] }),
+          });
+        } finally { clearTimeout(timeout); }
+        if (!response.ok) throw new Error(`OpenRouter returned HTTP ${response.status}.`);
+        raw = responseSchema.parse(await response.json());
+        const content = raw.choices[0]!.message.content;
+        if (!content) throw new Error("OpenRouter returned an empty chat response.");
+        const parsed = answerSchema.parse(JSON.parse(content));
+        const usage = await resolveUsage(apiKey, raw);
+        totalInputTokens += usage.inputTokens ?? 0;
+        totalOutputTokens += usage.outputTokens ?? 0;
         totalCostUsd += usage.costUsd ?? 0.08;
         estimatedUsage ||= usage.costUsd === null;
+        const latencyMs = Math.round(performance.now() - started);
+        await database.insert(modelAttempts).values({ modelRunId: run.id, attemptNumber: attempt, responseId: raw.id ?? null, status: "valid", latencyMs, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: usage.costUsd == null ? null : String(usage.costUsd), estimatedCostUsd: usage.costUsd == null ? "0.08" : null, rawResponse: raw, promptSnapshot: inputSnapshot, promptHash: inputHash });
+        span.setAttributes({
+          "specialstock.analysis.status": "valid",
+          "specialstock.analysis.will_retry": false,
+          "gen_ai.response.id": raw.id ?? "unavailable",
+          "gen_ai.response.model": raw.model ?? DEFAULT_MODEL_ID,
+          "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
+          "gen_ai.usage.total_tokens": (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+          "gen_ai.cost.total_tokens": usage.costUsd ?? 0.08,
+          "specialstock.cost.estimated": usage.costUsd === null,
+          "gen_ai.output.messages": JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: JSON.stringify({ schema: "analysis_chat_answer", byte_length: content.length }) }] }]),
+        });
+        span.setStatus({ code: 1 });
+        Sentry.logger.info("chat.model.attempt", {
+          "specialstock.telemetry.origin": "server",
+          "specialstock.analysis.id": input.analysisId,
+          "specialstock.analysis.phase": "chat",
+          "specialstock.analysis.status": "valid",
+          "specialstock.analysis.usage_class": "chat_followup",
+          "specialstock.analysis.attempt": attempt,
+          "specialstock.analysis.will_retry": false,
+          "specialstock.chat.conversation_id": conversation.id,
+          "specialstock.chat.turn_id": turn.id,
+          "specialstock.chat.request_id": turn.requestId,
+          "specialstock.prompt.template_version": CHAT_PROMPT_VERSION,
+          "specialstock.prompt.sha256": inputHash,
+          "specialstock.prompt.byte_length": Buffer.byteLength(inputSnapshot),
+          "specialstock.chart.image_hash": grounding.artifact.imageHash,
+          "gen_ai.request.model": DEFAULT_MODEL_ID,
+          "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
+          "gen_ai.cost.total_tokens": usage.costUsd ?? 0.08,
+          "specialstock.cost.estimated": usage.costUsd === null,
+        });
+        await settleAnalysisBudget(reservation, totalCostUsd, estimatedUsage ? "estimated" : "settled");
+        await database.update(modelRuns).set({ actualModel: raw.model ?? DEFAULT_MODEL_ID, actualProvider: raw.provider ?? "openrouter", status: "valid", latencyMs, inputTokens: totalInputTokens || null, outputTokens: totalOutputTokens || null, costUsd: String(totalCostUsd), rawResponse: raw, completedAt: new Date() }).where(eq(modelRuns.id, run.id));
+        const [saved] = await database.update(analysisChatTurns).set({ answer: parsed.answer, status: "completed", error: null, completedAt: new Date(), updatedAt: new Date() }).where(eq(analysisChatTurns.id, turn.id)).returning();
+        Sentry.logger.info("chat.turn.completed", {
+          "specialstock.telemetry.origin": "server",
+          "specialstock.analysis.id": input.analysisId,
+          "specialstock.chat.conversation_id": conversation.id,
+          "specialstock.chat.turn_id": turn.id,
+          "specialstock.chat.request_id": turn.requestId,
+          "specialstock.chat.input_hash": inputHash,
+          "specialstock.chart.image_hash": grounding.artifact.imageHash,
+          "specialstock.chat.context_count": recent.length,
+          "specialstock.model.input_tokens": totalInputTokens,
+          "specialstock.model.output_tokens": totalOutputTokens,
+          "specialstock.model.cost_usd": totalCostUsd,
+          "specialstock.model.cost_estimated": estimatedUsage,
+        });
+        return { ok: true as const, turn: publicTurn(saved!) };
+      } catch (error) {
+        const latencyMs = Math.round(performance.now() - started);
+        const retryable = !response || response.ok || [408, 409, 429].includes(response.status) || response.status >= 500;
+        const usage = await resolveUsage(apiKey, raw);
+        const billed = Boolean(response?.ok || raw);
+        totalInputTokens += usage.inputTokens ?? 0;
+        totalOutputTokens += usage.outputTokens ?? 0;
+        if (billed) {
+          totalCostUsd += usage.costUsd ?? 0.08;
+          estimatedUsage ||= usage.costUsd === null;
+        }
+        const status = error instanceof Error && error.name === "AbortError" ? "timed_out" : raw ? "invalid" : "failed";
+        const willRetry = retryable && attemptNumber < 2;
+        await database.insert(modelAttempts).values({ modelRunId: run.id, attemptNumber: attempt, responseId: raw?.id ?? null, status, latencyMs, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: usage.costUsd == null ? null : String(usage.costUsd), errorCode: error instanceof Error ? error.message.slice(0, 180) : "chat_failed", estimatedCostUsd: billed && usage.costUsd === null ? "0.08" : null, rawResponse: raw, promptSnapshot: inputSnapshot, promptHash: inputHash }).onConflictDoNothing();
+        span.setAttributes({
+          "specialstock.analysis.status": status,
+          "specialstock.analysis.will_retry": willRetry,
+          "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
+          "gen_ai.usage.total_tokens": (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+          "gen_ai.cost.total_tokens": billed ? usage.costUsd ?? 0.08 : 0,
+          "specialstock.cost.estimated": billed && usage.costUsd === null,
+          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+        });
+        span.setStatus({ code: 2, message: status });
+        Sentry.logger.warn("chat.model.attempt", {
+          "specialstock.telemetry.origin": "server",
+          "specialstock.analysis.id": input.analysisId,
+          "specialstock.analysis.phase": "chat",
+          "specialstock.analysis.status": status,
+          "specialstock.analysis.usage_class": "chat_followup",
+          "specialstock.analysis.attempt": attempt,
+          "specialstock.analysis.will_retry": willRetry,
+          "specialstock.chat.conversation_id": conversation.id,
+          "specialstock.chat.turn_id": turn.id,
+          "specialstock.chat.request_id": turn.requestId,
+          "specialstock.prompt.template_version": CHAT_PROMPT_VERSION,
+          "specialstock.prompt.sha256": inputHash,
+          "specialstock.prompt.byte_length": Buffer.byteLength(inputSnapshot),
+          "specialstock.chart.image_hash": grounding.artifact.imageHash,
+          "gen_ai.request.model": DEFAULT_MODEL_ID,
+          "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
+          "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
+          "gen_ai.cost.total_tokens": billed ? usage.costUsd ?? 0.08 : 0,
+          "specialstock.cost.estimated": billed && usage.costUsd === null,
+          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+        });
+        return { ok: false as const, error, retryable };
       }
-      await database.insert(modelAttempts).values({ modelRunId: run.id, attemptNumber: attemptOffset + attemptNumber, responseId: raw?.id ?? null, status: error instanceof Error && error.name === "AbortError" ? "timed_out" : raw ? "invalid" : "failed", latencyMs, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: usage.costUsd == null ? null : String(usage.costUsd), errorCode: error instanceof Error ? error.message.slice(0, 180) : "chat_failed", estimatedCostUsd: billed && usage.costUsd === null ? "0.08" : null, rawResponse: raw, promptSnapshot: inputSnapshot, promptHash: inputHash }).onConflictDoNothing();
-      Sentry.logger.warn("chat.model.attempt", {
-        "specialstock.analysis.phase": "chat",
-        "specialstock.analysis.status": error instanceof Error && error.name === "AbortError" ? "timed_out" : raw ? "invalid" : "failed",
-        "specialstock.analysis.usage_class": "chat_followup",
-        "specialstock.analysis.attempt": attemptOffset + attemptNumber,
-        "specialstock.analysis.will_retry": retryable && attemptNumber < 2,
-        "specialstock.chat.turn_id": turn.id,
-        "specialstock.prompt.template_version": CHAT_PROMPT_VERSION,
-        "specialstock.prompt.sha256": inputHash,
-        "specialstock.prompt.byte_length": Buffer.byteLength(inputSnapshot),
-        "specialstock.chart.image_hash": grounding.artifact.imageHash,
-        "gen_ai.request.model": DEFAULT_MODEL_ID,
-        "gen_ai.usage.input_tokens": usage.inputTokens ?? 0,
-        "gen_ai.usage.output_tokens": usage.outputTokens ?? 0,
-        "gen_ai.cost.total_tokens": billed ? usage.costUsd ?? 0.08 : 0,
-        "specialstock.cost.estimated": billed && usage.costUsd === null,
-        "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
-      });
-      if (!retryable || attemptNumber === 2) break;
-    }
+    });
+    if (outcome.ok) return outcome.turn;
+    lastError = outcome.error;
+    if (!outcome.retryable || attemptNumber === 2) break;
   }
   await settleAnalysisBudget(reservation, totalCostUsd || null, totalCostUsd ? (estimatedUsage ? "estimated" : "settled") : "released");
   const message = safeChatError(lastError);
   await database.update(modelRuns).set({ status: "failed", inputTokens: totalInputTokens || null, outputTokens: totalOutputTokens || null, costUsd: totalCostUsd ? String(totalCostUsd) : null, validationErrors: [message], completedAt: new Date() }).where(eq(modelRuns.id, run.id));
   const [failed] = await database.update(analysisChatTurns).set({ status: "failed", error: message, completedAt: new Date(), updatedAt: new Date() }).where(eq(analysisChatTurns.id, turn.id)).returning();
-  Sentry.logger.warn("chat.turn.failed", { "specialstock.analysis.id": input.analysisId, "specialstock.chat.turn_id": turn.id, "specialstock.chat.input_hash": inputHash, "error.type": lastError instanceof Error ? lastError.constructor.name : "UnknownError" });
+  Sentry.logger.warn("chat.turn.failed", { "specialstock.telemetry.origin": "server", "specialstock.analysis.id": input.analysisId, "specialstock.chat.conversation_id": conversation.id, "specialstock.chat.turn_id": turn.id, "specialstock.chat.request_id": turn.requestId, "specialstock.chat.input_hash": inputHash, "error.type": lastError instanceof Error ? lastError.constructor.name : "UnknownError" });
   return publicTurn(failed!);
 }
 
 async function executeTurn(input: { analysisId: string; turnId: string }) {
-  try {
-    return await executeTurnUnsafe(input);
-  } catch (error) {
-    const database = await getDatabase();
-    await database.update(analysisChatTurns).set({
-      status: "failed",
-      error: error instanceof Error ? error.message.slice(0, 500) : "Chat request failed.",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(and(eq(analysisChatTurns.id, input.turnId), eq(analysisChatTurns.status, "pending")));
-    throw error;
-  }
+  return Sentry.startSpan({
+    name: "Run grounded analysis chat",
+    op: "specialstock.analysis.chat",
+    attributes: {
+      "specialstock.telemetry.origin": "server",
+      "specialstock.analysis.id": input.analysisId,
+      "specialstock.chat.turn_id": input.turnId,
+    },
+  }, async (span) => {
+    try {
+      const result = await executeTurnUnsafe(input);
+      span.setAttribute("specialstock.chat.status", result.status);
+      span.setStatus({ code: result.status === "completed" ? 1 : 2, message: result.status });
+      return result;
+    } catch (error) {
+      span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
+      span.setStatus({ code: 2, message: "chat_workflow_failed" });
+      const database = await getDatabase();
+      await database.update(analysisChatTurns).set({
+        status: "failed",
+        error: error instanceof Error ? error.message.slice(0, 500) : "Chat request failed.",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(eq(analysisChatTurns.id, input.turnId), eq(analysisChatTurns.status, "pending")));
+      throw error;
+    }
+  });
 }
 
 export async function submitAnalysisChat(input: { analysisId: string; requestId: string; question: string }) {

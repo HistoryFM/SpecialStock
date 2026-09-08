@@ -110,28 +110,120 @@ export function PromptStudio({ initial }: { initial: PromptStudioPhase[] }) {
   async function save() {
     setMutationPending(true); setMessage("");
     try {
-      const result = await request(`/api/prompts/${phase}/revisions`, { instructions: draft, expectedActiveRevisionId: current.activeRevisionId });
-      const revision = result.revision!;
-      setPhases((value) => value.map((item) => item.phase === phase ? {
-        ...item, activeRevisionId: revision.id,
-        revisions: [{ ...revision, active: true }, ...item.revisions.map((entry) => ({ ...entry, active: false }))],
-      } : item));
-      setMessage(`${label(phase)} revision ${revision.revisionNumber} is active for future calls.`);
-      Sentry.logger.info("prompt.revision.activated", { "specialstock.prompt.phase": phase, "specialstock.prompt.revision_id": revision.id, "specialstock.prompt.instructions_length": draft.length });
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Prompt save failed."); }
-    finally { setMutationPending(false); }
+      await Sentry.startNewTrace(() => Sentry.startSpan({
+      name: "Create prompt revision",
+      op: "specialstock.prompt.revision.request",
+      forceTransaction: true,
+      attributes: {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.prompt.phase": phase,
+        "specialstock.prompt.operation": "create",
+        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
+        "specialstock.prompt.instructions_length": draft.length,
+      },
+    }, async (span) => {
+      Sentry.logger.info("prompt.revision.client_requested", {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.prompt.phase": phase,
+        "specialstock.prompt.operation": "create",
+        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
+        "specialstock.prompt.instructions_length": draft.length,
+      });
+      try {
+        const result = await request(`/api/prompts/${phase}/revisions`, { instructions: draft, expectedActiveRevisionId: current.activeRevisionId });
+        const revision = result.revision!;
+        setPhases((value) => value.map((item) => item.phase === phase ? {
+          ...item, activeRevisionId: revision.id,
+          revisions: [{ ...revision, active: true }, ...item.revisions.map((entry) => ({ ...entry, active: false }))],
+        } : item));
+        setMessage(`${label(phase)} revision ${revision.revisionNumber} is active for future calls.`);
+        span.setAttributes({
+          "specialstock.prompt.revision_id": revision.id,
+          "specialstock.prompt.instructions_hash": revision.instructionsHash,
+          "specialstock.prompt.revision_number": revision.revisionNumber,
+        });
+        span.setStatus({ code: 1 });
+        Sentry.logger.info("prompt.revision.client_completed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.prompt.phase": phase,
+          "specialstock.prompt.operation": "create",
+          "specialstock.prompt.revision_id": revision.id,
+          "specialstock.prompt.instructions_hash": revision.instructionsHash,
+          "specialstock.prompt.instructions_length": draft.length,
+          "specialstock.prompt.revision_number": revision.revisionNumber,
+        });
+      } catch (error) {
+        span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
+        span.setStatus({ code: 2, message: "prompt_revision_create_failed" });
+        Sentry.logger.warn("prompt.revision.client_failed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.prompt.phase": phase,
+          "specialstock.prompt.operation": "create",
+          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+        });
+        setMessage(error instanceof Error ? error.message : "Prompt save failed.");
+      }
+      }));
+    } finally { setMutationPending(false); }
   }
 
   async function activate(revisionId: string) {
     setMutationPending(true); setMessage("");
     try {
-      const result = await request(`/api/prompts/${phase}/activate`, { revisionId, expectedActiveRevisionId: current.activeRevisionId });
-      const revision = result.revision!;
-      setPhases((value) => value.map((item) => item.phase === phase ? { ...item, activeRevisionId: revision.id, revisions: item.revisions.map((entry) => ({ ...entry, active: entry.id === revision.id })) } : item));
-      setDrafts((value) => ({ ...value, [phase]: revision.instructions }));
-      setMessage(`${label(phase)} revision ${revision.revisionNumber} is active.`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Prompt activation failed."); }
-    finally { setMutationPending(false); }
+      await Sentry.startNewTrace(() => Sentry.startSpan({
+      name: "Activate prompt revision",
+      op: "specialstock.prompt.revision.request",
+      forceTransaction: true,
+      attributes: {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.prompt.phase": phase,
+        "specialstock.prompt.operation": "activate",
+        "specialstock.prompt.requested_revision_id": revisionId,
+        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
+      },
+    }, async (span) => {
+      Sentry.logger.info("prompt.revision.client_requested", {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.prompt.phase": phase,
+        "specialstock.prompt.operation": "activate",
+        "specialstock.prompt.requested_revision_id": revisionId,
+        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
+      });
+      try {
+        const result = await request(`/api/prompts/${phase}/activate`, { revisionId, expectedActiveRevisionId: current.activeRevisionId });
+        const revision = result.revision!;
+        setPhases((value) => value.map((item) => item.phase === phase ? { ...item, activeRevisionId: revision.id, revisions: item.revisions.map((entry) => ({ ...entry, active: entry.id === revision.id })) } : item));
+        setDrafts((value) => ({ ...value, [phase]: revision.instructions }));
+        setMessage(`${label(phase)} revision ${revision.revisionNumber} is active.`);
+        span.setAttributes({
+          "specialstock.prompt.revision_id": revision.id,
+          "specialstock.prompt.instructions_hash": revision.instructionsHash,
+          "specialstock.prompt.instructions_length": revision.instructions.length,
+          "specialstock.prompt.revision_number": revision.revisionNumber,
+        });
+        span.setStatus({ code: 1 });
+        Sentry.logger.info("prompt.revision.client_completed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.prompt.phase": phase,
+          "specialstock.prompt.operation": "activate",
+          "specialstock.prompt.revision_id": revision.id,
+          "specialstock.prompt.instructions_hash": revision.instructionsHash,
+          "specialstock.prompt.instructions_length": revision.instructions.length,
+          "specialstock.prompt.revision_number": revision.revisionNumber,
+        });
+      } catch (error) {
+        span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
+        span.setStatus({ code: 2, message: "prompt_revision_activate_failed" });
+        Sentry.logger.warn("prompt.revision.client_failed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.prompt.phase": phase,
+          "specialstock.prompt.operation": "activate",
+          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+        });
+        setMessage(error instanceof Error ? error.message : "Prompt activation failed.");
+      }
+      }));
+    } finally { setMutationPending(false); }
   }
 
   return (
@@ -145,14 +237,14 @@ export function PromptStudio({ initial }: { initial: PromptStudioPhase[] }) {
         <section className="prompt-editor-pane" aria-labelledby="prompt-editor-heading">
           <div className="prompt-pane-heading"><div><p className="eyebrow">Editable</p><h3 id="prompt-editor-heading">Analysis instructions</h3></div>{dirty ? <span className="prompt-dirty-status">Unsaved changes</span> : <span className="muted">Matches active revision</span>}</div>
           <p className="muted">Use this space for the market context and analysis method you want Gemini to follow.</p>
-          <label className="prompt-editor"><span className="sr-only">Analysis instructions for {label(phase)}</span><textarea maxLength={8000} onChange={(event) => setDrafts((value) => ({ ...value, [phase]: event.target.value }))} rows={16} value={draft} /></label>
+          <label className="prompt-editor"><span className="sr-only">Analysis instructions for {label(phase)}</span><textarea data-sentry-mask maxLength={8000} onChange={(event) => setDrafts((value) => ({ ...value, [phase]: event.target.value }))} rows={16} value={draft} /></label>
           <div className="prompt-editor-footer"><span className="muted">{draft.length.toLocaleString()} / 8,000</span><div><button className="secondary-button compact" disabled={mutationPending || !dirty} onClick={() => setDrafts((value) => ({ ...value, [phase]: active.instructions }))} type="button">Undo edits</button> <button className="secondary-button compact" disabled={mutationPending || draft === current.defaultInstructions} onClick={() => setDrafts((value) => ({ ...value, [phase]: current.defaultInstructions }))} type="button">Use built-in default</button></div></div>
         </section>
         <section className="prompt-effective-preview" aria-labelledby="prompt-preview-heading">
           <div className="prompt-pane-heading"><div><p className="eyebrow">Read only</p><h3 id="prompt-preview-heading">Full prompt preview</h3></div><span className={previewError ? "prompt-preview-state error" : "prompt-preview-state"} aria-live="polite">{previewError ? "Preview unavailable" : previewPending ? "Updating…" : "Up to date"}</span></div>
           <p className="muted">Your instructions combined with protected rules and sample runtime placeholders.</p>
           {previewError ? <div className="warning-banner"><span>{previewError}</span></div> : null}
-          <pre aria-label={`Full prompt preview for ${label(phase)}`}>{preview[phase]}</pre>
+          <pre aria-label={`Full prompt preview for ${label(phase)}`} data-sentry-mask>{preview[phase]}</pre>
         </section>
       </div>
       <div className="prompt-save-row"><div><strong>{dirty ? "Ready to create a new revision" : `Revision ${active.revisionNumber} is active`}</strong><small>{dirty ? `Saving will activate these instructions for future ${label(phase).toLowerCase()} requests.` : "In-flight requests keep the revision they started with."}</small></div><button className="primary-button" disabled={mutationPending || !dirty || !draft.trim()} onClick={() => void save()} type="button">{mutationPending ? "Saving…" : "Save as new revision"}</button></div>

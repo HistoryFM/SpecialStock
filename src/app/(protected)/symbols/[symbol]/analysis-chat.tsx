@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { useEffect, useRef, useState } from "react";
 
 type ChatTurn = { id: string; requestId: string; question: string; answer: string | null; status: "pending" | "completed" | "failed"; error: string | null; createdAt: string; completedAt: string | null };
@@ -25,16 +26,54 @@ export function AnalysisChat({ analysisId, capturedAt }: { analysisId: string; c
   async function send() {
     if (!question.trim() || pending) return;
     setPending(true); setError("");
-    try {
-      pendingRequestId.current ??= crypto.randomUUID();
-      const response = await fetch(`/api/analyses/${analysisId}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: pendingRequestId.current, question }) });
-      const payload = await response.json() as ChatTurn & { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Gemini could not answer the question.");
-      setState((current) => current ? { ...current, turns: [...current.turns, payload] } : current);
-      setQuestion("");
-      pendingRequestId.current = null;
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Gemini could not answer the question."); }
-    finally { setPending(false); }
+    pendingRequestId.current ??= crypto.randomUUID();
+    const requestId = pendingRequestId.current;
+    await Sentry.startNewTrace(() => Sentry.startSpan({
+      name: "Submit analysis chat question",
+      op: "specialstock.analysis.chat.request",
+      forceTransaction: true,
+      attributes: {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.analysis.id": analysisId,
+        "specialstock.chat.request_id": requestId,
+        "specialstock.chat.question_length": question.trim().length,
+      },
+    }, async (span) => {
+      Sentry.logger.info("chat.client.requested", {
+        "specialstock.telemetry.origin": "client",
+        "specialstock.analysis.id": analysisId,
+        "specialstock.chat.request_id": requestId,
+        "specialstock.chat.question_length": question.trim().length,
+      });
+      try {
+        const response = await fetch(`/api/analyses/${analysisId}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId, question }) });
+        const payload = await response.json() as ChatTurn & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "Gemini could not answer the question.");
+        setState((current) => current ? { ...current, turns: [...current.turns, payload] } : current);
+        setQuestion("");
+        pendingRequestId.current = null;
+        span.setAttributes({ "specialstock.chat.turn_id": payload.id, "specialstock.chat.status": payload.status });
+        span.setStatus({ code: 1 });
+        Sentry.logger.info("chat.client.completed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.analysis.id": analysisId,
+          "specialstock.chat.request_id": requestId,
+          "specialstock.chat.turn_id": payload.id,
+          "specialstock.chat.status": payload.status,
+        });
+      } catch (reason) {
+        span.setAttribute("error.type", reason instanceof Error ? reason.constructor.name : "UnknownError");
+        span.setStatus({ code: 2, message: "chat_request_failed" });
+        Sentry.logger.warn("chat.client.failed", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.analysis.id": analysisId,
+          "specialstock.chat.request_id": requestId,
+          "error.type": reason instanceof Error ? reason.constructor.name : "UnknownError",
+        });
+        setError(reason instanceof Error ? reason.message : "Gemini could not answer the question.");
+      }
+    }));
+    setPending(false);
   }
 
   async function retry(turnId: string) {
@@ -69,9 +108,9 @@ export function AnalysisChat({ analysisId, capturedAt }: { analysisId: string; c
     <div className="section-heading"><div><p className="eyebrow">Gemini · grounded to this run</p><h2 id="analysis-chat-heading">Ask AI</h2></div>{state?.turns.length ? <button className="secondary-button compact" disabled={pending} onClick={() => void reset()} type="button">Clear chat</button> : null}</div>
     <p className="chat-grounding">Answers use only this stored analysis and the frozen chart captured {new Date(capturedAt).toLocaleString()}. Current prices and news are unavailable.</p>
     {!state?.turns.length ? <div className="chat-empty"><p>Explore the reasoning behind this snapshot.</p><div className="chat-starters"><button disabled={pending} onClick={() => chooseStarter("What is the strongest evidence supporting this setup?")} type="button">Strongest evidence</button><button disabled={pending} onClick={() => chooseStarter("What would invalidate this setup first?")} type="button">Invalidation risk</button><button disabled={pending} onClick={() => chooseStarter("Where does the evidence conflict?")} type="button">Conflicting evidence</button></div></div> : null}
-    <label className="chat-composer"><span className="sr-only">Question about this analysis</span><textarea disabled={pending} maxLength={2000} onChange={(event) => { pendingRequestId.current = null; setQuestion(event.target.value); }} placeholder="Ask about the visible setup, conflicting evidence, or invalidation…" rows={3} value={question} /></label>
+    <label className="chat-composer"><span className="sr-only">Question about this analysis</span><textarea data-sentry-mask disabled={pending} maxLength={2000} onChange={(event) => { pendingRequestId.current = null; setQuestion(event.target.value); }} placeholder="Ask about the visible setup, conflicting evidence, or invalidation…" rows={3} value={question} /></label>
     <div className="chat-actions"><span className="muted">{question.length.toLocaleString()} / 2,000</span><button className="primary-button" disabled={pending || !question.trim() || !state} onClick={() => void send()} type="button">{pending ? "Asking Gemini…" : "Ask AI"}</button></div>
     {error ? <p className="form-error" role="alert">{error}</p> : null}
-    {state?.turns.length ? <div className="chat-transcript" aria-label="Conversation history" aria-live="polite">{state.turns.map((turn) => <article className="chat-turn" key={turn.id}><div className="chat-question"><strong>You</strong><p>{turn.question}</p></div><div className="chat-answer"><strong>Gemini</strong>{turn.status === "completed" ? <p>{turn.answer}</p> : turn.status === "pending" ? <p className="muted">Gemini is answering…</p> : <div className="warning-banner"><span>{turn.error ?? "The answer failed."}</span><button className="secondary-button compact" disabled={pending} onClick={() => void retry(turn.id)} type="button">Retry</button></div>}</div></article>)}</div> : null}
+    {state?.turns.length ? <div className="chat-transcript" aria-label="Conversation history" aria-live="polite" data-sentry-mask>{state.turns.map((turn) => <article className="chat-turn" key={turn.id}><div className="chat-question"><strong>You</strong><p>{turn.question}</p></div><div className="chat-answer"><strong>Gemini</strong>{turn.status === "completed" ? <p>{turn.answer}</p> : turn.status === "pending" ? <p className="muted">Gemini is answering…</p> : <div className="warning-banner"><span>{turn.error ?? "The answer failed."}</span><button className="secondary-button compact" disabled={pending} onClick={() => void retry(turn.id)} type="button">Retry</button></div>}</div></article>)}</div> : null}
   </section>;
 }

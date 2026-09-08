@@ -45,6 +45,8 @@ export async function runManualBatch(input: {
       name: "Run manual scan batch",
       op: "specialstock.scan.manual_batch",
       attributes: {
+        "specialstock.telemetry.origin": "server",
+        "specialstock.scan.request_id": input.requestId,
         "specialstock.scan.batch_size": input.runs.length,
         "specialstock.scan.batch_interval_profile": intervalProfile,
         ...intervalCounts,
@@ -84,6 +86,8 @@ export async function runManualBatch(input: {
       let inFlight = 0;
       let peakInFlight = 0;
       Sentry.logger.info("scan.manual_batch.started", {
+        "specialstock.telemetry.origin": "server",
+        "specialstock.scan.request_id": input.requestId,
         "specialstock.scan.batch_size": input.runs.length,
         "specialstock.scan.batch_interval_profile": intervalProfile,
         ...intervalCounts,
@@ -172,6 +176,8 @@ export async function runManualBatch(input: {
       });
       span.setStatus({ code: 1 });
       Sentry.logger.info("scan.manual_batch.completed", {
+        "specialstock.telemetry.origin": "server",
+        "specialstock.scan.request_id": input.requestId,
         "specialstock.scan.batch_size": input.runs.length,
         "specialstock.scan.batch_interval_profile": intervalProfile,
         ...intervalCounts,

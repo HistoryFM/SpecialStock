@@ -94,6 +94,8 @@ export function SchedulerClient({
         op: "specialstock.scan.manual_batch.request",
         forceTransaction: true,
         attributes: {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.scan.request_id": requestId,
           "specialstock.scan.batch_size": runs.length,
           "specialstock.scan.batch_interval_profile": intervalProfile,
           "specialstock.scan.batch_interval_1m": runs.filter(({ timeframe }) => timeframe === "1m").length,
@@ -104,6 +106,16 @@ export function SchedulerClient({
       },
       async (span) => {
         const started = performance.now();
+        Sentry.logger.info("scan.manual_batch.client_requested", {
+          "specialstock.telemetry.origin": "client",
+          "specialstock.scan.request_id": requestId,
+          "specialstock.scan.batch_size": runs.length,
+          "specialstock.scan.batch_interval_profile": intervalProfile,
+          ...Object.fromEntries(["1m", "5m", "10m"].map((timeframe) => [
+            `specialstock.scan.batch_interval_${timeframe}`,
+            runs.filter((run) => run.timeframe === timeframe).length,
+          ])),
+        });
         try {
           const response = await fetch("/api/scans/manual-batch", {
             method: "POST",
@@ -126,6 +138,15 @@ export function SchedulerClient({
             "specialstock.scan.duration_ms": Math.round(performance.now() - started),
           });
           span.setStatus({ code: 1 });
+          Sentry.logger.info("scan.manual_batch.client_completed", {
+            "specialstock.telemetry.origin": "client",
+            "specialstock.scan.request_id": requestId,
+            "specialstock.scan.batch_completed": payload.counts.completed,
+            "specialstock.scan.batch_reused": payload.counts.reused,
+            "specialstock.scan.batch_running": payload.counts.alreadyRunning,
+            "specialstock.scan.batch_failed": payload.counts.failed,
+            "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+          });
           setMessage(
             `Manual batch settled · ${completed} completed${payload.counts.alreadyRunning ? ` · ${payload.counts.alreadyRunning} already running` : ""}${payload.counts.failed ? ` · ${payload.counts.failed} failed` : ""}.`,
           );
@@ -139,6 +160,13 @@ export function SchedulerClient({
             "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
           });
           span.setStatus({ code: 2, message: message.slice(0, 200) });
+          Sentry.logger.warn("scan.manual_batch.client_failed", {
+            "specialstock.telemetry.origin": "client",
+            "specialstock.scan.request_id": requestId,
+            "specialstock.scan.batch_size": runs.length,
+            "specialstock.scan.duration_ms": Math.round(performance.now() - started),
+            "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
+          });
           setMessage(message);
           return null;
         } finally {
@@ -167,6 +195,7 @@ export function SchedulerClient({
         op: "specialstock.scheduler.batch",
         forceTransaction: true,
         attributes: {
+          "specialstock.telemetry.origin": "client",
           "specialstock.scheduler.tab_id": tabId.current,
           "specialstock.scan.slot": slotKey,
           "specialstock.scan.batch_size": symbols.length,
@@ -177,6 +206,7 @@ export function SchedulerClient({
       async (span) => {
         const started = performance.now();
         Sentry.logger.info("scheduler.batch.requested", {
+          "specialstock.telemetry.origin": "client",
           "specialstock.scheduler.tab_id": tabId.current,
           "specialstock.scan.slot": slotKey,
           "specialstock.scan.batch_size": symbols.length,
@@ -234,6 +264,7 @@ export function SchedulerClient({
           });
           span.setStatus({ code: 1 });
           Sentry.logger.info("scheduler.batch.completed", {
+            "specialstock.telemetry.origin": "client",
             "specialstock.scheduler.tab_id": tabId.current,
             "specialstock.scan.slot": slotKey,
             "specialstock.scan.batch_size": symbols.length,
@@ -263,6 +294,7 @@ export function SchedulerClient({
           });
           span.setStatus({ code: 2, message: errorMessage.slice(0, 200) });
           Sentry.logger.warn("scheduler.batch.failed", {
+            "specialstock.telemetry.origin": "client",
             "specialstock.scheduler.tab_id": tabId.current,
             "specialstock.scan.slot": slotKey,
             "specialstock.scan.batch_size": symbols.length,

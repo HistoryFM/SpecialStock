@@ -40,7 +40,10 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
     {
       name: "Run scheduled scan batch",
       op: "specialstock.scan.batch",
-      attributes: { "specialstock.scan.requested_slot": slotKey },
+      attributes: {
+        "specialstock.telemetry.origin": "server",
+        "specialstock.scan.requested_slot": slotKey,
+      },
     },
     async (span) => {
       const started = performance.now();
@@ -63,6 +66,7 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
         "specialstock.settings.version": settings?.updatedAt.toISOString() ?? "missing",
       });
       Sentry.logger.info("scan.batch.started", {
+        "specialstock.telemetry.origin": "server",
         "specialstock.scan.slot": slotKey,
         "specialstock.scan.batch_size": entries.length,
         "specialstock.scan.symbols": enabledSymbols,
@@ -189,6 +193,7 @@ export async function runScheduledBatch(slotKey: string, now = new Date()) {
       });
       span.setStatus({ code: 1 });
       const completionAttributes = {
+        "specialstock.telemetry.origin": "server",
         "specialstock.scan.slot": slotKey,
         "specialstock.scan.batch_size": entries.length,
         "specialstock.scan.symbols": enabledSymbols,
