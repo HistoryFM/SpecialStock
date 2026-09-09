@@ -8,12 +8,12 @@ export type InferenceRequestSettings = {
 };
 
 export const COMPACT_INFERENCE_PROFILE = {
-  id: "compact-quality-v1",
+  id: "compact-quality-v2",
   settings: {
     temperature: 0.1,
-    maxTokens: 4_608,
+    maxTokens: 2_560,
     providerTimeoutMs: 90_000,
-    reasoning: { mode: "max_tokens", maxTokens: 4_096, exclude: true },
+    reasoning: { mode: "max_tokens", maxTokens: 2_048, exclude: true },
   } satisfies InferenceRequestSettings,
   estimatedCostUsd: 0.06,
   concurrencyLimit: 10,

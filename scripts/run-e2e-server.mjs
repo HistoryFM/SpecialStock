@@ -102,7 +102,7 @@ const mockServer = createServer(async (request, response) => {
       return;
     }
     if (phase === "compact" && (
-      requestBody.max_tokens !== 4608 || requestBody.reasoning?.max_tokens !== 4096 || requestBody.reasoning?.exclude !== true || "effort" in requestBody.reasoning
+      requestBody.max_tokens !== 2560 || requestBody.reasoning?.max_tokens !== 2048 || requestBody.reasoning?.exclude !== true || "effort" in requestBody.reasoning
     )) {
       response.writeHead(422, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Compact thinking settings did not match." }));

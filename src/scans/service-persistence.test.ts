@@ -20,7 +20,7 @@ const frozen = {
 
 const result = {
   phase: "compact",
-  inferenceProfile: "compact-quality-v1",
+  inferenceProfile: "compact-quality-v2",
   requestedModel: "google/gemini-2.5-pro",
   actualModel: "google/gemini-2.5-pro",
   actualProvider: "Google",

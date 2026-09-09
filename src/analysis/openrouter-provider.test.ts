@@ -89,7 +89,7 @@ beforeEach(() => {
 });
 
 describe("OpenRouterAnalysisModelProvider", () => {
-  it.each(["manual_compact", "routine_compact"] as const)("sends one image and increased thinking with compact output for %s", async (usageClass) => {
+  it.each(["manual_compact", "routine_compact"] as const)("sends one image and the versioned quality profile for %s", async (usageClass) => {
     let requestBody: Record<string, unknown> = {};
     vi.stubGlobal("fetch", vi.fn(async (_url, init?: RequestInit) => {
       requestBody = JSON.parse(String(init?.body));
@@ -110,8 +110,8 @@ describe("OpenRouterAnalysisModelProvider", () => {
     });
 
     expect(requestBody.model).toBe("google/gemini-2.5-pro");
-    expect(requestBody.max_tokens).toBe(4_608);
-    expect(requestBody.reasoning).toEqual({ max_tokens: 4_096, exclude: true });
+    expect(requestBody.max_tokens).toBe(2_560);
+    expect(requestBody.reasoning).toEqual({ max_tokens: 2_048, exclude: true });
     expect(requestBody.reasoning).not.toHaveProperty("effort");
     const serialized = JSON.stringify(requestBody);
     expect(serialized).toContain("data:image/png;base64");
@@ -138,11 +138,11 @@ describe("OpenRouterAnalysisModelProvider", () => {
         "gen_ai.request.model": "google/gemini-2.5-pro",
         "specialstock.analysis.phase": "compact",
         "specialstock.analysis.usage_class": usageClass,
-        "specialstock.inference.profile": "compact-quality-v1",
-        "specialstock.request.thinking_budget_tokens": 4_096,
+        "specialstock.inference.profile": "compact-quality-v2",
+        "specialstock.request.thinking_budget_tokens": 2_048,
         "specialstock.request.reasoning_excluded": true,
         "specialstock.provider.timeout_ms": 90_000,
-        "gen_ai.request.max_tokens": 4_608,
+        "gen_ai.request.max_tokens": 2_560,
       },
     });
     const telemetryInput = String(span.attributes["gen_ai.input.messages"]);
@@ -202,7 +202,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(12));
     resolvers.splice(0).forEach((resolve) => resolve(response()));
     const results = await Promise.all(calls);
-    expect(results.every((result) => result.inferenceProfile === "compact-quality-v1")).toBe(true);
+    expect(results.every((result) => result.inferenceProfile === "compact-quality-v2")).toBe(true);
     expect(peak).toBe(10);
   });
 
@@ -228,10 +228,10 @@ describe("OpenRouterAnalysisModelProvider", () => {
       reasoningTokens,
       failureKind: null,
       requestSettings: {
-        inferenceProfile: "compact-quality-v1",
-        max_tokens: 4_608,
+        inferenceProfile: "compact-quality-v2",
+        max_tokens: 2_560,
         provider_timeout_ms: 90_000,
-        reasoning: { max_tokens: 4_096, exclude: true },
+        reasoning: { max_tokens: 2_048, exclude: true },
       },
     });
     expect(result.outputTokens).toBe(reasoningTokens + 80);
@@ -270,7 +270,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       model: "google/gemini-2.5-pro",
       provider: "google",
       choices: [{ message: { content: "{" }, finish_reason: "length" }],
-      usage: { prompt_tokens: 1_200, completion_tokens: 4_608, cost: 0.05, completion_tokens_details: { reasoning_tokens: 4_500 } },
+      usage: { prompt_tokens: 1_200, completion_tokens: 2_560, cost: 0.05, completion_tokens_details: { reasoning_tokens: 2_048 } },
     }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -286,8 +286,8 @@ describe("OpenRouterAnalysisModelProvider", () => {
       metadata: { status: "invalid", requestedModel: "google/gemini-2.5-pro", attempts: [{ failureKind: "token_limit" }] },
     });
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(sentry.spans[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(4_500);
-    expect(sentry.warn).toHaveBeenCalledWith("Gemini visual analysis failed", expect.objectContaining({ reasoning_tokens: 4_500, failure_kind: "token_limit" }));
+    expect(sentry.spans[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(2_048);
+    expect(sentry.warn).toHaveBeenCalledWith("Gemini visual analysis failed", expect.objectContaining({ reasoning_tokens: 2_048, failure_kind: "token_limit" }));
   });
 
   it("recovers when an automatic attempt returns an empty response", async () => {
@@ -315,7 +315,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     })).resolves.toMatchObject({ analysis, costUsd: 0.12, attempts: [{ status: "invalid", failureKind: "empty_response" }, { status: "valid", failureKind: null }] });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     for (const [, init] of fetchMock.mock.calls) {
-      expect(JSON.parse(String(init.body))).toMatchObject({ max_tokens: 4_608, reasoning: { max_tokens: 4_096, exclude: true } });
+      expect(JSON.parse(String(init.body))).toMatchObject({ max_tokens: 2_560, reasoning: { max_tokens: 2_048, exclude: true } });
     }
     expect(sentry.spans).toHaveLength(2);
     expect(sentry.spans[0]?.attributes).toMatchObject({
