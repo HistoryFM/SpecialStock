@@ -25,6 +25,7 @@ const migrations = [
   "0005_colossal_morgan_stark.sql",
   "0006_groovy_expediter.sql",
   "0007_tough_swarm.sql",
+  "0008_fluffy_radioactive_man.sql",
 ] as const;
 
 async function createDatabase() {
@@ -110,7 +111,7 @@ describe("analysis budget", () => {
     const ledger = await client.query<{ committed_usd: string }>(
       "select committed_usd from daily_budget_ledger",
     );
-    expect(ledger.rows[0]?.committed_usd).toBe("0.04000000");
+    expect(ledger.rows[0]?.committed_usd).toBe("0.12000000");
     expect((await client.query("select id from budget_reservations")).rows).toHaveLength(2);
 
     await Promise.all([
@@ -120,6 +121,6 @@ describe("analysis budget", () => {
     const settled = await client.query<{ committed_usd: string }>(
       "select committed_usd from daily_budget_ledger",
     );
-    expect(settled.rows[0]?.committed_usd).toBe("0.02400000");
+    expect(settled.rows[0]?.committed_usd).toBe("0.06400000");
   });
 });

@@ -7,7 +7,7 @@ import { InvalidManualBatchError, runManualBatch } from "@/scans/manual-batch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 180;
+export const maxDuration = 240;
 
 const bodySchema = z.object({
   runs: z.array(z.object({

@@ -1,6 +1,6 @@
 import type { ChartAnalysisInput } from "@/analysis/types";
 
-export const COMPACT_PROMPT_VERSION = "chart-compact-v2";
+export const COMPACT_PROMPT_VERSION = "chart-compact-v3";
 export const FULL_PROMPT_VERSION = "chart-full-v1";
 export const CHAT_PROMPT_VERSION = "analysis-chat-v1";
 export const PROMPT_VERSION = COMPACT_PROMPT_VERSION;
@@ -15,15 +15,41 @@ export type PromptRevisionSnapshot = {
   templateVersion: string;
 };
 
-export const DEFAULT_COMPACT_ANALYSIS_INSTRUCTIONS = `To prevent generic trend-following bias, perform a strict structural audit on the most recent 3 candles (use fewer candles if 3 aren't yet available after market open) before giving a direction:
+export const DEFAULT_COMPACT_ANALYSIS_INSTRUCTIONS = `You are a deterministic technical analysis engine executing a strict structural audit on an intraday stock chart.
 
-Candlestick Physics: Compare the specific real-body sizes of the last 3 candles. Is velocity expanding or contracting? Note any precise wick rejections against the indicator lines.
+CRITICAL COUNTER-BIAS REQUIREMENT:
+Explicitly suppress the natural tendency to follow generic macro trends. Do not let the immediate directional momentum of the last few candles dictate the output. Internally weigh the visible geometric intersections of the entire chart, volume shifts, lower panels, and indicator lines before deciding. A generic trend-following projection without verifying visible support structures and indicator confluences is structurally invalid.
 
-Volume Divergence: Check whether the volume bars under the last 3 candles are expanding, flat, or drying up relative to each other. Match the volume directly to the price action.
+INTERNAL ARCHITECTURE INSTRUCTIONS:
+Before selecting the final output values, internally inspect and weigh:
 
-Line Confluence: Determine whether the last 3 candles are accepting or rejecting VWAP and the visible Keltner upper, middle, or lower lines. A directional call requires agreement between candle structure, volume behavior, and those visible line interactions; otherwise return no_trade.
+PHASE 1: BROAD STRUCTURAL ARCHITECTURE
 
-Do not give a generic macro projection; state the immediate micro-move based strictly on the data.`;
+- Scan the entire visible width of the chart, including its left and center. Identify major structures such as ranges, channels, flags, and double tops or bottoms, plus established horizontal support and resistance zones.
+- Locate the current price relative to the overall visible indicator setup. Determine whether price is extended near outer bands or consolidating around a session midline.
+
+PHASE 2: ALL LOWER TECHNICAL INDICATORS
+
+Deeply analyze every visible oscillator, trend-strength, and momentum panel below the chart without reconstructing values that are not visibly shown:
+
+- MACD: Check visible signal-line crossovers, histogram momentum shifts, and centerline rejections.
+- RSI and CCI: Identify visible overbought or oversold extremes, midline rejections, and structural divergences against price action.
+- ADX: Assess whether visible trend strength is rising or falling. Use numerical thresholds such as 20 or 25 only when their labels and the plotted value are visibly legible.
+- Chaikin Money Flow (CMF): Evaluate visible buying or selling pressure and flow direction relative to the zero line.
+
+PHASE 3: THE 3-CANDLE MICRO-AUDIT
+
+- Candlestick Physics: Compare the real-body sizes of the last 3 visible candles, using fewer only when 3 are unavailable. Determine whether velocity is expanding or contracting and note visible wick rejections against indicator lines. Obey the supplied latest-bar status: treat it as incomplete only when the runtime metadata says it is open.
+- Volume Divergence: Determine whether the volume bars under these candles are expanding, flat, or drying up relative to each other, and match volume directly to price action.
+- Line Confluence: Identify the visibly legible price level and color or style of the indicator line acting as immediate support or resistance. Do not invent an unreadable level.
+
+PHASE 4: CONFLICT RESOLUTION AND HIERARCHY
+
+Weigh conflicting visible signals systematically to eliminate trend-following bias:
+
+- Give dominant weight to price action relative to core VWAP and Keltner lines and to volume. Give secondary weight to trend strength (ADX) and flow (CMF). Use momentum oscillators (MACD, RSI, and CCI) as confirmation.
+- Determine whether the 3-candle micro-move contradicts broader visible structures, such as an aggressive candle moving into core VWAP support while MACD shows a bullish crossover, CMF shows inflows, or ADX shows exhausted trend strength.
+- If dominant indicators conflict fundamentally, return no_trade. If dominant indicators align while minor oscillators lag, make the high-probability directional call.`;
 
 export const DEFAULT_FULL_ANALYSIS_INSTRUCTIONS =
   "Describe only visible price action, VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF.";

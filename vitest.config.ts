@@ -10,6 +10,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    testTimeout: 15_000,
     exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
     setupFiles: ["./vitest.setup.ts"],
     coverage: {

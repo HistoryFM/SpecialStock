@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { CHAT_PROMPT_VERSION } from "@/analysis/prompt";
+import { CHAT_INFERENCE_PROFILE_ID } from "@/analysis/inference-profiles";
 import { readChartArtifact } from "@/chart/artifact-storage";
 import { getServerEnv } from "@/config/env";
 import { getDatabase } from "@/db/client";
@@ -136,10 +137,10 @@ async function executeTurnUnsafe(input: { analysisId: string; turnId: string }) 
   const inputHash = sha256(inputSnapshot);
   const [run] = await database.insert(modelRuns).values({
     scanSlotId: grounding.run.scanSlotId, chartArtifactId: grounding.artifact.id, runRole: "primary", phase: "chat", operationKey: turn.id,
-    requestedModel: DEFAULT_MODEL_ID, promptVersion: CHAT_PROMPT_VERSION, inputHash, status: "pending",
+    requestedModel: DEFAULT_MODEL_ID, inferenceProfile: CHAT_INFERENCE_PROFILE_ID, promptVersion: CHAT_PROMPT_VERSION, inputHash, status: "pending",
   }).onConflictDoUpdate({
     target: [modelRuns.scanSlotId, modelRuns.runRole, modelRuns.requestedModel, modelRuns.phase, modelRuns.operationKey],
-    set: { status: "pending", startedAt: new Date(), completedAt: null, validationErrors: [] },
+    set: { inferenceProfile: CHAT_INFERENCE_PROFILE_ID, status: "pending", startedAt: new Date(), completedAt: null, validationErrors: [] },
   }).returning();
   if (!run) throw new Error("The chat model run could not be created.");
   await database.update(analysisChatTurns).set({ modelRunId: run.id, contextTurnIds: recent.map((item) => item.id), updatedAt: new Date() }).where(eq(analysisChatTurns.id, turn.id));

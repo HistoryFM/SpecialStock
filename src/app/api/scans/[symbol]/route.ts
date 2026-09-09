@@ -15,7 +15,8 @@ import {
 } from "@/scans/service";
 import { tickerSchema } from "@/settings/schema";
 
-export const maxDuration = 60;
+// Allow chart capture, two thinking attempts, usage reconciliation, and persistence.
+export const maxDuration = 240;
 
 const bodySchema = z.object({
   mode: z.enum(["scheduled", "manual"]).default("scheduled"),

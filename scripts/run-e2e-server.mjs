@@ -101,6 +101,13 @@ const mockServer = createServer(async (request, response) => {
       response.end(JSON.stringify({ error: "Model or exact chart bytes did not match." }));
       return;
     }
+    if (phase === "compact" && (
+      requestBody.max_tokens !== 4608 || requestBody.reasoning?.max_tokens !== 4096 || requestBody.reasoning?.exclude !== true || "effort" in requestBody.reasoning
+    )) {
+      response.writeHead(422, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Compact thinking settings did not match." }));
+      return;
+    }
     providerCalls[phase] += 1;
     beginProviderRequest(phase);
     await providerDelay();
@@ -121,7 +128,7 @@ const mockServer = createServer(async (request, response) => {
         finish_reason: "stop",
       }],
       usage: phase === "compact"
-        ? { prompt_tokens: 1000, completion_tokens: 80, cost: 0.002 }
+        ? { prompt_tokens: 1000, completion_tokens: 1880, completion_tokens_details: { reasoning_tokens: 1800 }, cost: 0.02005 }
         : { prompt_tokens: 1000, completion_tokens: 400, cost: 0.005 },
     }));
     endProviderRequest(phase);

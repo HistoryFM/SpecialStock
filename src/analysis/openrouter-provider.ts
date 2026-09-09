@@ -5,10 +5,16 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { AnalysisModelError, type AnalysisModelProvider } from "@/analysis/provider";
+import { compactProviderLimiter } from "@/analysis/compact-limiter";
+import {
+  COMPACT_INFERENCE_PROFILE,
+  FULL_INFERENCE_PROFILE,
+} from "@/analysis/inference-profiles";
 import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt, COMPACT_PROMPT_VERSION, FULL_PROMPT_VERSION } from "@/analysis/prompt";
 import {
   fullAnalysisResultSchema,
   type ModelAttemptResult,
+  type ModelFailureKind,
 } from "@/analysis/types";
 import {
   AnalysisValidationError,
@@ -30,6 +36,9 @@ const responseSchema = z.object({
   usage: z.object({
     prompt_tokens: z.number().optional(),
     completion_tokens: z.number().optional(),
+    completion_tokens_details: z.object({
+      reasoning_tokens: z.number().nullable().optional(),
+    }).nullable().optional(),
     cost: z.number().optional(),
   }).optional(),
 });
@@ -41,10 +50,6 @@ const generationSchema = z.object({
     total_cost: z.number().optional(),
   }).optional(),
 });
-
-const FULL_MAX_TOKENS = 3_200;
-const COMPACT_ESTIMATE_USD = 0.015;
-const FULL_ESTIMATE_USD = 0.08;
 
 function compactJsonSchema() {
   const conviction = { type: "string", enum: ["low", "medium", "high"] };
@@ -133,6 +138,7 @@ async function reconcileUsage(apiKey: string, responseId: string) {
   try {
     const response = await fetch(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(responseId)}`, {
       cache: "no-store",
+      signal: AbortSignal.timeout(5_000),
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!response.ok) return null;
@@ -174,6 +180,33 @@ function safeProviderError(error: unknown) {
   return "OpenRouter analysis request failed.";
 }
 
+function failureKind(input: {
+  error: unknown;
+  response: Response | null;
+  raw: z.infer<typeof responseSchema> | null;
+  providerResponse: unknown;
+}): ModelFailureKind {
+  if (input.error instanceof Error && input.error.name === "AbortError") return "timeout";
+  if (input.error instanceof Error && input.error.message === "OpenRouter response exceeded the structured-output token budget.") return "token_limit";
+  if (input.response && !input.response.ok) return retryableStatus(input.response.status) ? "http_transient" : "http_terminal";
+  if (input.raw?.choices[0]?.finish_reason === "error") return "provider_finish_error";
+  if (input.error instanceof Error && input.error.message === "OpenRouter returned an empty response.") return "empty_response";
+  if (input.error instanceof AnalysisValidationError) return "validation_error";
+  if (input.error instanceof SyntaxError) return "malformed_json";
+  if (input.error instanceof z.ZodError || input.providerResponse !== null) return "invalid_structure";
+  return "request_failed";
+}
+
+function withoutReasoningText(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutReasoningText);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, child]) =>
+    /reasoning|thought/i.test(key) && key !== "reasoning_tokens"
+      ? []
+      : [[key, withoutReasoningText(child)]],
+  ));
+}
+
 async function resolveUsage(
   apiKey: string,
   raw: z.infer<typeof responseSchema> | null,
@@ -205,9 +238,12 @@ function setAttemptSpanAttributes(
     "specialstock.analysis.status": attempt.status,
     "specialstock.analysis.will_retry": willRetry,
     "specialstock.analysis.retry_outcome": willRetry ? "retrying" : "terminal",
+    "specialstock.inference.profile": String(attempt.requestSettings.inferenceProfile),
+    "specialstock.provider.queue_wait_ms": attempt.queueWaitMs,
     "specialstock.cost.estimated": attempt.costUsd === null && attempt.estimatedCostUsd !== null,
     "specialstock.cost.source": costSource,
   };
+  if (attempt.failureKind) attributes["specialstock.analysis.failure_kind"] = attempt.failureKind;
   if (attempt.responseId) attributes["gen_ai.response.id"] = attempt.responseId;
   if (raw?.model) attributes["gen_ai.response.model"] = raw.model;
   if (raw?.provider) attributes["openrouter.response.provider"] = raw.provider;
@@ -215,6 +251,7 @@ function setAttemptSpanAttributes(
   if (finishReason) attributes["gen_ai.response.finish_reasons"] = finishReason;
   if (attempt.inputTokens !== null) attributes["gen_ai.usage.input_tokens"] = attempt.inputTokens;
   if (attempt.outputTokens !== null) attributes["gen_ai.usage.output_tokens"] = attempt.outputTokens;
+  if (attempt.reasoningTokens !== null) attributes["gen_ai.usage.reasoning_tokens"] = attempt.reasoningTokens;
   if (attempt.inputTokens !== null || attempt.outputTokens !== null) {
     attributes["gen_ai.usage.total_tokens"] =
       (attempt.inputTokens ?? 0) + (attempt.outputTokens ?? 0);
@@ -250,15 +287,19 @@ function usageLogAttributes(input: {
     requested_model: input.model,
     will_retry: input.willRetry,
     retry_outcome: input.willRetry ? "retrying" : "terminal",
+    inference_profile: String(input.attempt.requestSettings.inferenceProfile),
+    queue_wait_ms: input.attempt.queueWaitMs,
     cost_is_estimate:
       input.attempt.costUsd === null && input.attempt.estimatedCostUsd !== null,
     cost_source: costSource,
   };
+  if (input.attempt.failureKind) attributes.failure_kind = input.attempt.failureKind;
   if (input.raw?.model) attributes.actual_model = input.raw.model;
   if (input.raw?.provider) attributes.actual_provider = input.raw.provider;
   if (input.attempt.responseId) attributes.response_id = input.attempt.responseId;
   if (input.attempt.inputTokens !== null) attributes.input_tokens = input.attempt.inputTokens;
   if (input.attempt.outputTokens !== null) attributes.output_tokens = input.attempt.outputTokens;
+  if (input.attempt.reasoningTokens !== null) attributes.reasoning_tokens = input.attempt.reasoningTokens;
   if (accountedCost !== null) attributes.cost_usd = accountedCost;
   return attributes;
 }
@@ -274,11 +315,27 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
     const prompt = compact
       ? buildCompactAnalysisPrompt(frozen, promptRevision?.instructions)
       : buildFullAnalysisPrompt(frozen, lockedSignal, promptRevision?.instructions);
-    const maxTokens = compact ? 256 : FULL_MAX_TOKENS;
-    const estimate = compact ? COMPACT_ESTIMATE_USD : FULL_ESTIMATE_USD;
+    const profile = compact ? COMPACT_INFERENCE_PROFILE : FULL_INFERENCE_PROFILE;
+    const { temperature, maxTokens, providerTimeoutMs } = profile.settings;
+    const reasoning = compact
+      ? { max_tokens: COMPACT_INFERENCE_PROFILE.settings.reasoning.maxTokens, exclude: true }
+      : { effort: FULL_INFERENCE_PROFILE.settings.reasoning.effort };
+    const requestSettings: Record<string, unknown> = {
+      inferenceProfile: profile.id,
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      provider_timeout_ms: providerTimeoutMs,
+      reasoning,
+      response_format: "json_schema",
+      streaming: false,
+    };
+    const estimate = profile.estimatedCostUsd;
     const chartSha256 = createHash("sha256").update(png).digest("hex");
     const attempts: ModelAttemptResult[] = [];
     let lastError: unknown;
+    let lastActualModel: string | null = null;
+    let lastActualProvider: string | null = null;
     let correction: string | null = null;
 
     for (let index = 0; index < maxAttempts; index += 1) {
@@ -294,7 +351,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
         "gen_ai.operation.type": "ai_client",
         "gen_ai.provider.name": "openrouter",
         "gen_ai.request.model": model,
-        "gen_ai.request.temperature": 0.1,
+        "gen_ai.request.temperature": temperature,
         "gen_ai.request.max_tokens": maxTokens,
         "gen_ai.prompt.name": "specialstock.visual-technical-analysis",
         "gen_ai.function_id": "specialstock.analyze-chart",
@@ -313,16 +370,25 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
         "specialstock.prompt.byte_length": Buffer.byteLength(attemptPrompt),
       };
       if (compact) {
-        spanAttributes["specialstock.request.thinking_budget_tokens"] = 128;
+        spanAttributes["specialstock.request.thinking_budget_tokens"] = COMPACT_INFERENCE_PROFILE.settings.reasoning.maxTokens;
+        spanAttributes["specialstock.request.reasoning_excluded"] = true;
       } else {
         spanAttributes["gen_ai.request.reasoning.level"] = "low";
       }
-      const outcome = await Sentry.startSpan(
+      const lease = compact ? await compactProviderLimiter.acquire() : null;
+      const queueWaitMs = lease?.queueWaitMs ?? 0;
+      spanAttributes["specialstock.inference.profile"] = profile.id;
+      spanAttributes["specialstock.provider.timeout_ms"] = providerTimeoutMs;
+      spanAttributes["specialstock.provider.queue_wait_ms"] = queueWaitMs;
+      if (lease) spanAttributes["specialstock.provider.active_attempts"] = lease.activeCount;
+      let outcome;
+      try {
+        outcome = await Sentry.startSpan(
         { name: `chat ${model}`, op: "gen_ai.chat", attributes: spanAttributes },
         async (span) => {
           const started = performance.now();
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 45_000);
+          const timeout = setTimeout(() => controller.abort(), providerTimeoutMs);
           let response: Response | null = null;
           let raw: z.infer<typeof responseSchema> | null = null;
           let providerResponse: unknown = null;
@@ -332,8 +398,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               method: "POST", cache: "no-store", signal: controller.signal,
               headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": "http://localhost:3000", "X-Title": "SpecialStock" },
               body: JSON.stringify({
-                model, temperature: 0.1, max_tokens: maxTokens,
-                reasoning: compact ? { max_tokens: 128 } : { effort: "low" },
+                model, temperature, max_tokens: maxTokens, reasoning,
                 response_format: { type: "json_schema", json_schema: { name: compact ? "compact_signal" : "full_analysis", strict: true, schema: compact ? compactJsonSchema() : fullJsonSchema() } },
                 messages: [{ role: "user", content: [
                   { type: "text", text: attemptPrompt },
@@ -347,8 +412,16 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             }
             providerResponse = await response.json();
             raw = responseSchema.parse(providerResponse);
+            lastActualModel = raw.model ?? model;
+            lastActualProvider = raw.provider ?? "openrouter";
             const content = raw.choices[0]!.message.content;
-            if (raw.choices[0]!.finish_reason === "length") throw new Error("OpenRouter response exceeded the structured-output token budget.");
+            if (raw.choices[0]!.finish_reason === "length") {
+              shouldRetry = false;
+              throw new Error("OpenRouter response exceeded the structured-output token budget.");
+            }
+            if (raw.choices[0]!.finish_reason === "error") {
+              throw new Error("OpenRouter provider finished with an error.");
+            }
             if (!content) throw new Error("OpenRouter returned an empty response.");
             const parsedContent = parseJsonResponse(content);
             const analysis = compact
@@ -359,8 +432,11 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             const attempt: ModelAttemptResult = {
               attemptNumber: index + 1, responseId: raw.id ?? null, status: "valid",
               latencyMs: Math.round(performance.now() - started), ...usage,
+              reasoningTokens: raw.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+              queueWaitMs,
               estimatedCostUsd: usage.costUsd === null ? estimate : null,
-              errorCode: null, rawResponse: raw, promptSnapshot: attemptPrompt, promptHash,
+              errorCode: null, failureKind: null, requestSettings,
+              rawResponse: withoutReasoningText(raw), promptSnapshot: attemptPrompt, promptHash,
             };
             setAttemptSpanAttributes(span, raw, attempt, false);
             span.setStatus({ code: 1 });
@@ -372,14 +448,18 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
           } catch (error) {
             const timedOut = error instanceof Error && error.name === "AbortError";
             const usage = await resolveUsage(apiKey, raw);
-            const willRetry = shouldRetry && index + 1 < maxAttempts;
+            const classifiedFailure = failureKind({ error, response, raw, providerResponse });
+            const willRetry = classifiedFailure !== "timeout" && classifiedFailure !== "token_limit" && shouldRetry && index + 1 < maxAttempts;
             const attempt: ModelAttemptResult = {
               attemptNumber: index + 1, responseId: raw?.id ?? null,
               status: timedOut ? "timed_out" : raw || providerResponse !== null ? "invalid" : "failed",
               latencyMs: Math.round(performance.now() - started), ...usage,
+              reasoningTokens: raw?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+              queueWaitMs,
               estimatedCostUsd: usage.costUsd === null && (shouldRetry || response?.ok) ? estimate : null,
               errorCode: error instanceof Error ? error.message.slice(0, 180) : "provider_error",
-              rawResponse: providerResponse ?? raw, promptSnapshot: attemptPrompt, promptHash,
+              failureKind: classifiedFailure, requestSettings,
+              rawResponse: withoutReasoningText(providerResponse ?? raw), promptSnapshot: attemptPrompt, promptHash,
             };
             setAttemptSpanAttributes(span, raw, attempt, willRetry);
             span.setStatus({ code: 2, message: timedOut ? "provider_timeout" : response && !response.ok ? `provider_http_${response.status}` : "provider_response_invalid" });
@@ -388,13 +468,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
                 phase, usageClass, symbol: frozen.symbol, chartSha256, maxAttempts,
                 attempt, raw, model, willRetry,
               }),
-              error_type: timedOut
-                ? "timeout"
-                : response && !response.ok
-                  ? `http_${response.status}`
-                  : raw || providerResponse !== null
-                    ? "invalid_response"
-                    : "request_failed",
+              error_type: classifiedFailure,
             });
             nextCorrection = response?.ok ? correctivePrompt(error) : null;
             return {
@@ -408,12 +482,15 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             clearTimeout(timeout);
           }
         },
-      );
+        );
+      } finally {
+        lease?.release();
+      }
       attempts.push(outcome.attempt);
       if (outcome.ok) {
         const latencyMs = attempts.reduce((sum, attempt) => sum + attempt.latencyMs, 0);
         return {
-          phase, analysis: outcome.analysis, requestedModel: model,
+          phase, analysis: outcome.analysis, inferenceProfile: profile.id, requestedModel: model,
           actualModel: outcome.raw.model ?? model,
           actualProvider: outcome.raw.provider ?? "openrouter", latencyMs,
           inputTokens: total(attempts, "inputTokens"), outputTokens: total(attempts, "outputTokens"),
@@ -429,7 +506,9 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
 
     const last = attempts.at(-1)!;
     throw new AnalysisModelError(safeProviderError(lastError), {
-      status: last.status === "valid" ? "invalid" : last.status, requestedModel: model, actualModel: null, actualProvider: "openrouter",
+      inferenceProfile: profile.id,
+      status: last.status === "valid" ? "invalid" : last.status, requestedModel: model,
+      actualModel: lastActualModel, actualProvider: lastActualProvider ?? "openrouter",
       latencyMs: attempts.reduce((sum, attempt) => sum + attempt.latencyMs, 0),
       inputTokens: total(attempts, "inputTokens"), outputTokens: total(attempts, "outputTokens"),
       costUsd: attempts.reduce((sum, attempt) => sum + (attempt.costUsd ?? attempt.estimatedCostUsd ?? 0), 0),

@@ -6,7 +6,7 @@ import { isAuthorizedSession } from "@/auth/authorization";
 import { runScheduledBatch } from "@/scans/batch";
 import { ScanNotAvailableError } from "@/scans/service";
 
-export const maxDuration = 180;
+export const maxDuration = 240;
 
 const bodySchema = z.object({ slotKey: z.string().min(1).max(80) }).strict();
 const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };

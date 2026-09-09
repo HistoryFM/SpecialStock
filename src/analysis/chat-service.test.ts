@@ -33,7 +33,7 @@ import { getAnalysisChat, resetAnalysisChat, retryAnalysisChat, submitAnalysisCh
 const migrations = [
   "0000_colorful_ronan.sql", "0001_groovy_korg.sql", "0002_past_silver_sable.sql",
   "0003_fantastic_talon.sql", "0004_enable_automatic_scans.sql", "0005_colossal_morgan_stark.sql",
-  "0006_groovy_expediter.sql", "0007_tough_swarm.sql",
+  "0006_groovy_expediter.sql", "0007_tough_swarm.sql", "0008_fluffy_radioactive_man.sql",
 ] as const;
 const clients: PGlite[] = [];
 const analysisId = "00000000-0000-4000-8000-000000000204";

@@ -57,6 +57,13 @@
       "when": 1788813725729,
       "tag": "0007_tough_swarm",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788972688688,
+      "tag": "0008_fluffy_radioactive_man",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { FULL_PROMPT_VERSION } from "@/analysis/prompt";
+import { FULL_INFERENCE_PROFILE } from "@/analysis/inference-profiles";
 import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
 import type { ChartAnalysisInput, ModelAttemptResult } from "@/analysis/types";
@@ -72,9 +73,13 @@ async function saveAttempts(runId: string, attempts: ModelAttemptResult[]) {
     latencyMs: attempt.latencyMs,
     inputTokens: attempt.inputTokens,
     outputTokens: attempt.outputTokens,
+    reasoningTokens: attempt.reasoningTokens,
+    queueWaitMs: attempt.queueWaitMs,
     costUsd: attempt.costUsd === null ? null : String(attempt.costUsd),
     estimatedCostUsd: attempt.estimatedCostUsd === null ? null : String(attempt.estimatedCostUsd),
     errorCode: attempt.errorCode,
+    failureKind: attempt.failureKind,
+    requestSettings: attempt.requestSettings,
     rawResponse: attempt.rawResponse,
     promptSnapshot: attempt.promptSnapshot ?? null,
     promptHash: attempt.promptHash ?? null,
@@ -89,6 +94,11 @@ async function saveAttempts(runId: string, attempts: ModelAttemptResult[]) {
     inputTokens: Number(totals?.inputTokens ?? 0), outputTokens: Number(totals?.outputTokens ?? 0),
     costUsd: Number(totals?.costUsd ?? 0), latencyMs: Number(totals?.latencyMs ?? 0),
   };
+}
+
+function reportedReasoningTokens(attempts: ModelAttemptResult[]) {
+  const values = attempts.flatMap((attempt) => attempt.reasoningTokens === null ? [] : [attempt.reasoningTokens]);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
 }
 
 export async function generateFullAnalysis(id: string, options: { retry?: boolean } = {}) {
@@ -126,6 +136,7 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     runRole: "primary",
     phase: "full",
     requestedModel: loaded.compactRun.requestedModel,
+    inferenceProfile: FULL_INFERENCE_PROFILE.id,
     promptVersion: FULL_PROMPT_VERSION,
     promptRevisionId: promptRevision.id,
     inputHash: loaded.compactRun.inputHash,
@@ -135,6 +146,7 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     set: {
       chartArtifactId: loaded.artifact.id,
       promptVersion: FULL_PROMPT_VERSION,
+      inferenceProfile: FULL_INFERENCE_PROFILE.id,
       promptRevisionId: promptRevision.id,
       inputHash: loaded.compactRun.inputHash,
       status: "pending",
@@ -168,9 +180,12 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     const full = result.analysis;
     await database.update(modelRuns).set({
       actualModel: result.actualModel, actualProvider: result.actualProvider, status: "valid",
+      inferenceProfile: result.inferenceProfile,
       latencyMs: totals?.latencyMs ?? result.latencyMs,
       inputTokens: totals?.inputTokens ?? result.inputTokens,
       outputTokens: totals?.outputTokens ?? result.outputTokens,
+      reasoningTokens: reportedReasoningTokens(result.attempts),
+      queueWaitMs: result.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0),
       costUsd: String(totals?.costUsd ?? result.costUsd ?? 0), rawResponse: result.rawResponse,
       completedAt: new Date(),
     }).where(eq(modelRuns.id, run.id));
@@ -200,6 +215,8 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
       latencyMs: totals?.latencyMs ?? failure?.metadata.latencyMs ?? null,
       inputTokens: totals?.inputTokens ?? failure?.metadata.inputTokens ?? null,
       outputTokens: totals?.outputTokens ?? failure?.metadata.outputTokens ?? null,
+      reasoningTokens: failure ? reportedReasoningTokens(failure.metadata.attempts) : null,
+      queueWaitMs: failure?.metadata.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0) ?? 0,
       costUsd: totals ? String(totals.costUsd) : failure?.metadata.costUsd === null || failure?.metadata.costUsd === undefined ? null : String(failure.metadata.costUsd),
       validationErrors: [error instanceof Error ? error.message.slice(0, 500) : "Full analysis failed."],
       completedAt: new Date(),

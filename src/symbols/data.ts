@@ -153,14 +153,42 @@ export async function getSymbolDetail(
         .limit(1)
     : [];
   const compactPromptAttempts = selectedHistory
-    ? await database.select({ attemptNumber: modelAttempts.attemptNumber, promptSnapshot: modelAttempts.promptSnapshot, promptHash: modelAttempts.promptHash })
+    ? await database.select({
+      attemptNumber: modelAttempts.attemptNumber,
+      status: modelAttempts.status,
+      latencyMs: modelAttempts.latencyMs,
+      queueWaitMs: modelAttempts.queueWaitMs,
+      inputTokens: modelAttempts.inputTokens,
+      outputTokens: modelAttempts.outputTokens,
+      reasoningTokens: modelAttempts.reasoningTokens,
+      costUsd: modelAttempts.costUsd,
+      estimatedCostUsd: modelAttempts.estimatedCostUsd,
+      failureKind: modelAttempts.failureKind,
+      requestSettings: modelAttempts.requestSettings,
+      promptSnapshot: modelAttempts.promptSnapshot,
+      promptHash: modelAttempts.promptHash,
+    })
       .from(modelAttempts).where(eq(modelAttempts.modelRunId, selectedHistory.run.id)).orderBy(desc(modelAttempts.attemptNumber))
     : [];
   const [fullRun] = selectedHistory?.analysis.fullModelRunId
     ? await database.select().from(modelRuns).where(eq(modelRuns.id, selectedHistory.analysis.fullModelRunId)).limit(1)
     : [];
   const fullPromptAttempts = fullRun
-    ? await database.select({ attemptNumber: modelAttempts.attemptNumber, promptSnapshot: modelAttempts.promptSnapshot, promptHash: modelAttempts.promptHash })
+    ? await database.select({
+      attemptNumber: modelAttempts.attemptNumber,
+      status: modelAttempts.status,
+      latencyMs: modelAttempts.latencyMs,
+      queueWaitMs: modelAttempts.queueWaitMs,
+      inputTokens: modelAttempts.inputTokens,
+      outputTokens: modelAttempts.outputTokens,
+      reasoningTokens: modelAttempts.reasoningTokens,
+      costUsd: modelAttempts.costUsd,
+      estimatedCostUsd: modelAttempts.estimatedCostUsd,
+      failureKind: modelAttempts.failureKind,
+      requestSettings: modelAttempts.requestSettings,
+      promptSnapshot: modelAttempts.promptSnapshot,
+      promptHash: modelAttempts.promptHash,
+    })
       .from(modelAttempts).where(eq(modelAttempts.modelRunId, fullRun.id)).orderBy(desc(modelAttempts.attemptNumber))
     : [];
   const now = new Date();

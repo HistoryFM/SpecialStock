@@ -6,6 +6,7 @@ import { isDemoMode } from "@/config/env";
 import { getDatabase } from "@/db/client";
 import { appSettings, budgetReservations, dailyBudgetLedger } from "@/db/schema";
 import { marketDate } from "@/market-data/time";
+import { COMPACT_INFERENCE_PROFILE } from "@/analysis/inference-profiles";
 
 export type UsageClass = "routine_compact" | "manual_compact" | "full_analysis" | "chat_followup";
 
@@ -13,8 +14,8 @@ const DEFAULT_DAILY_BUDGET_USD = 12;
 const ROUTINE_COST_TARGET_USD = 10;
 
 const RESERVED_COST_USD: Record<UsageClass, number> = {
-  routine_compact: 0.02,
-  manual_compact: 0.02,
+  routine_compact: COMPACT_INFERENCE_PROFILE.estimatedCostUsd,
+  manual_compact: COMPACT_INFERENCE_PROFILE.estimatedCostUsd,
   full_analysis: 0.08,
   chat_followup: 0.08,
 };

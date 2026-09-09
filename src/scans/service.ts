@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
+import { COMPACT_INFERENCE_PROFILE } from "@/analysis/inference-profiles";
 import type { PromptRevisionSnapshot } from "@/analysis/prompt";
 import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
@@ -207,13 +208,22 @@ async function persistAttempts(runId: string, attempts: ModelAttemptResult[]) {
     latencyMs: attempt.latencyMs,
     inputTokens: attempt.inputTokens,
     outputTokens: attempt.outputTokens,
+    reasoningTokens: attempt.reasoningTokens,
+    queueWaitMs: attempt.queueWaitMs,
     costUsd: attempt.costUsd === null ? null : String(attempt.costUsd),
     estimatedCostUsd: attempt.estimatedCostUsd === null ? null : String(attempt.estimatedCostUsd),
     errorCode: attempt.errorCode,
+    failureKind: attempt.failureKind,
+    requestSettings: attempt.requestSettings,
     rawResponse: attempt.rawResponse,
     promptSnapshot: attempt.promptSnapshot ?? null,
     promptHash: attempt.promptHash ?? null,
   }))).onConflictDoNothing();
+}
+
+function reportedReasoningTokens(attempts: ModelAttemptResult[]) {
+  const values = attempts.flatMap((attempt) => attempt.reasoningTokens === null ? [] : [attempt.reasoningTokens]);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
 }
 
 export async function persistModelResult(input: {
@@ -239,6 +249,7 @@ export async function persistModelResult(input: {
       if (input.runId) {
         [run] = await database.update(modelRuns).set({
           actualModel: input.result.actualModel,
+          inferenceProfile: input.result.inferenceProfile,
           actualProvider: input.result.actualProvider,
           promptVersion: COMPACT_PROMPT_VERSION,
           inputHash: input.frozen.inputHash,
@@ -246,6 +257,8 @@ export async function persistModelResult(input: {
           latencyMs: input.result.latencyMs,
           inputTokens: input.result.inputTokens,
           outputTokens: input.result.outputTokens,
+          reasoningTokens: reportedReasoningTokens(input.result.attempts),
+          queueWaitMs: input.result.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0),
           costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
           rawResponse: input.result.rawResponse,
           validationErrors: [],
@@ -255,10 +268,13 @@ export async function persistModelResult(input: {
         [run] = await database.insert(modelRuns).values({
           scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
           phase: "compact", requestedModel: input.result.requestedModel,
+          inferenceProfile: input.result.inferenceProfile,
           actualModel: input.result.actualModel, actualProvider: input.result.actualProvider,
           promptVersion: COMPACT_PROMPT_VERSION, inputHash: input.frozen.inputHash, status: "valid",
           latencyMs: input.result.latencyMs, inputTokens: input.result.inputTokens,
           outputTokens: input.result.outputTokens,
+          reasoningTokens: reportedReasoningTokens(input.result.attempts),
+          queueWaitMs: input.result.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0),
           costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
           rawResponse: input.result.rawResponse, validationErrors: [], completedAt,
         })
@@ -267,6 +283,7 @@ export async function persistModelResult(input: {
           set: {
             chartArtifactId: input.chartArtifactId,
             actualModel: input.result.actualModel,
+            inferenceProfile: input.result.inferenceProfile,
             actualProvider: input.result.actualProvider,
             promptVersion: COMPACT_PROMPT_VERSION,
             inputHash: input.frozen.inputHash,
@@ -274,6 +291,8 @@ export async function persistModelResult(input: {
             latencyMs: input.result.latencyMs,
             inputTokens: input.result.inputTokens,
             outputTokens: input.result.outputTokens,
+            reasoningTokens: reportedReasoningTokens(input.result.attempts),
+            queueWaitMs: input.result.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0),
             costUsd: input.result.costUsd === null ? null : String(input.result.costUsd),
             rawResponse: input.result.rawResponse,
             validationErrors: [],
@@ -321,6 +340,7 @@ async function runModel(input: {
   const [pendingRun] = await database.insert(modelRuns).values({
     scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
     phase: "compact", requestedModel: input.model, promptVersion: COMPACT_PROMPT_VERSION,
+    inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
     promptRevisionId: input.promptRevision.id,
     inputHash: input.frozen.inputHash, status: "pending",
   }).onConflictDoUpdate({
@@ -328,6 +348,7 @@ async function runModel(input: {
     set: {
       chartArtifactId: input.chartArtifactId,
       promptVersion: COMPACT_PROMPT_VERSION,
+      inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
       promptRevisionId: input.promptRevision.id,
       inputHash: input.frozen.inputHash,
       status: "pending",
@@ -354,6 +375,7 @@ async function runModel(input: {
       error instanceof AnalysisModelError
         ? error
         : new AnalysisModelError(error instanceof Error ? error.message : "Analysis model failed.", {
+            inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
             status: "failed",
             requestedModel: input.model,
             actualModel: null,
@@ -380,6 +402,8 @@ async function runModel(input: {
       latencyMs: failure.metadata.latencyMs,
       inputTokens: failure.metadata.inputTokens,
       outputTokens: failure.metadata.outputTokens,
+      reasoningTokens: reportedReasoningTokens(failure.metadata.attempts),
+      queueWaitMs: failure.metadata.attempts.reduce((sum, attempt) => sum + attempt.queueWaitMs, 0),
       costUsd: failure.metadata.costUsd === null ? null : String(failure.metadata.costUsd),
       rawResponse: failure.metadata.rawResponse,
       validationErrors: [failure.message.slice(0, 500)],

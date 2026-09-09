@@ -85,6 +85,18 @@ export type ChartAnalysisInput = {
   inputHash: string;
 };
 
+export type ModelFailureKind =
+  | "timeout"
+  | "token_limit"
+  | "http_transient"
+  | "http_terminal"
+  | "provider_finish_error"
+  | "empty_response"
+  | "malformed_json"
+  | "validation_error"
+  | "invalid_structure"
+  | "request_failed";
+
 export type ModelAttemptResult = {
   attemptNumber: number;
   responseId: string | null;
@@ -92,15 +104,20 @@ export type ModelAttemptResult = {
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  reasoningTokens: number | null;
+  queueWaitMs: number;
   costUsd: number | null;
   estimatedCostUsd: number | null;
   errorCode: string | null;
+  failureKind: ModelFailureKind | null;
+  requestSettings: Record<string, unknown>;
   rawResponse: unknown;
   promptSnapshot?: string;
   promptHash?: string;
 };
 
 type ModelRunMetadata = {
+  inferenceProfile: string;
   requestedModel: string;
   actualModel: string;
   actualProvider: string;

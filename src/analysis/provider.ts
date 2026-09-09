@@ -3,6 +3,7 @@ import type { ChartAnalysisInput, ModelAttemptResult, ModelRunResult } from "@/a
 import type { PromptRevisionSnapshot } from "@/analysis/prompt";
 
 export type AnalysisModelFailureMetadata = {
+  inferenceProfile: string;
   status: "invalid" | "failed" | "timed_out";
   requestedModel: string;
   actualModel: string | null;

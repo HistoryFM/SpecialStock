@@ -30,6 +30,23 @@ async function signIn(page: import("@playwright/test").Page) {
   await expect(page).toHaveURL(/\/dashboard$/);
 }
 
+async function selectManualInterval(page: import("@playwright/test").Page, symbol: string, interval: string) {
+  const picker = page.getByLabel(`Manual intervals for ${symbol}`);
+  const selected = picker.getByRole("button", { name: interval, exact: true });
+  if (await selected.getAttribute("aria-pressed") !== "true") await selected.click();
+  for (const other of ["1m", "5m", "10m"].filter((value) => value !== interval)) {
+    const button = picker.getByRole("button", { name: other, exact: true });
+    if (await button.getAttribute("aria-pressed") === "true") await button.click();
+  }
+}
+
+async function expectManualInterval(page: import("@playwright/test").Page, symbol: string, interval: string) {
+  const picker = page.getByLabel(`Manual intervals for ${symbol}`);
+  for (const value of ["1m", "5m", "10m"]) {
+    await expect(picker.getByRole("button", { name: value, exact: true })).toHaveAttribute("aria-pressed", String(value === interval));
+  }
+}
+
 test("protects the application shell and supports the single-user session", async ({ page }) => {
   await page.goto("/dashboard");
   await expect(page).toHaveURL(/\/login$/);
@@ -47,26 +64,26 @@ test("protects the application shell and supports the single-user session", asyn
 });
 
 test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => {
+  test.setTimeout(120_000);
   const expectedCompactCalls = process.env.SPECIALSTOCK_E2E_RETRY_ONCE === "1" ? 2 : 1;
   await signIn(page);
   await page.setViewportSize({ width: 1440, height: 900 });
 
-  const timeframe = page.getByLabel("Manual timeframe for AAPL");
-  await timeframe.selectOption("1m");
+  await selectManualInterval(page, "AAPL", "1m");
   const row = page.getByRole("row", { name: "Open AAPL analysis" });
   await row.getByRole("button", { name: "Run now" }).click();
   await expect(row.locator(".summary-cell > span")).toContainText("Clear", { timeout: 60_000 });
   await expect(row.getByText("Bullish", { exact: true })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByLabel("Manual timeframe for AAPL")).toHaveValue("1m");
-  await expect(page.getByLabel("Manual timeframe for MSFT")).toHaveValue("5m");
+  await expectManualInterval(page, "AAPL", "1m");
+  await expectManualInterval(page, "MSFT", "5m");
   const msftRow = page.getByRole("row", { name: "Open MSFT analysis" });
   await msftRow.getByRole("button", { name: "Run now" }).click();
   await expect(msftRow.getByText("No trade", { exact: true })).toBeVisible({ timeout: 60_000 });
 
-  await page.getByLabel("Manual timeframe for AAPL").selectOption("10m");
-  await page.getByLabel("Manual timeframe for NVDA").selectOption("1m");
+  await selectManualInterval(page, "AAPL", "10m");
+  await selectManualInterval(page, "NVDA", "1m");
   for (const symbol of ["AAPL", "NVDA", "AMZN"]) {
     await page.getByRole("checkbox", { name: `Select ${symbol}` }).check();
   }
@@ -76,9 +93,9 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByRole("checkbox", { name: "Select NVDA" })).not.toBeChecked();
   await expect(page.getByRole("checkbox", { name: "Select AMZN" })).toBeChecked();
   await page.reload();
-  await expect(page.getByLabel("Manual timeframe for AAPL")).toHaveValue("10m");
-  await expect(page.getByLabel("Manual timeframe for NVDA")).toHaveValue("1m");
-  await expect(page.getByLabel("Manual timeframe for AMZN")).toHaveValue("5m");
+  await expectManualInterval(page, "AAPL", "10m");
+  await expectManualInterval(page, "NVDA", "1m");
+  await expectManualInterval(page, "AMZN", "5m");
 
   const watchlist = page.locator("section.watchlist-panel").filter({ has: page.getByRole("heading", { name: "Watchlist" }) });
   await watchlist.getByRole("button", { name: "Bullish" }).click();
@@ -120,14 +137,22 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
 
   await expect(page.getByRole("heading", { name: "High-conviction theses" })).toBeVisible();
   await expect(page.getByText("Review only", { exact: true }).first()).toBeVisible();
-  await page.getByRole("link", { name: "Review thesis" }).first().click();
-  await expect(page).toHaveURL(/\/symbols\/AAPL\?analysis=[0-9a-f-]+&date=\d{4}-\d{2}-\d{2}&tab=review$/);
+  await page.locator(".daily-conviction-table").getByRole("link", { name: "Compare" }).first().click();
+  await expect(page).toHaveURL(/\/symbols\/AAPL\/comparisons\/[0-9a-f-]+$/);
+  await page.getByRole("link", { name: "Open 10m analysis" }).click();
+  await expect(page).toHaveURL(/\/symbols\/AAPL\?analysis=[0-9a-f-]+$/);
+  await page.getByRole("tab", { name: "Review" }).click();
   await expect(page.getByRole("heading", { name: "Review this analysis" })).toBeVisible();
 
   await page.getByRole("tab", { name: "Audit & inputs" }).click();
   await expect(page.getByRole("img", { name: /AAPL exact Chart-Img model input/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Exact image submitted to the model" })).toBeVisible();
   await expect(page.getByText("google/gemini-2.5-pro").first()).toBeVisible();
+  await expect(page.getByText("compact-quality-v1", { exact: true })).toBeVisible();
+  await page.getByText("Compact provider attempts", { exact: true }).click();
+  await expect(page.getByText(/Reasoning \/ output tokens: 1,800 \/ 1,880/)).toBeVisible();
+  await expect(page.getByText(/queued \d+ ms/).first()).toBeVisible();
+  await expect(page.getByText(/"max_tokens": 4096/)).toBeVisible();
 
   await page.getByRole("tab", { name: "Review" }).click();
   await expect(page.getByRole("heading", { name: "Review this analysis" })).toBeVisible();
@@ -173,7 +198,7 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   ]) {
     await page.setViewportSize(viewport);
     await expect.poll(() => page.evaluate(() => document.body.scrollWidth <= document.body.clientWidth)).toBe(true);
-    await expect(page.getByLabel("Manual timeframe for AAPL")).toBeVisible();
+    await expect(page.getByLabel("Manual intervals for AAPL")).toBeVisible();
     await expect(page.locator("section.signal-history").getByRole("button", { name: "Bearish" })).toBeVisible();
   }
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -186,8 +211,9 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   });
 
   await page.goto("/settings");
-  await expect(page.getByText("Gemini 2.5 Pro only", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Watchlist symbol 1", { exact: true })).toHaveValue("AAPL");
   await expect(page.getByLabel("Watchlist symbol 20", { exact: true })).toHaveValue("USO");
   await expect(page.getByText("20 / 20")).toBeVisible();
+  await page.getByRole("tab", { name: "AI analysis Model and prompts" }).click();
+  await expect(page.getByText("Gemini 2.5 Pro only", { exact: true })).toBeVisible();
 });
