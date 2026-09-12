@@ -23,6 +23,7 @@ export default async function ProtectedLayout({
           <Link href="/dashboard">Dashboard</Link>
           <Link href="/alerts">Alerts</Link>
           <Link href="/evaluation">Evaluation</Link>
+          <Link href="/backtesting">Backtesting</Link>
           <Link href="/settings">Settings</Link>
         </nav>
         <form action={logoutAction}>

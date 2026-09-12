@@ -18,8 +18,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Product invariants
 
-- Chart-Img creates the frozen technical chart. Do not calculate technical indicators locally or send OHLC/indicator-number payloads to AI.
-- The analysis model is exclusively `google/gemini-2.5-pro` through OpenRouter. Do not add comparison models or cross-model fallback.
+- In the scan pipeline, Chart-Img creates the frozen technical chart. Do not calculate technical indicators locally for scans or send OHLC/indicator-number payloads to scan AI. The isolated Backtesting tab calculates indicators from local CSVs.
+- The scan analysis model is exclusively `google/gemini-2.5-pro` through OpenRouter. Do not add comparison models or cross-model fallback to scans. The isolated Backtesting tab has its own model allowlist.
 - The exact stored PNG sent to Gemini must remain hash-verifiable and available in the authenticated audit UI.
 - Manual scans must remain available regardless of automatic-scan state and must not create alerts, replace theses, or create evaluations.
 - Routine automatic and manual scans produce compact signals only. Full narrative analysis is generated once, on opening an eligible result, from the same verified stored PNG and must not change locked signal fields or create side effects.
@@ -34,7 +34,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Never print, quote, summarize, upload, or include `.env.local` values in diagnostics. Verify secrets only through redacted presence/length checks.
 - Never add a `NEXT_PUBLIC_*` secret or return provider credentials in a response.
 - Preserve `.env.local` and `.data/` during updates. Stop the server before copying or backing up `.data/`.
-- Do not trigger a live Chart-Img/OpenRouter analysis without explicit user approval because it consumes provider quota or credit.
+- Do not trigger a live Chart-Img/OpenRouter analysis without explicit user approval because it consumes provider quota or credit. A user-authorized, bounded backtesting model validation is an exception for that task only.
 
 ## Windows first run
 

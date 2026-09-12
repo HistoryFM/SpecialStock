@@ -66,7 +66,7 @@ function endProviderRequest(phase) {
   providerConcurrency[phase].active -= 1;
 }
 
-const providerDelay = () => new Promise((resolve) => setTimeout(resolve, 150));
+const providerDelay = () => new Promise((resolve) => setTimeout(resolve, 400));
 
 const mockServer = createServer(async (request, response) => {
   const chunks = [];
@@ -91,6 +91,29 @@ const mockServer = createServer(async (request, response) => {
   }
   if (request.url === "/openrouter" && request.method === "POST") {
     const requestBody = JSON.parse(requestBytes.toString("utf8"));
+    const backtestSystem = requestBody.messages?.[0]?.content;
+    const backtestPhase = requestBody.response_format?.type === "json_object" && typeof backtestSystem === "string"
+      ? backtestSystem.includes("clarification and strategy") ? "backtest_strategy" : "backtest_analysis" : null;
+    if (backtestPhase === "backtest_strategy" || backtestPhase === "backtest_analysis") {
+      const approvedModels = ["google/gemini-2.5-pro", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"];
+      if (!approvedModels.includes(requestBody.model) || requestBody.response_format?.type !== "json_object" || requestBody.provider?.require_parameters !== true ||
+        (requestBody.model !== "google/gemini-2.5-pro" && requestBody.reasoning?.effort !== "high")) {
+        response.writeHead(422, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "Backtesting model or reasoning settings did not match." }));
+        return;
+      }
+      const strategy = { entry: [{ kind: "price_sma", period: 50, relation: "crosses_above" }], exit: [{ kind: "price_sma", period: 50, relation: "crosses_below" }],
+        rsiPeriod: 14, rsiOversold: 30, rsiOverbought: 70, macdFast: 12, macdSlow: 26, macdSignal: 9 };
+      const content = backtestPhase === "backtest_strategy"
+        ? { clarification: "", strategy }
+        : { summary: "The strategy is sensitive to whipsaws and should be judged against the price-return benchmarks.", riskNotes: ["Maximum drawdown is measured over the full period."],
+          suggestions: [{ title: "Add RSI filter", reason: "Test whether requiring RSI below 30 changes drawdown.", strategy: { ...strategy, entry: [...strategy.entry, { kind: "rsi", threshold: 30, relation: "below" }] } }] };
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ id: `e2e-${backtestPhase}`, model: requestBody.model,
+        choices: [{ message: { content: JSON.stringify(content) }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 300, completion_tokens: 200, cost: 0.01 } }));
+      return;
+    }
     const content = requestBody.messages?.[0]?.content ?? [];
     const images = content.filter((part) => part.type === "image_url");
     const expectedImage = `data:image/png;base64,${chart.toString("base64")}`;

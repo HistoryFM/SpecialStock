@@ -1,8 +1,8 @@
 # SpecialStock
 
-SpecialStock is a private, single-user visual technical-analysis workspace for a small US-stock watchlist. Chart-Img renders a frozen TradingView chart, and only `google/gemini-2.5-pro` judges that image and fills the decision brief.
+SpecialStock is a private, single-user visual technical-analysis workspace for a small US-stock watchlist, with a separate historical Backtesting tab. In stock scans, Chart-Img renders a frozen TradingView chart, and only `google/gemini-2.5-pro` judges that image and fills the decision brief.
 
-The application does **not** calculate technical indicators for Gemini, send OHLC arrays or numeric indicator snapshots to Gemini, place trades, or provide autonomous execution.
+The scan pipeline does **not** calculate technical indicators for Gemini or send OHLC arrays or numeric indicator snapshots to Gemini. Backtesting calculates indicators locally from uploaded daily CSVs and simulates historical trades. The application does not place trades or provide autonomous execution.
 
 This README is the current product and engineering source of truth. `PROJECT_PLAN.md` and `IMPLEMENTATION_PROMPT.md` are retained only as historical records of superseded designs.
 
@@ -21,6 +21,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - A rolling 24-hour eligible-signal dashboard history with bullish/bearish filters and conviction ordering, plus frozen chart audit, model attempt/cost metadata, human review, alerts, thesis state, and evaluation support.
 - Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
+- Authenticated Backtesting tab with versioned local CSV imports, confirmed AI-interpreted rules, deterministic simulations, saved reports, and manually tested AI suggestions.
 
 Automatic scanning requires an authenticated dashboard tab to remain open. It is intentionally not a background cloud service.
 
@@ -88,7 +89,8 @@ The model is locked to `google/gemini-2.5-pro` through OpenRouter. Automatic and
 | Authentication | Auth.js credentials provider, bcrypt password hash, 12-hour JWT session |
 | Local database | Embedded PGlite with Drizzle ORM and checked-in SQL migrations |
 | Chart provider | Chart-Img v2 advanced TradingView chart endpoint |
-| Analysis provider | OpenRouter using only `google/gemini-2.5-pro` |
+| Scan analysis provider | OpenRouter using only `google/gemini-2.5-pro` |
+| Backtesting interpretation/commentary | Separate OpenRouter allowlist: Gemini 2.5 Pro, GPT-5.6 Sol High, Claude Opus 5 High |
 | Chart storage | Content-addressed local PNG files with SHA-256 verification |
 | Calendar/outcomes | Alpaca when configured; never used for chart indicators or Gemini numeric context |
 | Scheduling | Authenticated browser leader, concurrent due-slot batch (up to 20), database idempotency and per-symbol–interval exclusion |
@@ -116,7 +118,7 @@ Useful log searches begin with `scheduler.`, `scan.batch.`, `scan.manual_batch.`
 - pnpm 11.19.0.
 - Internet access for dependency installation and real Chart-Img/OpenRouter calls.
 - A Chart-Img ULTRA key for the locked 1600×1920 chart.
-- An OpenRouter key with access to `google/gemini-2.5-pro`.
+- An OpenRouter key with access to `google/gemini-2.5-pro`; backtesting model choices additionally require access to the selected GPT or Claude model.
 - Optional Alpaca key and secret for live calendar/outcome functionality.
 
 No PostgreSQL server is required. PGlite runs locally inside the application.
@@ -195,6 +197,16 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 
 ## Using the application
 
+### Historical backtesting
+
+Open **Backtesting** after signing in. Import daily CSVs for a long ticker, SPY, QQQ, and any extra comparisons; an inverse ticker is also required for long/inverse mode. Each upload must contain `Date` and `Close/Last` or `Close`. The import accepts the supplied `Date,Close/Last,Volume,Open,High,Low` format, sorts dates, rejects duplicates and invalid closes, and shows date ranges, row counts, and warnings. Confirm that close prices are split-adjusted before import. Each imported version remains under `.data/backtesting/files/` for reproducible saved runs; data is not forwarded to the scan pipeline.
+
+Choose long/cash or long/inverse, starting capital, annual cash interest, slippage, and a fee per executed leg. Describe explicit entry and exit rules using SMA 50, SMA 200, RSI, and MACD. The Backtesting-only model selector offers Gemini 2.5 Pro, GPT-5.6 Sol High, and Claude Opus 5 High through the existing server-side OpenRouter key. Review the exact interpreted conditions and parameters before **Run confirmed strategy**. An ambiguous or unsupported strategy cannot run. A crossover missed because an AND filter was false does not fire later unless a new crossover occurs.
+
+The engine begins on the first shared January trading date with sufficient earlier long-asset history to warm the selected indicators. It requires exact daily date alignment through the run. It starts in cash, credits each close-to-close return to the position already held, then switches at that day's close. Every buy and sell leg incurs the selected friction. This same-close fill is an idealized assumption. Annual rows show the strategy and SPY, QQQ, and every selected comparison side by side. A separate table gives one full-period maximum drawdown per series with peak and trough dates. The interactive growth chart keeps final dollar values visible; saved reports also show every simulated trade. AI commentary uses calculated metrics and may suggest untested variants, which run only when **Test suggestion** is clicked and are compared with the original over identical dates.
+
+Reports based on the supplied CSVs are **price returns**, excluding dividends and taxes. Close prices still need split adjustment. Backtesting is a historical analysis tool and does not place orders.
+
 ### Manual analysis
 
 Every watchlist row has selectable **1m**, **5m**, and **10m** chips, with **5m** selected by default. At least one remains selected, and the browser remembers each symbol's combination. A row can launch all of its selected intervals together; **Run selected** expands every selected stock and interval into one server batch and disables submission above 20 jobs. Different intervals for one symbol can run concurrently. The same symbol and interval cannot overlap, so scheduled and manual 5m work remain mutually exclusive while manual 1m or 10m work may coexist with scheduled 5m.
@@ -243,6 +255,7 @@ Local state is stored in:
 - `.env.local`: credentials, Auth.js secret, and password hash.
 - `.data/specialstock/`: embedded database.
 - `.data/chart-artifacts/`: exact PNGs used for analyses.
+- `.data/backtesting/`: imported price versions and saved backtests, including AI usage and commentary.
 
 Complete scan graphs in completed, failed, or skipped state are permanently removed after seven rolling days. This cascades through their analyses, chat conversations/turns, reviews, theses, outcomes, notifications, model runs, and chart-artifact records; orphaned manual comparison groups are removed with the same cleanup. Shared content-addressed PNGs are retained while any retained chart record still references them, and spend ledgers/reservations remain available for accurate cost reporting. Prompt revisions are retained indefinitely, with one persistent active pointer for each prompt phase.
 
@@ -294,10 +307,11 @@ The end-to-end suite uses local mock providers. It verifies that the exact store
 - `src/scans/`: manual/scheduled policy, grouped comparisons, capture-to-analysis orchestration, persistence, and symbol–interval idempotency.
 - `src/settings/`: exchange-aware watchlist and per-stock automatic state.
 - `src/market-data/`: Alpaca/demo calendar and outcome provider support; no indicator calculation.
+- `src/backtesting/`: CSV validation, local indicator/trade engine, isolated AI transport, and versioned local storage.
 - `src/app/`: authenticated Next.js UI and API routes.
 - `src/db/` and `drizzle/`: current schema and migrations.
 - `tests/e2e/` and `scripts/run-e2e-server.mjs`: fully mocked browser flow.
-- `.data/`: ignored local database and chart artifacts.
+- `.data/`: ignored local database, chart artifacts, imported price files, and saved backtests.
 
 ## Failure behavior
 
