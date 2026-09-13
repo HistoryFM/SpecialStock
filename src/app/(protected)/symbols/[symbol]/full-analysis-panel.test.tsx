@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FullAnalysisPanel } from "@/app/(protected)/symbols/[symbol]/full-analysis-panel";
@@ -67,6 +67,39 @@ describe("full analysis tracing", () => {
     await vi.advanceTimersByTimeAsync(1_500);
 
     expect(sentryMocks.suppressTracing).toHaveBeenCalledTimes(1);
+    expect(sentryMocks.startNewTrace).not.toHaveBeenCalled();
+  });
+
+  it("shows all four phases and keeps the conflict resolution prominent", () => {
+    render(<FullAnalysisPanel initial={{ ...base, state: "available", full: {
+      setupType: null, immediateBias: null, broaderTrend: null, candlestickAnalysis: null,
+      vwapKeltnerAnalysis: null, cciAnalysis: null, supportingEvidence: null,
+      conflictingEvidence: null, deeperScenario: null, summary: "Stand aside.",
+      report: {
+        version: 1,
+        phase1: "Visible downtrend near lower Keltner line.",
+        phase2: "ADX rising; RSI below midline; MACD negative; CCI below zero; CMF negative.",
+        phase3: "Three red candles with stable volume near the lower band.",
+        phase4: "Trend aligns, but price is extended. No trade at the lower band. Watch for a clear break on a fresh scan.",
+      },
+    } }} />);
+    expect(screen.getByTestId("four-phase-report")).toHaveTextContent("01 · Broad structural architecture");
+    expect(screen.getByTestId("four-phase-report")).toHaveTextContent("02 · Lower technical indicators");
+    expect(screen.getByTestId("four-phase-report")).toHaveTextContent("03 · Three-candle micro-audit");
+    expect(screen.getByTestId("four-phase-report")).toHaveTextContent("04 · Conflict resolution and hierarchy");
+    expect(screen.getByText(/Trend aligns, but price is extended/)).toBeVisible();
+  });
+
+  it("keeps old reports readable and does not request detail without a retained chart", () => {
+    const { rerender } = render(<FullAnalysisPanel initial={{ ...base, state: "available", full: {
+      setupType: "Legacy setup", immediateBias: "Legacy read", broaderTrend: "Older trend",
+      candlestickAnalysis: "Older candles", vwapKeltnerAnalysis: "Older lines", cciAnalysis: "Older CCI",
+      supportingEvidence: [], conflictingEvidence: [], deeperScenario: "Older risk", summary: "Older summary",
+    } }} />);
+    expect(screen.getByTestId("legacy-report")).toHaveTextContent("Legacy read");
+    expect(screen.getByRole("heading", { name: "Legacy setup" })).toBeVisible();
+    rerender(<FullAnalysisPanel initial={{ ...base, state: "not_requested" }} chartAvailable={false} />);
+    expect(screen.getByText(/no retained chart/)).toBeVisible();
     expect(sentryMocks.startNewTrace).not.toHaveBeenCalled();
   });
 });

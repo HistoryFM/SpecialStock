@@ -222,7 +222,7 @@ export function SettingsForm({ settings, modelStatuses, persistenceAvailable, pr
       {promptStudio}
       <section className="settings-card settings-model-summary" aria-labelledby="model-heading">
         <div className="settings-card-heading"><div><p className="eyebrow">OpenRouter</p><h2 id="model-heading">Analysis model</h2></div><span className="status-pill live">Gemini 2.5 Pro only</span></div>
-        <p className="muted">Routine scans create compact signals. Eligible details generate a separate full analysis from the same stored chart.</p>
+        <p className="muted">Routine scans create compact signals. Opening any completed scan with a retained chart generates a separate full analysis from that same chart.</p>
         {modelStatuses.map((model) => <div className="model-option" key={model.id}><span className="model-copy"><strong>{model.id}</strong><small>{model.reason}</small></span></div>)}
       </section>
       </div>

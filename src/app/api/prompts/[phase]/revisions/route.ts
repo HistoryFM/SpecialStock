@@ -7,7 +7,7 @@ import { auth } from "@/auth";
 import { isAuthorizedSession } from "@/auth/authorization";
 
 const paramsSchema = z.object({ phase: z.enum(["compact", "full"]) });
-const bodySchema = z.object({ instructions: z.string(), expectedActiveRevisionId: z.string().uuid() }).strict();
+const bodySchema = z.object({ instructions: z.string(), scope: z.enum(["auto", "manual_1m", "manual_5m", "manual_10m"]), expectedActiveRevisionId: z.string().uuid() }).strict();
 const HEADERS = { "Cache-Control": "private, no-store" };
 
 export async function POST(request: Request, context: { params: Promise<{ phase: string }> }) {
@@ -22,12 +22,14 @@ export async function POST(request: Request, context: { params: Promise<{ phase:
       const body = bodySchema.parse(await request.json());
       span.setAttributes({
         "specialstock.prompt.phase": phase,
+        "specialstock.prompt.scope": body.scope,
         "specialstock.prompt.expected_revision_id": body.expectedActiveRevisionId,
         "specialstock.prompt.instructions_length": body.instructions.length,
       });
       Sentry.logger.info("prompt.revision.server_requested", {
         "specialstock.telemetry.origin": "server",
         "specialstock.prompt.phase": phase,
+        "specialstock.prompt.scope": body.scope,
         "specialstock.prompt.operation": "create",
         "specialstock.prompt.expected_revision_id": body.expectedActiveRevisionId,
         "specialstock.prompt.instructions_length": body.instructions.length,

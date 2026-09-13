@@ -176,6 +176,55 @@ describe("WatchlistTable", () => {
     await waitFor(() => expect(onAutomaticScanChange).toHaveBeenCalledWith(["S01", "S02"], true));
   });
 
+  it("selects the full watchlist under a filter and toggles multiple manual intervals", async () => {
+    const onRunSelected = vi.fn(async () => ({ results: [] }));
+    renderTable([item(1), item(2), item(3)], { onRunSelected });
+    fireEvent.click(screen.getByRole("button", { name: "Bullish" }));
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all stocks" }));
+    expect(screen.getByText("3 selected")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 1m for selected stocks" }));
+    expect(screen.getByText("6 manual interval jobs")).toBeVisible();
+    expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Toggle 5m for selected stocks" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 5m for selected stocks" }));
+    expect(screen.getByText("3 manual interval jobs")).toBeVisible();
+    expect(parseManualIntervalSelections(localStorage.getItem("specialstock-manual-intervals-v2"))).toEqual({ S01: ["1m"], S02: ["1m"], S03: ["1m"] });
+    fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
+    await waitFor(() => expect(onRunSelected).toHaveBeenCalledWith([
+      { symbol: "S01", timeframe: "1m" }, { symbol: "S02", timeframe: "1m" }, { symbol: "S03", timeframe: "1m" },
+    ]));
+  });
+
+  it("shows mixed bulk intervals and never clears a stock's last interval", async () => {
+    localStorage.setItem("specialstock-manual-intervals-v2", JSON.stringify({ S02: ["1m", "5m"], S03: ["1m"] }));
+    renderTable([item(1), item(2), item(3)]);
+    await waitFor(() => expect(within(screen.getByLabelText("Manual intervals for S03")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all stocks" }));
+    const oneMinute = screen.getByRole("button", { name: "Toggle 1m for selected stocks" });
+    expect(oneMinute).toHaveAttribute("aria-pressed", "mixed");
+    fireEvent.click(oneMinute);
+    expect(oneMinute).toHaveAttribute("aria-pressed", "true");
+    expect(oneMinute).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 5m for selected stocks" }));
+    expect(oneMinute).toBeEnabled();
+    fireEvent.click(oneMinute);
+    expect(parseManualIntervalSelections(localStorage.getItem("specialstock-manual-intervals-v2"))).toEqual({ S01: ["5m"], S02: ["5m"], S03: ["5m"] });
+  });
+
+  it("brings a 20-stock multi-interval selection back within the batch limit", () => {
+    renderTable(Array.from({ length: 20 }, (_, index) => item(index)));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all stocks" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S00")).getByRole("button", { name: "1m" }));
+    expect(screen.getByRole("button", { name: "Run selected" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 1m for selected stocks" }));
+    expect(screen.getByText("40 manual interval jobs · maximum is 20")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle 5m for selected stocks" }));
+    expect(screen.getByRole("button", { name: "Run selected" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all stocks" }));
+    expect(screen.queryByText("20 selected")).not.toBeInTheDocument();
+  });
+
   it("sorts conviction high to low with missing last and configured ties", () => {
     renderTable([
       item(1, { conviction: "medium" }),

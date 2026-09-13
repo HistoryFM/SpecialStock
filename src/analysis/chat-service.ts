@@ -93,7 +93,9 @@ Locked signal:
 ${canonicalJson({ verdict: analysis.verdict, conviction: analysis.conviction, observedPrice: analysis.observedPrice, target: analysis.primaryTarget, invalidation: analysis.invalidationLevel, visualQuality: analysis.visualQuality })}
 
 Stored full analysis:
-${canonicalJson({ setupType: analysis.setupType, immediateBias: analysis.immediateBias, broaderTrend: analysis.broaderTrend, candlestickAnalysis: analysis.candlestickAnalysis, vwapKeltnerAnalysis: analysis.vwapKeltnerAnalysis, cciAnalysis: analysis.cciAnalysis, indicatorReadings: analysis.indicatorReadings, supportingEvidence: analysis.supportingEvidence, conflictingEvidence: analysis.conflictingEvidence, supportLevels: analysis.supportLevels, resistanceLevels: analysis.resistanceLevels, deeperScenario: analysis.deeperScenario, dataQualityFlags: analysis.dataQualityFlags, summary: analysis.summary })}`;
+${canonicalJson(analysis.fourPhaseReport
+  ? { report: analysis.fourPhaseReport, summary: analysis.summary }
+  : { setupType: analysis.setupType, immediateBias: analysis.immediateBias, broaderTrend: analysis.broaderTrend, candlestickAnalysis: analysis.candlestickAnalysis, vwapKeltnerAnalysis: analysis.vwapKeltnerAnalysis, cciAnalysis: analysis.cciAnalysis, indicatorReadings: analysis.indicatorReadings, supportingEvidence: analysis.supportingEvidence, conflictingEvidence: analysis.conflictingEvidence, supportLevels: analysis.supportLevels, resistanceLevels: analysis.resistanceLevels, deeperScenario: analysis.deeperScenario, dataQualityFlags: analysis.dataQualityFlags, summary: analysis.summary })}`;
 }
 
 async function resolveUsage(apiKey: string, raw: z.infer<typeof responseSchema> | null) {

@@ -218,9 +218,10 @@ export function WatchlistTable({
   const visibleSymbols = visible.map((item) => item.symbol);
   const configuredSymbols = new Set(items.map((item) => item.symbol));
   const activeSelected = new Set([...selected].filter((symbol) => configuredSymbols.has(symbol)));
+  const selectedSymbols = items.filter((item) => activeSelected.has(item.symbol)).map((item) => item.symbol);
   const allVisibleSelected = visibleSymbols.length > 0 && visibleSymbols.every((symbol) => selected.has(symbol));
-  const selectedJobCount = items.filter((item) => activeSelected.has(item.symbol))
-    .reduce((count, item) => count + (timeframes[item.symbol]?.length ?? 1), 0);
+  const allConfiguredSelected = items.length > 0 && items.every((item) => activeSelected.has(item.symbol));
+  const selectedJobCount = selectedSymbols.reduce((count, symbol) => count + (timeframes[symbol]?.length ?? 1), 0);
 
   useEffect(() => {
     const saved = parseManualIntervalSelections(localStorage.getItem(MANUAL_INTERVALS_KEY));
@@ -258,6 +259,10 @@ export function WatchlistTable({
     });
   };
 
+  const toggleAllConfigured = () => {
+    setSelected(allConfiguredSelected ? new Set() : new Set(items.map((item) => item.symbol)));
+  };
+
   const updateSelected = async (enabled: boolean) => {
     const symbols = [...activeSelected];
     if (!symbols.length) return;
@@ -293,6 +298,21 @@ export function WatchlistTable({
     });
   };
 
+  const toggleSelectedTimeframe = (value: ManualScanTimeframe) => {
+    setTimeframes((current) => {
+      const remove = selectedSymbols.every((symbol) => (current[symbol] ?? ["5m"]).includes(value));
+      if (remove && selectedSymbols.some((symbol) => (current[symbol] ?? ["5m"]).length === 1)) return current;
+      const next = { ...current };
+      for (const symbol of selectedSymbols) {
+        const intervals = current[symbol] ?? ["5m"];
+        next[symbol] = MANUAL_INTERVALS.filter((interval) =>
+          interval === value ? !remove : intervals.includes(interval));
+      }
+      localStorage.setItem(MANUAL_INTERVALS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   return (
     <section className="watchlist-panel" aria-labelledby="watchlist-title">
       <div className="watchlist-toolbar">
@@ -301,6 +321,7 @@ export function WatchlistTable({
           <span>{items.length} configured symbols</span>
         </div>
         <div className="watchlist-controls">
+          <label className="select-all-stocks"><input aria-label="Select all stocks" checked={allConfiguredSelected} onChange={toggleAllConfigured} type="checkbox" />Select all stocks</label>
           <div className="filter-group" aria-label="Filter watchlist">
             {filters.map((option) => (
               <button
@@ -321,6 +342,22 @@ export function WatchlistTable({
         <div className="bulk-auto-toolbar" aria-live="polite">
           <strong>{activeSelected.size} selected</strong>
           <span>{selectedJobCount} manual interval job{selectedJobCount === 1 ? "" : "s"}{selectedJobCount > 20 ? " · maximum is 20" : ""}</span>
+          <div className="bulk-timeframe-controls" role="group" aria-label="Manual intervals for selected stocks"><span>Intervals for selected</span>{MANUAL_INTERVALS.map((interval) => {
+            const count = selectedSymbols.filter((symbol) => (timeframes[symbol] ?? ["5m"]).includes(interval)).length;
+            const all = count === selectedSymbols.length;
+            const state = all ? "all" : count ? "some" : "none";
+            const cannotRemove = all && selectedSymbols.some((symbol) => (timeframes[symbol] ?? ["5m"]).length === 1);
+            return <button
+              aria-label={`Toggle ${interval} for selected stocks`}
+              aria-pressed={all ? true : count ? "mixed" : false}
+              className={`secondary-button compact ${state}`}
+              disabled={bulkPending || cannotRemove}
+              key={interval}
+              onClick={() => toggleSelectedTimeframe(interval)}
+              title={cannotRemove ? "Each stock needs at least one interval" : all ? `Remove ${interval} from selected stocks` : `Add ${interval} to selected stocks`}
+              type="button"
+            >{interval}</button>;
+          })}</div>
           <div>
             <button className="primary-button compact" disabled={bulkPending || selectedJobCount > 20} onClick={() => void runSelected()} type="button">
               {bulkPending ? "Working…" : "Run selected"}

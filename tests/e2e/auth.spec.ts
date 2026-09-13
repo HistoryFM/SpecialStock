@@ -131,8 +131,9 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByTestId("compact-signal")).toBeVisible();
   await expect(page.getByRole("img", { name: /frozen 10m chart with VWAP, Keltner Channels, Volume/ })).toBeVisible();
   await expect(page.getByText("Chart-Img / TradingView · 10m")).toBeVisible();
-  await expect(page.getByText("Full AI reasoning · cached")).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: "Visible VWAP continuation" })).toBeVisible();
+  await expect(page.getByText("Detailed analysis · cached")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Four-phase chart audit" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "04 · Conflict resolution and hierarchy" })).toBeVisible();
   await expect(page.getByText("Timeframe indicators")).not.toBeVisible();
 
   await expect(page.getByRole("heading", { name: "High-conviction theses" })).toBeVisible();
@@ -163,7 +164,7 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await page.getByRole("link", { name: "Load" }).click();
   await expect(page.getByRole("img", { name: /frozen 1m chart with VWAP, Keltner Channels, Volume/ })).toBeVisible();
   await expect(page.getByText("Chart-Img / TradingView · 1m")).toBeVisible();
-  await expect(page.getByText("Full AI reasoning · cached")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("Detailed analysis · cached")).toBeVisible({ timeout: 60_000 });
 
   for (const viewport of [
     { width: 1280, height: 800 },
@@ -203,7 +204,7 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   }
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole("row", { name: /AAPL/ }).last().press("Enter");
-  await expect(page.getByText("Full AI reasoning · cached")).toBeVisible();
+  await expect(page.getByText("Detailed analysis · cached")).toBeVisible();
   expect(await (await page.request.get("http://127.0.0.1:3199/stats")).json()).toEqual({
     chart: 5,
     compact: expectedCompactCalls + 3,
@@ -216,4 +217,28 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByText("20 / 20")).toBeVisible();
   await page.getByRole("tab", { name: "AI analysis Model and prompts" }).click();
   await expect(page.getByText("Gemini 2.5 Pro only", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Manual · 1m/ }).click();
+  await expect(page.getByLabel("Full prompt preview for Compact scan")).toContainText("Interval/session: 1m");
+  await page.getByRole("textbox", { name: "Analysis instructions for Compact scan" }).fill("Use visible one-minute structure and volume confirmation.");
+  await expect(page.getByLabel("Full prompt preview for Compact scan")).toContainText("Use visible one-minute structure and volume confirmation.");
+  await page.getByRole("button", { name: "Save as new revision" }).click();
+  await expect(page.getByText("Compact scan revision 2 is active for future calls.")).toBeVisible();
+  await page.getByRole("button", { name: /Automatic · 5m/ }).click();
+  await expect(page.getByRole("textbox", { name: "Analysis instructions for Compact scan" })).not.toHaveValue("Use visible one-minute structure and volume confirmation.");
+
+  await page.goto("/dashboard");
+  const wholeWatchlist = page.locator("section.watchlist-panel");
+  await wholeWatchlist.getByLabel("Filter watchlist").getByRole("button", { name: "Bullish" }).click();
+  await wholeWatchlist.getByRole("checkbox", { name: "Select all stocks" }).check();
+  await expect(wholeWatchlist.getByText("20 selected")).toBeVisible();
+  await wholeWatchlist.getByRole("button", { name: "Toggle 1m for selected stocks" }).click();
+  await expect(wholeWatchlist.getByRole("button", { name: "Toggle 1m for selected stocks" })).toHaveAttribute("aria-pressed", "true");
+  await expect(wholeWatchlist.getByRole("button", { name: "Run selected" })).toBeDisabled();
+  await expect(page.getByLabel("Manual intervals for AAPL").getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Manual intervals for AAPL").getByRole("button", { name: "10m" })).toHaveAttribute("aria-pressed", "true");
+  await wholeWatchlist.getByRole("checkbox", { name: "Select all stocks" }).uncheck();
+  await expect(wholeWatchlist.getByText("20 selected")).not.toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Manual intervals for AAPL").getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Manual intervals for AAPL").getByRole("button", { name: "10m" })).toHaveAttribute("aria-pressed", "true");
 });

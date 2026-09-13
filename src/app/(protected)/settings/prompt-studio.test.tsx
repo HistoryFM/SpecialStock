@@ -30,12 +30,14 @@ afterEach(() => {
 
 const initial: PromptStudioPhase[] = (["compact", "full"] as const).map((phase) => ({
   phase,
+  scope: "auto",
   activeRevisionId: `${phase}-1`,
   defaultInstructions: `${phase} instructions`,
   preview: `${phase} full prompt`,
   revisions: [{
     id: `${phase}-1`,
     phase,
+    scope: "auto",
     revisionNumber: 1,
     instructions: `${phase} instructions`,
     instructionsHash: "0123456789abcdef",
@@ -87,5 +89,28 @@ describe("prompt studio", () => {
       "specialstock.prompt.instructions_hash": "new-hash",
     }));
     expect(JSON.stringify(sentryMocks.info.mock.calls)).not.toContain("private changed instructions");
+  });
+
+  it("edits a manual interval without changing the automatic draft", async () => {
+    const scoped: PromptStudioPhase[] = [
+      ...initial,
+      { ...initial[0]!, scope: "manual_1m", activeRevisionId: "manual-one-1", preview: "one-minute prompt",
+        revisions: [{ ...initial[0]!.revisions[0]!, id: "manual-one-1", scope: "manual_1m", instructions: "one-minute instructions" }] },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (request: string | URL | Request, options?: RequestInit) => {
+      if (String(request).endsWith("/preview")) return Response.json({ preview: "one-minute revised preview" });
+      const body = JSON.parse(String(options?.body));
+      expect(body.scope).toBe("manual_1m");
+      return Response.json({ revision: { ...scoped[2]!.revisions[0]!, id: "manual-one-2", revisionNumber: 2, instructions: body.instructions } });
+    }));
+    render(<PromptStudio initial={scoped} />);
+    fireEvent.click(screen.getByRole("button", { name: /Manual · 1m/ }));
+    expect(screen.getByLabelText("Full prompt preview for Compact scan")).toHaveTextContent("one-minute prompt");
+    fireEvent.change(screen.getByRole("textbox", { name: "Analysis instructions for Compact scan" }), { target: { value: "new one-minute method" } });
+    await waitFor(() => expect(screen.getByLabelText("Full prompt preview for Compact scan")).toHaveTextContent("one-minute revised preview"));
+    fireEvent.click(screen.getByRole("button", { name: "Save as new revision" }));
+    await waitFor(() => expect(screen.getByText("Compact scan revision 2 is active for future calls.")).toBeVisible());
+    fireEvent.click(screen.getByRole("button", { name: /Automatic · 5m/ }));
+    expect(screen.getByRole("textbox", { name: "Analysis instructions for Compact scan" })).toHaveValue("compact instructions");
   });
 });

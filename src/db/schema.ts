@@ -9,6 +9,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -23,7 +24,7 @@ import {
   type ModelId,
 } from "@/models/catalog";
 import type { WatchlistEntry } from "@/settings/types";
-import type { IndicatorReadings } from "@/analysis/types";
+import type { FourPhaseReport, IndicatorReadings } from "@/analysis/types";
 import type { ManualScanTimeframe } from "@/analysis/types";
 
 const timestamps = {
@@ -42,6 +43,7 @@ export const scanStatusEnum = pgEnum("scan_status", [
 export const runRoleEnum = pgEnum("run_role", ["primary", "comparison", "fallback"]);
 export const modelRunPhaseEnum = pgEnum("model_run_phase", ["compact", "full", "chat"]);
 export const promptPhaseEnum = pgEnum("prompt_phase", ["compact", "full"]);
+export const promptScopeEnum = pgEnum("prompt_scope", ["auto", "manual_1m", "manual_5m", "manual_10m"]);
 export const scanIntervalEnum = pgEnum("scan_interval", ["1m", "5m", "10m"]);
 export const chatConversationStatusEnum = pgEnum("chat_conversation_status", ["active", "archived"]);
 export const chatTurnStatusEnum = pgEnum("chat_turn_status", ["pending", "completed", "failed"]);
@@ -144,6 +146,7 @@ export const promptRevisions = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     phase: promptPhaseEnum("phase").notNull(),
+    scope: promptScopeEnum("scope").default("auto").notNull(),
     revisionNumber: integer("revision_number").notNull(),
     instructions: text("instructions").notNull(),
     instructionsHash: text("instructions_hash").notNull(),
@@ -151,18 +154,19 @@ export const promptRevisions = pgTable(
     createdAt: timestamps.createdAt,
   },
   (table) => [
-    uniqueIndex("prompt_revisions_phase_number_unique").on(table.phase, table.revisionNumber),
-    index("prompt_revisions_phase_created_idx").on(table.phase, table.createdAt),
+    uniqueIndex("prompt_revisions_scope_phase_number_unique").on(table.scope, table.phase, table.revisionNumber),
+    index("prompt_revisions_scope_phase_created_idx").on(table.scope, table.phase, table.createdAt),
   ],
 );
 
 export const activePromptRevisions = pgTable("active_prompt_revisions", {
-  phase: promptPhaseEnum("phase").primaryKey(),
+  phase: promptPhaseEnum("phase").notNull(),
+  scope: promptScopeEnum("scope").default("auto").notNull(),
   activeRevisionId: uuid("active_revision_id")
     .references(() => promptRevisions.id)
     .notNull(),
   updatedAt: timestamps.updatedAt,
-});
+}, (table) => [primaryKey({ columns: [table.scope, table.phase] })]);
 
 export const manualScanGroups = pgTable(
   "manual_scan_groups",
@@ -415,6 +419,7 @@ export const analyses = pgTable("analyses", {
   invalidationLevel: numeric("invalidation_level", { precision: 20, scale: 8 }),
   dataQualityFlags: jsonb("data_quality_flags").$type<string[]>(),
   summary: text("summary"),
+  fourPhaseReport: jsonb("four_phase_report").$type<FourPhaseReport>(),
   createdAt: timestamps.createdAt,
 });
 

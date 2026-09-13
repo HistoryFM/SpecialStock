@@ -16,7 +16,7 @@ const clients: PGlite[] = [];
 const migrations = [
   "0000_colorful_ronan.sql", "0001_groovy_korg.sql", "0002_past_silver_sable.sql",
   "0003_fantastic_talon.sql", "0004_enable_automatic_scans.sql", "0005_colossal_morgan_stark.sql",
-  "0006_groovy_expediter.sql", "0007_tough_swarm.sql", "0008_fluffy_radioactive_man.sql",
+  "0006_groovy_expediter.sql", "0007_tough_swarm.sql", "0008_fluffy_radioactive_man.sql", "0009_lazy_tinkerer.sql",
 ] as const;
 
 afterEach(async () => {

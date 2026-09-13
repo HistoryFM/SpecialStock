@@ -1292,10 +1292,17 @@ h1 {
   padding: 0.55rem 0.85rem;
   border-bottom: 1px solid var(--border);
   background: #17222e;
+  flex-wrap: wrap;
 }
 
 .bulk-auto-toolbar > span { color: var(--muted); font-size: 0.72rem; }
 .bulk-auto-toolbar > div { display: flex; gap: 0.35rem; margin-left: auto; }
+.bulk-auto-toolbar .bulk-timeframe-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; margin-left: 0.5rem; }
+.bulk-timeframe-controls > span { color: var(--muted); font-size: 0.72rem; margin-right: 0.25rem; }
+.bulk-timeframe-controls button.all { color: var(--text); background: rgba(81, 196, 211, 0.14); border-color: rgba(81, 196, 211, 0.6); }
+.bulk-timeframe-controls button.some { color: var(--accent-strong); border-style: dashed; }
+.select-all-stocks { display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap; color: var(--text); font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+.select-all-stocks input { accent-color: var(--accent-strong); }
 
 .watchlist-table {
   table-layout: fixed;
@@ -2022,11 +2029,11 @@ h1 {
 .ai-first-workspace {
   display: grid;
   grid-template-areas:
-    "chart decision"
-    "chart chat"
-    "full full";
-  grid-template-columns: minmax(0, 1.12fr) minmax(24rem, 0.88fr);
-  gap: 0.65rem;
+    "decision decision"
+    "full chart"
+    "chat chat";
+  grid-template-columns: minmax(0, 1fr) minmax(24rem, 0.92fr);
+  gap: 0.8rem;
   align-items: start;
 }
 
@@ -2301,10 +2308,16 @@ h1 {
   border-radius: 0;
 }
 
-.supporting-chart > .analysis-chart {
+.chart-fullsize-link {
+  display: block;
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+.chart-fullsize-link > span { display: block; padding: 0.65rem 0.85rem; font-size: 0.75rem; }
+.chart-fullsize-link > .analysis-chart {
   display: block;
   width: 100%;
-  height: clamp(22rem, 34vw, 32rem);
+  height: auto;
   margin: 0;
   border: 0;
   border-radius: 0;
@@ -2421,6 +2434,18 @@ h1 {
   padding-left: 1.1rem;
 }
 
+.four-phase-report { display: grid; }
+.four-phase-report > section { padding: 1.2rem 1.35rem; border-top: 1px solid var(--border); }
+.four-phase-report > section:first-child { border-top: 0; }
+.four-phase-report h3 { margin: 0 0 1rem; font-size: 1rem; }
+.four-phase-report dl { display: grid; gap: 0.9rem; margin: 0; }
+.four-phase-report dt { margin-bottom: 0.25rem; color: var(--accent-strong); font-size: 0.73rem; font-weight: 750; text-transform: uppercase; letter-spacing: 0.04em; }
+.four-phase-report dd { margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }
+.four-phase-report p { margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.65; white-space: pre-wrap; }
+.four-phase-report ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.6rem; color: var(--text); font-size: 0.85rem; line-height: 1.65; }
+.four-phase-report .phase-four { background: rgb(143 184 255 / 7%); border-left: 3px solid var(--accent-strong); }
+.legacy-report::before { content: "Saved before the four-phase format"; display: block; grid-column: 1 / -1; padding: 0.7rem 1rem; color: var(--muted); font-size: 0.72rem; border-bottom: 1px solid var(--border); }
+
 .audit-panel .indicator-table-section {
   border-top: 1px solid var(--border);
 }
@@ -2486,9 +2511,9 @@ h1 {
   .ai-first-workspace {
     grid-template-areas:
       "decision"
-      "chat"
+      "full"
       "chart"
-      "full";
+      "chat";
     grid-template-columns: 1fr;
   }
 
@@ -2525,7 +2550,7 @@ h1 {
     font-size: 2.6rem;
   }
 
-  .supporting-chart > .analysis-chart {
+  .chart-fullsize-link > .analysis-chart {
     height: clamp(17rem, 68vw, 25rem);
   }
 
@@ -2602,6 +2627,11 @@ h1 {
   border-radius: 0.45rem;
   background: #0b1219;
 }
+.prompt-scope-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.4rem; margin: 0.8rem 0; }
+.prompt-scope-grid button { display: grid; gap: 0.25rem; min-width: 0; padding: 0.75rem; border: 1px solid var(--border); border-radius: 0.4rem; background: #0b1219; color: var(--text); text-align: left; cursor: pointer; }
+.prompt-scope-grid button.active { border-color: var(--accent-strong); background: rgb(143 184 255 / 12%); }
+.prompt-scope-grid small { color: var(--muted); font-size: 0.66rem; }
+.prompt-scope-grid i { color: var(--warning); font-size: 0.6rem; font-style: normal; }
 
 .prompt-tabs button {
   display: grid;
@@ -3353,6 +3383,7 @@ h1 {
   .comparison-grid { grid-template-columns: 1fr; }
   .comparison-intro { align-items: flex-start; flex-direction: column; }
   .prompt-workspace { grid-template-columns: 1fr; }
+  .prompt-scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .prompt-editor textarea,
   .prompt-effective-preview pre { height: 20rem; }
 }

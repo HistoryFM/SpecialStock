@@ -80,7 +80,9 @@ export async function runManualBatch(input: {
         if (!group) throw new Error("The manual comparison group could not be created.");
         groups.set(symbol, group.id);
       }
-      const promptRevision = await getActivePromptRevision("compact");
+      const promptRevisions = new Map(await Promise.all([...intervals].map(async (interval) => [
+        interval, await getActivePromptRevision("compact", `manual_${interval}`),
+      ] as const)));
 
       const session = await createMarketDataProvider().getSession(now);
       let inFlight = 0;
@@ -117,7 +119,7 @@ export async function runManualBatch(input: {
               resolvedEntry: entriesBySymbol.get(symbol),
               resolvedSession: session,
               manualScanGroupId: groups.get(symbol),
-              promptRevision,
+              promptRevision: promptRevisions.get(timeframe)!,
             });
             itemSpan.setAttributes({
               "specialstock.scan.item_status": result.status,

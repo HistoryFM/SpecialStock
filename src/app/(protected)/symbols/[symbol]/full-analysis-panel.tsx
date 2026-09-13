@@ -4,6 +4,7 @@ import * as Sentry from "@sentry/nextjs";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnalysisChat } from "@/app/(protected)/symbols/[symbol]/analysis-chat";
+import type { FourPhaseReport } from "@/analysis/types";
 
 type FullPayload = {
   analysisId: string;
@@ -14,10 +15,17 @@ type FullPayload = {
     candlestickAnalysis: string | null; vwapKeltnerAnalysis: string | null; cciAnalysis: string | null;
     supportingEvidence: string[] | null; conflictingEvidence: string[] | null;
     deeperScenario: string | null; summary: string | null;
+    report?: FourPhaseReport | null;
   };
 };
 
-export function FullAnalysisPanel({ initial, capturedAt }: { initial: FullPayload; capturedAt?: string }) {
+function ReportBody({ text }: { text: string }) {
+  const lines = text.split(/\n+/).map((line) => line.trim().replace(/^[•*-]\s*/, "")).filter(Boolean);
+  if (lines.length < 2) return <p>{text}</p>;
+  return <ul>{lines.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}</ul>;
+}
+
+export function FullAnalysisPanel({ initial, capturedAt, chartAvailable = true }: { initial: FullPayload; capturedAt?: string; chartAvailable?: boolean }) {
   const router = useRouter();
   const [payload, setPayload] = useState(initial);
   const [pending, setPending] = useState(false);
@@ -72,11 +80,11 @@ export function FullAnalysisPanel({ initial, capturedAt }: { initial: FullPayloa
   }, [initial.analysisId]);
 
   useEffect(() => {
-    if (payload.state === "not_requested" && !started.current) {
+    if (chartAvailable && payload.state === "not_requested" && !started.current) {
       started.current = true;
       void request();
     }
-  }, [payload.state, request]);
+  }, [chartAvailable, payload.state, request]);
 
   useEffect(() => {
     if (payload.state !== "running") return;
@@ -96,8 +104,11 @@ export function FullAnalysisPanel({ initial, capturedAt }: { initial: FullPayloa
     router.refresh();
   }, [payload.state, router]);
 
+  if (!chartAvailable) {
+    return <section className="deep-analysis"><div className="table-empty">Detailed analysis is unavailable because this historical scan has no retained chart.</div></section>;
+  }
   if (payload.state === "ineligible") {
-    return <section className="deep-analysis"><div className="table-empty">This compact signal is not eligible for full analysis. The chart and audit record remain available.</div></section>;
+    return <section className="deep-analysis"><div className="table-empty">Detailed analysis is unavailable for this historical scan.</div></section>;
   }
   if (payload.state === "failed") {
     return <section className="deep-analysis"><div className="warning-banner"><strong>Full analysis failed</strong><span>{payload.error}</span><button className="secondary-button compact" disabled={pending} onClick={() => void request(true)} type="button">Retry full analysis</button></div></section>;
@@ -108,15 +119,20 @@ export function FullAnalysisPanel({ initial, capturedAt }: { initial: FullPayloa
   const full = payload.full;
   return (<>
     <section className="deep-analysis" aria-labelledby="deep-analysis-heading">
-      <div className="deep-analysis-heading"><div><p className="eyebrow">Full AI reasoning · cached</p><h2 id="deep-analysis-heading">{full.setupType ?? "Technical explanation"}</h2></div></div>
+      <div className="deep-analysis-heading"><div><p className="eyebrow">Detailed analysis · cached</p><h2 id="deep-analysis-heading">{full.report ? "Four-phase chart audit" : full.setupType ?? "Legacy technical explanation"}</h2></div></div>
       {full.summary ? <p className="decision-summary">{full.summary}</p> : null}
-      <div className="deep-analysis-grid">
+      {full.report ? <div className="four-phase-report" data-testid="four-phase-report">
+        <section><h3>01 · Broad structural architecture</h3><ReportBody text={full.report.phase1} /></section>
+        <section><h3>02 · Lower technical indicators</h3><ReportBody text={full.report.phase2} /></section>
+        <section><h3>03 · Three-candle micro-audit</h3><ReportBody text={full.report.phase3} /></section>
+        <section className="phase-four"><h3>04 · Conflict resolution and hierarchy</h3><ReportBody text={full.report.phase4} /></section>
+      </div> : <div className="deep-analysis-grid legacy-report" data-testid="legacy-report">
         <article><span>01</span><h3>Immediate read</h3><p>{full.immediateBias}</p></article>
         <article><span>02</span><h3>Visible price action</h3><p>{full.candlestickAnalysis}</p></article>
         <article><span>03</span><h3>VWAP and Keltner structure</h3><p>{full.vwapKeltnerAnalysis}</p><p>{full.broaderTrend}</p></article>
         <article><span>04</span><h3>Indicator context</h3><p>{full.cciAnalysis}</p></article>
         <article><span>05</span><h3>Risks and alternate scenario</h3><ul>{(full.conflictingEvidence ?? []).map((item) => <li key={item}>{item}</li>)}</ul><p>{full.deeperScenario}</p></article>
-      </div>
+      </div>}
     </section>
     {capturedAt ? <AnalysisChat analysisId={initial.analysisId} capturedAt={capturedAt} /> : null}
     </>

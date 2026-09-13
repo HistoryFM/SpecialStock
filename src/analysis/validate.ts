@@ -7,7 +7,8 @@ import {
 } from "@/analysis/types";
 
 const disallowedClaims =
-  /\b(option contract|strike price|expiration|expiry|delta|gamma|theta|premium|position size|market order|limit order|stop order|buy \d|sell \d|relative velocity|institutional (?:buying|selling|activity))\b/i;
+  /\b(option contract|strike price|expiration|expiry|delta|gamma|theta|premium|position size|market order|limit order|stop order|buy \d|sell \d|relative velocity|institutional (?:buying|selling|activity|block orders|distribution)|mathematical impossibility|guaranteed trade)\b/i;
+const unresolvedCorrection = /\b(?:is incorrect|correction:|I was wrong)\b/i;
 
 export class AnalysisValidationError extends Error {
   constructor(readonly issues: string[]) {
@@ -28,7 +29,8 @@ export function isFullAnalysisEligible(input: {
   verdict: "bullish" | "bearish" | "no_trade";
   conviction: "low" | "medium" | "high";
 }): boolean {
-  return input.verdict !== "no_trade" && input.conviction !== "low";
+  void input;
+  return true;
 }
 
 export function validateCompactAnalysis(raw: unknown): CompactAnalysisResult {
@@ -93,21 +95,12 @@ export function validateFullAnalysis(raw: unknown): FullAnalysisResult {
     );
   }
   const result = parsed.data;
-  const allText = [
-    result.setup_type,
-    result.immediate_bias,
-    result.broader_trend,
-    result.candlestick_analysis,
-    result.vwap_keltner_analysis,
-    result.cci_analysis,
-    ...Object.values(result.indicator_readings).map((reading) => reading.observation),
-    result.deeper_scenario,
-    result.summary,
-    ...result.supporting_evidence,
-    ...result.conflicting_evidence,
-  ].join(" ");
+  const allText = Object.values(result).join(" ");
   if (disallowedClaims.test(allText)) {
     throw new AnalysisValidationError(["response claims unavailable data or trading mechanics"]);
+  }
+  if (unresolvedCorrection.test(allText)) {
+    throw new AnalysisValidationError(["response contains an unresolved self-correction"]);
   }
   return result;
 }

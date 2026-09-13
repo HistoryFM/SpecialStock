@@ -310,6 +310,7 @@ export default async function SymbolPage({
         <aside className="supporting-chart" aria-label="Supporting chart">
           <div className="supporting-chart-heading"><div><p className="eyebrow">Chart-Img / TradingView · {chartInterval}</p><h2>Frozen chart snapshot</h2></div><span>Exact model input</span></div>
           {selected.artifact ? (
+            <a className="chart-fullsize-link" href={`/api/chart-artifacts/${selected.artifact.id}/image`} target="_blank" rel="noopener noreferrer" aria-label="Open full-size verified chart">
             <Image
               alt={`${symbol} frozen ${chartInterval} chart with VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF`}
               className="analysis-chart"
@@ -318,11 +319,11 @@ export default async function SymbolPage({
               src={`/api/chart-artifacts/${selected.artifact.id}/image`}
               unoptimized
               width={selected.artifact.width}
-            />
+            /><span>Open full-size chart ↗</span></a>
           ) : <div className="chart-missing">Stored chart unavailable for this historical analysis.</div>}
         </aside>
 
-        <FullAnalysisPanel capturedAt={String(selected.artifact?.frozenInput.capturedAt ?? selected.slot.scheduledFor.toISOString())} key={`full:${selected.analysis.id}`} initial={{
+        <FullAnalysisPanel chartAvailable={Boolean(selected.artifact)} capturedAt={String(selected.artifact?.frozenInput.capturedAt ?? selected.slot.scheduledFor.toISOString())} key={`full:${selected.analysis.id}`} initial={{
           analysisId: selected.analysis.id,
           state: selected.analysis.fullAnalysisState,
           error: selected.analysis.fullError,
@@ -337,6 +338,7 @@ export default async function SymbolPage({
             conflictingEvidence: selected.analysis.conflictingEvidence,
             deeperScenario: selected.analysis.deeperScenario,
             summary: selected.analysis.summary,
+            report: selected.analysis.fourPhaseReport,
           } : null,
         }} />
       </section>

@@ -28,13 +28,20 @@ const valid = {
   data_quality_flags: [],
   summary: "Bullish visual thesis.",
 };
+const validFull = {
+  phase1: "A visible range is forming near VWAP.",
+  phase2: "ADX rising; RSI below midline; MACD contracts; CCI near centerline; CMF below zero.",
+  phase3: "Three small candles with flat volume near VWAP.",
+  phase4: "Price and volume are mixed. The locked no-trade verdict follows from conflict. Watch for a fresh scan after a clear break.",
+  summary: "Visible signals conflict.",
+};
 
 describe("analysis validation", () => {
-  it("only makes medium/high directional compact signals eligible for full analysis", () => {
+  it("makes every completed compact verdict eligible for full analysis", () => {
     expect(isFullAnalysisEligible({ verdict: "bullish", conviction: "medium" })).toBe(true);
     expect(isFullAnalysisEligible({ verdict: "bearish", conviction: "high" })).toBe(true);
-    expect(isFullAnalysisEligible({ verdict: "bullish", conviction: "low" })).toBe(false);
-    expect(isFullAnalysisEligible({ verdict: "no_trade", conviction: "high" })).toBe(false);
+    expect(isFullAnalysisEligible({ verdict: "bullish", conviction: "low" })).toBe(true);
+    expect(isFullAnalysisEligible({ verdict: "no_trade", conviction: "high" })).toBe(true);
   });
 
   it("accepts a visually grounded directional response", () => {
@@ -43,8 +50,10 @@ describe("analysis validation", () => {
 
   it("rejects contradictory levels and unavailable-data claims", () => {
     expect(() => validateCompactAnalysis({ ...valid, t: 95 })).toThrow(/contradictory/);
-    expect(() => validateFullAnalysis({ ...valid, summary: "Institutional buying confirms this view" })).toThrow(/unavailable data/);
-    expect(() => validateFullAnalysis({ ...valid, verdict: "bullish" })).toThrow(/locked fields/);
+    expect(() => validateFullAnalysis({ ...validFull, summary: "Institutional buying confirms this view" })).toThrow(/unavailable data/);
+    expect(() => validateFullAnalysis({ ...validFull, verdict: "bullish" })).toThrow(/locked fields/);
+    expect(() => validateFullAnalysis({ ...validFull, phase2: "MACD 0.06 is above 0.24 (is incorrect)." })).toThrow(/self-correction/);
+    expect(validateFullAnalysis(validFull).phase4).toContain("no-trade");
   });
 
   it("requires no-trade levels to remain null", () => {

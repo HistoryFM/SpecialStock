@@ -27,23 +27,10 @@ const compactAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "cl
 const bearishCompactAnalysis = { p: 100, v: "bearish", c: "medium", t: 96, i: 103, q: "clear" };
 const ineligibleCompactAnalysis = { p: 100, v: "no_trade", c: "low", t: null, i: null, q: "partial" };
 const fullAnalysis = {
-  setup_type: "Visible VWAP continuation",
-  immediate_bias: "Price action is visually constructive above VWAP.",
-  broader_trend: "The visible one-session structure slopes upward.",
-  candlestick_analysis: "Recent visible candles form higher lows.",
-  vwap_keltner_analysis: "Price is visibly above VWAP and the Keltner midline.",
-  cci_analysis: "CCI is visibly above its centerline without an extreme reading.",
-  indicator_readings: Object.fromEntries(
-    ["price_action", "vwap", "keltner", "volume", "adx", "rsi", "macd", "cci", "cmf"].map(
-      (key) => [key, { stance: "bullish", readability: "clear", observation: `${key} is visually constructive.` }],
-    ),
-  ),
-  supporting_evidence: ["Higher lows and VWAP position support the view."],
-  conflicting_evidence: ["Nearby visible resistance may limit follow-through."],
-  support_levels: [98],
-  resistance_levels: [104],
-  deeper_scenario: "A move below the visible invalidation level changes the view.",
-  data_quality_flags: ["e2e_mock_chart"],
+  phase1: "Recent visible candles form higher lows above VWAP.",
+  phase2: "ADX rising; RSI above midpoint; MACD positive; CCI and CMF above zero.",
+  phase3: "Three small candles with stable volume above VWAP.",
+  phase4: "Price and volume align. The locked bullish verdict follows. Watch for a fresh scan near VWAP.",
   summary: "Bullish visual thesis with high conviction.",
 };
 const providerCalls = { chart: 0, compact: 0, full: 0 };

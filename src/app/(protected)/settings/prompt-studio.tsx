@@ -3,16 +3,18 @@
 import * as Sentry from "@sentry/nextjs";
 import { useEffect, useState } from "react";
 
-import type { PromptPhase } from "@/analysis/prompt";
+import type { PromptPhase, PromptScope } from "@/analysis/prompt";
 
 export type PromptStudioPhase = {
   phase: PromptPhase;
+  scope: PromptScope;
   activeRevisionId: string;
   defaultInstructions: string;
   preview: string;
   revisions: Array<{
     id: string;
     phase: PromptPhase;
+    scope: PromptScope;
     revisionNumber: number;
     instructions: string;
     instructionsHash: string;
@@ -22,234 +24,136 @@ export type PromptStudioPhase = {
   }>;
 };
 
-function label(phase: PromptPhase) {
-  return phase === "compact" ? "Compact scan" : "Full analysis";
-}
+const scopes: Array<{ value: PromptScope; label: string; description: string }> = [
+  { value: "auto", label: "Automatic · 5m", description: "Scheduled scans only" },
+  { value: "manual_1m", label: "Manual · 1m", description: "Manual one-minute scans only" },
+  { value: "manual_5m", label: "Manual · 5m", description: "Manual five-minute scans only" },
+  { value: "manual_10m", label: "Manual · 10m", description: "Manual ten-minute scans only" },
+];
+const key = (scope: PromptScope, phase: PromptPhase) => `${scope}:${phase}`;
+const label = (phase: PromptPhase) => phase === "compact" ? "Compact scan" : "Full analysis";
 
 export function PromptStudio({ initial }: { initial: PromptStudioPhase[] }) {
-  const [phases, setPhases] = useState(initial);
+  const [states, setStates] = useState(initial);
+  const [scope, setScope] = useState<PromptScope>("auto");
   const [phase, setPhase] = useState<PromptPhase>("compact");
-  const current = phases.find((item) => item.phase === phase)!;
-  const active = current.revisions.find((revision) => revision.id === current.activeRevisionId)!;
-  const [drafts, setDrafts] = useState<Record<PromptPhase, string>>({
-    compact: initial.find((item) => item.phase === "compact")!.revisions.find((revision) => revision.active)!.instructions,
-    full: initial.find((item) => item.phase === "full")!.revisions.find((revision) => revision.active)!.instructions,
-  });
-  const [preview, setPreview] = useState<Record<PromptPhase, string>>({ compact: initial.find((item) => item.phase === "compact")!.preview, full: initial.find((item) => item.phase === "full")!.preview });
-  const [previewSource, setPreviewSource] = useState<Record<PromptPhase, string>>({
-    compact: initial.find((item) => item.phase === "compact")!.revisions.find((revision) => revision.active)!.instructions,
-    full: initial.find((item) => item.phase === "full")!.revisions.find((revision) => revision.active)!.instructions,
-  });
-  const [previewRequest, setPreviewRequest] = useState<{ phase: PromptPhase; instructions: string; pending: boolean; error: string } | null>(null);
-  const [mutationPending, setMutationPending] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => Object.fromEntries(initial.map((item) => [key(item.scope, item.phase), item.revisions.find((revision) => revision.active)!.instructions])));
+  const [previews, setPreviews] = useState<Record<string, string>>(() => Object.fromEntries(initial.map((item) => [key(item.scope, item.phase), item.preview])));
+  const [previewSources, setPreviewSources] = useState<Record<string, string>>(() => Object.fromEntries(initial.map((item) => [key(item.scope, item.phase), item.revisions.find((revision) => revision.active)!.instructions])));
+  const [pending, setPending] = useState(false);
+  const [previewPending, setPreviewPending] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const [message, setMessage] = useState("");
-  const draft = drafts[phase];
+  const currentKey = key(scope, phase);
+  const current = states.find((item) => key(item.scope, item.phase) === currentKey)!;
+  const active = current.revisions.find((revision) => revision.id === current.activeRevisionId)!;
+  const draft = drafts[currentKey] ?? "";
   const dirty = draft !== active.instructions;
-  const dirtyByPhase = {
-    compact: drafts.compact !== phases.find((item) => item.phase === "compact")!.revisions.find((revision) => revision.id === phases.find((item) => item.phase === "compact")!.activeRevisionId)!.instructions,
-    full: drafts.full !== phases.find((item) => item.phase === "full")!.revisions.find((revision) => revision.id === phases.find((item) => item.phase === "full")!.activeRevisionId)!.instructions,
-  };
-  const hasUnsavedChanges = dirtyByPhase.compact || dirtyByPhase.full;
-  const currentPreviewRequest = previewRequest?.phase === phase && previewRequest.instructions === draft ? previewRequest : null;
-  const previewPending = currentPreviewRequest?.pending ?? false;
-  const previewError = currentPreviewRequest?.error ?? "";
-
-  async function request(path: string, body: object) {
-    const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const payload = await response.json() as { error?: string; preview?: string; revision?: PromptStudioPhase["revisions"][number] };
-    if (!response.ok) throw new Error(payload.error ?? "Prompt update failed.");
-    return payload;
-  }
+  const anyDirty = states.some((item) => drafts[key(item.scope, item.phase)] !== item.revisions.find((revision) => revision.id === item.activeRevisionId)?.instructions);
 
   useEffect(() => {
-    if (draft === previewSource[phase]) return;
+    if (draft === previewSources[currentKey]) return;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
-      setPreviewRequest({ phase, instructions: draft, pending: true, error: "" });
+      setPreviewPending(true);
+      setPreviewError("");
       try {
         const response = await fetch(`/api/prompts/${phase}/preview`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ instructions: draft }),
-          signal: controller.signal,
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope, instructions: draft }), signal: controller.signal,
         });
-        const payload = await response.json() as { error?: string; preview?: string };
+        const payload = await response.json() as { preview?: string; error?: string };
         if (!response.ok) throw new Error(payload.error ?? "Prompt preview failed.");
-        setPreview((value) => ({ ...value, [phase]: payload.preview ?? "" }));
-        setPreviewSource((value) => ({ ...value, [phase]: draft }));
+        if (!controller.signal.aborted) {
+          setPreviews((value) => ({ ...value, [currentKey]: payload.preview ?? "" }));
+          setPreviewSources((value) => ({ ...value, [currentKey]: draft }));
+        }
       } catch (error) {
-        if (!controller.signal.aborted) setPreviewRequest({ phase, instructions: draft, pending: false, error: error instanceof Error ? error.message : "Prompt preview failed." });
+        if (!controller.signal.aborted) setPreviewError(error instanceof Error ? error.message : "Prompt preview failed.");
       } finally {
-        if (!controller.signal.aborted) setPreviewRequest((value) => value?.phase === phase && value.instructions === draft ? { ...value, pending: false } : value);
+        if (!controller.signal.aborted) setPreviewPending(false);
       }
     }, 350);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [draft, phase, previewSource]);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [currentKey, draft, phase, scope, previewSources]);
 
   useEffect(() => {
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasUnsavedChanges) return;
-      event.preventDefault();
-    };
+    const beforeUnload = (event: BeforeUnloadEvent) => { if (anyDirty) event.preventDefault(); };
     const click = (event: MouseEvent) => {
-      if (!hasUnsavedChanges) return;
+      if (!anyDirty) return;
       const anchor = (event.target as HTMLElement).closest("a");
       if (anchor?.href && !window.confirm("Discard unsaved prompt changes?")) event.preventDefault();
     };
     window.addEventListener("beforeunload", beforeUnload);
     document.addEventListener("click", click, true);
-    return () => {
-      window.removeEventListener("beforeunload", beforeUnload);
-      document.removeEventListener("click", click, true);
-    };
-  }, [hasUnsavedChanges]);
+    return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", click, true); };
+  }, [anyDirty]);
 
-  async function save() {
-    setMutationPending(true); setMessage("");
+  async function update(kind: "create" | "activate", revisionId?: string) {
+    setPending(true);
+    setMessage("");
     try {
       await Sentry.startNewTrace(() => Sentry.startSpan({
-      name: "Create prompt revision",
-      op: "specialstock.prompt.revision.request",
-      forceTransaction: true,
-      attributes: {
-        "specialstock.telemetry.origin": "client",
-        "specialstock.prompt.phase": phase,
-        "specialstock.prompt.operation": "create",
-        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
-        "specialstock.prompt.instructions_length": draft.length,
-      },
-    }, async (span) => {
-      Sentry.logger.info("prompt.revision.client_requested", {
-        "specialstock.telemetry.origin": "client",
-        "specialstock.prompt.phase": phase,
-        "specialstock.prompt.operation": "create",
-        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
-        "specialstock.prompt.instructions_length": draft.length,
-      });
-      try {
-        const result = await request(`/api/prompts/${phase}/revisions`, { instructions: draft, expectedActiveRevisionId: current.activeRevisionId });
-        const revision = result.revision!;
-        setPhases((value) => value.map((item) => item.phase === phase ? {
-          ...item, activeRevisionId: revision.id,
-          revisions: [{ ...revision, active: true }, ...item.revisions.map((entry) => ({ ...entry, active: false }))],
-        } : item));
-        setMessage(`${label(phase)} revision ${revision.revisionNumber} is active for future calls.`);
-        span.setAttributes({
-          "specialstock.prompt.revision_id": revision.id,
-          "specialstock.prompt.instructions_hash": revision.instructionsHash,
-          "specialstock.prompt.revision_number": revision.revisionNumber,
-        });
-        span.setStatus({ code: 1 });
-        Sentry.logger.info("prompt.revision.client_completed", {
-          "specialstock.telemetry.origin": "client",
-          "specialstock.prompt.phase": phase,
-          "specialstock.prompt.operation": "create",
-          "specialstock.prompt.revision_id": revision.id,
-          "specialstock.prompt.instructions_hash": revision.instructionsHash,
-          "specialstock.prompt.instructions_length": draft.length,
-          "specialstock.prompt.revision_number": revision.revisionNumber,
-        });
-      } catch (error) {
-        span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
-        span.setStatus({ code: 2, message: "prompt_revision_create_failed" });
-        Sentry.logger.warn("prompt.revision.client_failed", {
-          "specialstock.telemetry.origin": "client",
-          "specialstock.prompt.phase": phase,
-          "specialstock.prompt.operation": "create",
-          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
-        });
-        setMessage(error instanceof Error ? error.message : "Prompt save failed.");
-      }
+        name: `${kind === "create" ? "Create" : "Activate"} prompt revision`,
+        op: "specialstock.prompt.revision.request", forceTransaction: true,
+        attributes: { "specialstock.telemetry.origin": "client", "specialstock.prompt.phase": phase, "specialstock.prompt.scope": scope, "specialstock.prompt.operation": kind },
+      }, async (span) => {
+        try {
+          const path = `/api/prompts/${phase}/${kind === "create" ? "revisions" : "activate"}`;
+          const response = await fetch(path, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(kind === "create"
+              ? { scope, instructions: draft, expectedActiveRevisionId: active.id }
+              : { scope, revisionId, expectedActiveRevisionId: active.id }),
+          });
+          const payload = await response.json() as { revision?: PromptStudioPhase["revisions"][number]; error?: string };
+          if (!response.ok || !payload.revision) throw new Error(payload.error ?? "Prompt update failed.");
+          const revision = payload.revision;
+          setStates((value) => value.map((item) => key(item.scope, item.phase) === currentKey ? {
+            ...item, activeRevisionId: revision.id,
+            revisions: kind === "create"
+              ? [revision, ...item.revisions.map((entry) => ({ ...entry, active: false }))]
+              : item.revisions.map((entry) => ({ ...entry, active: entry.id === revision.id })),
+          } : item));
+          setDrafts((value) => ({ ...value, [currentKey]: revision.instructions }));
+          setMessage(`${label(phase)} revision ${revision.revisionNumber} is active for future calls.`);
+          span.setAttributes({ "specialstock.prompt.revision_id": revision.id, "specialstock.prompt.instructions_hash": revision.instructionsHash });
+          span.setStatus({ code: 1 });
+          Sentry.logger.info("prompt.revision.client_completed", {
+            "specialstock.telemetry.origin": "client", "specialstock.prompt.phase": phase,
+            "specialstock.prompt.scope": scope, "specialstock.prompt.operation": kind,
+            "specialstock.prompt.revision_id": revision.id, "specialstock.prompt.instructions_hash": revision.instructionsHash,
+          });
+        } catch (error) {
+          span.setStatus({ code: 2, message: "prompt_revision_failed" });
+          Sentry.logger.warn("prompt.revision.client_failed", { "specialstock.telemetry.origin": "client", "specialstock.prompt.phase": phase, "specialstock.prompt.scope": scope });
+          setMessage(error instanceof Error ? error.message : "Prompt update failed.");
+        }
       }));
-    } finally { setMutationPending(false); }
+    } finally { setPending(false); }
   }
 
-  async function activate(revisionId: string) {
-    setMutationPending(true); setMessage("");
-    try {
-      await Sentry.startNewTrace(() => Sentry.startSpan({
-      name: "Activate prompt revision",
-      op: "specialstock.prompt.revision.request",
-      forceTransaction: true,
-      attributes: {
-        "specialstock.telemetry.origin": "client",
-        "specialstock.prompt.phase": phase,
-        "specialstock.prompt.operation": "activate",
-        "specialstock.prompt.requested_revision_id": revisionId,
-        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
-      },
-    }, async (span) => {
-      Sentry.logger.info("prompt.revision.client_requested", {
-        "specialstock.telemetry.origin": "client",
-        "specialstock.prompt.phase": phase,
-        "specialstock.prompt.operation": "activate",
-        "specialstock.prompt.requested_revision_id": revisionId,
-        "specialstock.prompt.expected_revision_id": current.activeRevisionId,
-      });
-      try {
-        const result = await request(`/api/prompts/${phase}/activate`, { revisionId, expectedActiveRevisionId: current.activeRevisionId });
-        const revision = result.revision!;
-        setPhases((value) => value.map((item) => item.phase === phase ? { ...item, activeRevisionId: revision.id, revisions: item.revisions.map((entry) => ({ ...entry, active: entry.id === revision.id })) } : item));
-        setDrafts((value) => ({ ...value, [phase]: revision.instructions }));
-        setMessage(`${label(phase)} revision ${revision.revisionNumber} is active.`);
-        span.setAttributes({
-          "specialstock.prompt.revision_id": revision.id,
-          "specialstock.prompt.instructions_hash": revision.instructionsHash,
-          "specialstock.prompt.instructions_length": revision.instructions.length,
-          "specialstock.prompt.revision_number": revision.revisionNumber,
-        });
-        span.setStatus({ code: 1 });
-        Sentry.logger.info("prompt.revision.client_completed", {
-          "specialstock.telemetry.origin": "client",
-          "specialstock.prompt.phase": phase,
-          "specialstock.prompt.operation": "activate",
-          "specialstock.prompt.revision_id": revision.id,
-          "specialstock.prompt.instructions_hash": revision.instructionsHash,
-          "specialstock.prompt.instructions_length": revision.instructions.length,
-          "specialstock.prompt.revision_number": revision.revisionNumber,
-        });
-      } catch (error) {
-        span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
-        span.setStatus({ code: 2, message: "prompt_revision_activate_failed" });
-        Sentry.logger.warn("prompt.revision.client_failed", {
-          "specialstock.telemetry.origin": "client",
-          "specialstock.prompt.phase": phase,
-          "specialstock.prompt.operation": "activate",
-          "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
-        });
-        setMessage(error instanceof Error ? error.message : "Prompt activation failed.");
-      }
-      }));
-    } finally { setMutationPending(false); }
-  }
-
-  return (
-    <section className="settings-card prompt-studio" aria-labelledby="prompt-studio-heading">
-      <div className="settings-card-heading"><div><p className="eyebrow">Versioned instructions</p><h2 id="prompt-studio-heading">AI prompt studio</h2></div><span className="status-pill live">Revision {active.revisionNumber} active</span></div>
-      <p className="muted">Change how Gemini analyzes a chart without changing its required output, evidence boundaries, locked signal fields, or safety rules.</p>
-      <div className="filter-group prompt-tabs" aria-label="Prompt phase">
-        {(["compact", "full"] as const).map((value) => <button aria-pressed={phase === value} className={phase === value ? "active" : ""} key={value} onClick={() => { setPhase(value); setMessage(""); }} type="button"><span>{label(value)}{dirtyByPhase[value] ? <i>Unsaved</i> : null}</span><small>{value === "compact" ? "Routine and manual signals" : "On-demand narrative analysis"}</small></button>)}
-      </div>
-      <div className="prompt-workspace">
-        <section className="prompt-editor-pane" aria-labelledby="prompt-editor-heading">
-          <div className="prompt-pane-heading"><div><p className="eyebrow">Editable</p><h3 id="prompt-editor-heading">Analysis instructions</h3></div>{dirty ? <span className="prompt-dirty-status">Unsaved changes</span> : <span className="muted">Matches active revision</span>}</div>
-          <p className="muted">Use this space for the market context and analysis method you want Gemini to follow.</p>
-          <label className="prompt-editor"><span className="sr-only">Analysis instructions for {label(phase)}</span><textarea data-sentry-mask maxLength={8000} onChange={(event) => setDrafts((value) => ({ ...value, [phase]: event.target.value }))} rows={16} value={draft} /></label>
-          <div className="prompt-editor-footer"><span className="muted">{draft.length.toLocaleString()} / 8,000</span><div><button className="secondary-button compact" disabled={mutationPending || !dirty} onClick={() => setDrafts((value) => ({ ...value, [phase]: active.instructions }))} type="button">Undo edits</button> <button className="secondary-button compact" disabled={mutationPending || draft === current.defaultInstructions} onClick={() => setDrafts((value) => ({ ...value, [phase]: current.defaultInstructions }))} type="button">Use built-in default</button></div></div>
-        </section>
-        <section className="prompt-effective-preview" aria-labelledby="prompt-preview-heading">
-          <div className="prompt-pane-heading"><div><p className="eyebrow">Read only</p><h3 id="prompt-preview-heading">Full prompt preview</h3></div><span className={previewError ? "prompt-preview-state error" : "prompt-preview-state"} aria-live="polite">{previewError ? "Preview unavailable" : previewPending ? "Updating…" : "Up to date"}</span></div>
-          <p className="muted">Your instructions combined with protected rules and sample runtime placeholders.</p>
-          {previewError ? <div className="warning-banner"><span>{previewError}</span></div> : null}
-          <pre aria-label={`Full prompt preview for ${label(phase)}`} data-sentry-mask>{preview[phase]}</pre>
-        </section>
-      </div>
-      <div className="prompt-save-row"><div><strong>{dirty ? "Ready to create a new revision" : `Revision ${active.revisionNumber} is active`}</strong><small>{dirty ? `Saving will activate these instructions for future ${label(phase).toLowerCase()} requests.` : "In-flight requests keep the revision they started with."}</small></div><button className="primary-button" disabled={mutationPending || !dirty || !draft.trim()} onClick={() => void save()} type="button">{mutationPending ? "Saving…" : "Save as new revision"}</button></div>
-      {message ? <p className={message.includes("failed") || message.includes("changed") ? "form-error" : "form-success"} role="status">{message}</p> : null}
-      <details className="prompt-revisions"><summary><span>Revision history</span><small>{current.revisions.length} saved · previous versions remain available</small></summary><div className="prompt-history">{current.revisions.map((revision) => <article key={revision.id}><div><strong>Revision {revision.revisionNumber}</strong><small>{new Date(revision.createdAt).toLocaleString()} · {revision.templateVersion} · {revision.instructionsHash.slice(0, 12)}</small></div>{revision.active ? <span className="status-pill live">Active</span> : <button className="secondary-button compact" disabled={mutationPending} onClick={() => void activate(revision.id)} type="button">Make active</button>}</article>)}</div></details>
-    </section>
-  );
+  return <section className="settings-card prompt-studio" aria-labelledby="prompt-studio-heading">
+    <div className="settings-card-heading"><div><p className="eyebrow">Versioned instructions</p><h2 id="prompt-studio-heading">AI prompt studio</h2></div><span className="status-pill live">Revision {active.revisionNumber} active</span></div>
+    <p className="muted">Choose when the prompt applies. Automatic scans always use a 5-minute chart and only the Automatic instructions. Manual scans use the instructions for their selected chart interval.</p>
+    <div className="prompt-scope-grid" role="group" aria-label="Prompt scan scope">{scopes.map((item) => <button aria-pressed={scope === item.value} className={scope === item.value ? "active" : ""} key={item.value} onClick={() => { setScope(item.value); setMessage(""); }} type="button"><strong>{item.label}</strong><small>{item.description}</small>{states.some((state) => state.scope === item.value && drafts[key(item.value, state.phase)] !== state.revisions.find((revision) => revision.id === state.activeRevisionId)?.instructions) ? <i>Unsaved</i> : null}</button>)}</div>
+    <div className="filter-group prompt-tabs" aria-label="Prompt phase">{(["compact", "full"] as const).map((value) => <button aria-pressed={phase === value} className={phase === value ? "active" : ""} key={value} onClick={() => { setPhase(value); setMessage(""); }} type="button"><span>{label(value)}{drafts[key(scope, value)] !== states.find((item) => item.scope === scope && item.phase === value)?.revisions.find((revision) => revision.active)?.instructions ? <i>Unsaved</i> : null}</span><small>{value === "compact" ? "Initial signal" : "Four-phase detail"}</small></button>)}</div>
+    <div className="prompt-workspace">
+      <section className="prompt-editor-pane" aria-labelledby="prompt-editor-heading">
+        <div className="prompt-pane-heading"><div><p className="eyebrow">Editable · {scopes.find((item) => item.value === scope)?.label}</p><h3 id="prompt-editor-heading">Analysis instructions</h3></div>{dirty ? <span className="prompt-dirty-status">Unsaved changes</span> : <span className="muted">Matches active revision</span>}</div>
+        <p className="muted">Add your analysis method; chart evidence rules, output shape, and locked signal fields stay protected.</p>
+        <label className="prompt-editor"><span className="sr-only">Analysis instructions for {label(phase)}</span><textarea data-sentry-mask maxLength={8000} onChange={(event) => setDrafts((value) => ({ ...value, [currentKey]: event.target.value }))} rows={16} value={draft} /></label>
+        <div className="prompt-editor-footer"><span className="muted">{draft.length.toLocaleString()} / 8,000</span><div><button className="secondary-button compact" disabled={pending || !dirty} onClick={() => setDrafts((value) => ({ ...value, [currentKey]: active.instructions }))} type="button">Undo edits</button> <button className="secondary-button compact" disabled={pending || draft === current.defaultInstructions} onClick={() => setDrafts((value) => ({ ...value, [currentKey]: current.defaultInstructions }))} type="button">Use built-in default</button></div></div>
+      </section>
+      <section className="prompt-effective-preview" aria-labelledby="prompt-preview-heading">
+        <div className="prompt-pane-heading"><div><p className="eyebrow">Read only · {scopes.find((item) => item.value === scope)?.label}</p><h3 id="prompt-preview-heading">Full prompt preview</h3></div><span className={previewError ? "prompt-preview-state error" : "prompt-preview-state"} aria-live="polite">{previewError ? "Preview unavailable" : previewPending ? "Updating…" : "Up to date"}</span></div>
+        <p className="muted">Protected rules and sample runtime details for this scan interval.</p>
+        {previewError ? <div className="warning-banner"><span>{previewError}</span></div> : null}
+        <pre aria-label={`Full prompt preview for ${label(phase)}`} data-sentry-mask>{previews[currentKey]}</pre>
+      </section>
+    </div>
+    <div className="prompt-save-row"><div><strong>{dirty ? "Ready to create a new revision" : `Revision ${active.revisionNumber} is active`}</strong><small>Only future {scope === "auto" ? "automatic" : scope.replace("_", " ")} {label(phase).toLowerCase()} requests use a new revision.</small></div><button className="primary-button" disabled={pending || !dirty || !draft.trim()} onClick={() => void update("create")} type="button">{pending ? "Saving…" : "Save as new revision"}</button></div>
+    {message ? <p className={message.includes("failed") || message.includes("changed") ? "form-error" : "form-success"} role="status">{message}</p> : null}
+    <details className="prompt-revisions"><summary><span>Revision history</span><small>{current.revisions.length} saved · previous versions remain available</small></summary><div className="prompt-history">{current.revisions.map((revision) => <article key={revision.id}><div><strong>Revision {revision.revisionNumber}</strong><small>{new Date(revision.createdAt).toLocaleString()} · {revision.templateVersion} · {revision.instructionsHash.slice(0, 12)}</small></div>{revision.id === active.id ? <span className="status-pill live">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void update("activate", revision.id)} type="button">Make active</button>}</article>)}</div></details>
+  </section>;
 }

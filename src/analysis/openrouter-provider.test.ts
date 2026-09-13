@@ -59,22 +59,10 @@ const frozen: ChartAnalysisInput = {
 const wireAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
 const analysis = { observed_price: 100, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
 const fullAnalysis = {
-  setup_type: "Breakout",
-  immediate_bias: "Momentum remains constructive.",
-  broader_trend: "The visible trend points higher.",
-  candlestick_analysis: "Recent candles show higher closes.",
-  vwap_keltner_analysis: "Price is holding above VWAP.",
-  cci_analysis: "CCI remains positive.",
-  indicator_readings: Object.fromEntries(
-    ["price_action", "vwap", "keltner", "volume", "adx", "rsi", "macd", "cci", "cmf"]
-      .map((key) => [key, { stance: "bullish", readability: "clear", observation: `${key} is legible.` }]),
-  ),
-  supporting_evidence: ["Higher lows support continuation."],
-  conflicting_evidence: ["Resistance remains nearby."],
-  support_levels: [98],
-  resistance_levels: [104],
-  deeper_scenario: "Continuation depends on support holding.",
-  data_quality_flags: [],
+  phase1: "Higher lows are visible above VWAP.",
+  phase2: "ADX rising; RSI above midpoint; MACD bars expand; CCI and CMF above zero.",
+  phase3: "Higher closes with stable volume, and VWAP holds.",
+  phase4: "Price and volume align. The locked bullish verdict follows. Watch VWAP on a fresh scan.",
   summary: "Bullish visual structure.",
 };
 

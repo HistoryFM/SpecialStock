@@ -41,26 +41,21 @@ describe("compact analysis prompt", () => {
 });
 
 describe("full analysis prompt", () => {
-  it("keeps the default locked prompt byte-for-byte stable", () => {
-    expect(buildFullAnalysisPrompt(input("5m"), {
+  it("requires four grounded phases while preserving the locked signal", () => {
+    const prompt = buildFullAnalysisPrompt(input("5m"), {
       observedPrice: 100,
       verdict: "bullish",
       conviction: "high",
       target: 104,
       invalidation: 97,
-    })).toBe(`Explain the already-locked technical signal using only the attached frozen TradingView chart and return only the narrative JSON object requested by the schema.
-
-Capture metadata:
-- Symbol: NASDAQ:AAPL
-- Captured at: 2026-09-03T13:35:16.321Z
-- Interval/session: 5m, regular
-- Latest bar status: closed
-
-Locked compact signal:
-- Verdict / conviction: bullish, high
-- Observed price / target / invalidation: 100, 104, 97
-
-The chart is the sole technical evidence. Describe only visible price action, VWAP, Keltner Channels, Volume, ADX, RSI, MACD, CCI, and CMF. Never calculate indicator values, infer unavailable data, discuss execution mechanics, or invent signals. Complete every indicator reading, using unreadable where necessary. Do not return verdict, conviction, observed price, target, or invalidation: those fields are locked by the compact signal.`);
+    });
+    expect(prompt).toContain("Phase 1 (phase1):");
+    expect(prompt).toContain("Phase 2 (phase2):");
+    expect(prompt).toContain("Phase 3 (phase3):");
+    expect(prompt).toContain("Phase 4 (phase4):");
+    expect(prompt).toContain("locked bullish verdict");
+    expect(prompt).toContain("numeric readings or price levels only when labels are legible");
+    expect(prompt).toContain("those fields are locked by the compact signal");
   });
 
   it("changes only the editable instruction block", () => {

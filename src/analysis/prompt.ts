@@ -1,14 +1,16 @@
 import type { ChartAnalysisInput } from "@/analysis/types";
 
 export const COMPACT_PROMPT_VERSION = "chart-compact-v3";
-export const FULL_PROMPT_VERSION = "chart-full-v1";
+export const FULL_PROMPT_VERSION = "chart-full-v4";
 export const CHAT_PROMPT_VERSION = "analysis-chat-v1";
 export const PROMPT_VERSION = COMPACT_PROMPT_VERSION;
 
 export type PromptPhase = "compact" | "full";
+export type PromptScope = "auto" | "manual_1m" | "manual_5m" | "manual_10m";
 export type PromptRevisionSnapshot = {
   id: string;
   phase: PromptPhase;
+  scope: PromptScope;
   revisionNumber: number;
   instructions: string;
   instructionsHash: string;
@@ -100,7 +102,7 @@ export function buildFullAnalysisPrompt(input: ChartAnalysisInput, locked?: {
   target: number | string | null;
   invalidation: number | string | null;
 }, instructions = DEFAULT_FULL_ANALYSIS_INSTRUCTIONS): string {
-  return `Explain the already-locked technical signal using only the attached frozen TradingView chart and return only the narrative JSON object requested by the schema.
+  return `Explain the already-locked technical signal using only the attached frozen TradingView chart and return only the structured four-phase JSON requested by the schema. Write concise, readable observations, not raw Markdown. Every required text field must contain a concrete observation, or say "unreadable" when the image does not support one; never return null or omit a field.
 
 Capture metadata:
 - Symbol: ${input.chartSymbol}
@@ -112,7 +114,15 @@ Locked compact signal:
 - Verdict / conviction: ${locked?.verdict ?? "unknown"}, ${locked?.conviction ?? "unknown"}
 - Observed price / target / invalidation: ${locked?.observedPrice ?? "unreadable"}, ${locked?.target ?? "none"}, ${locked?.invalidation ?? "none"}
 
-The chart is the sole technical evidence. ${instructions} Never calculate indicator values, infer unavailable data, discuss execution mechanics, or invent signals. Complete every indicator reading, using unreadable where necessary. Do not return verdict, conviction, observed price, target, or invalidation: those fields are locked by the compact signal.`;
+The chart is the sole technical evidence. ${instructions}
+
+Return five non-null strings named phase1, phase2, phase3, phase4, and summary. Each phase string may use short labeled lines separated by newlines.
+Phase 1 (phase1): Explain broad session structure and price relative to visibly labeled VWAP, Keltner, and support/resistance lines.
+Phase 2 (phase2): Give a labeled observation for every lower indicator: ADX, RSI, MACD, CCI, and CMF. If a value or threshold is not visibly legible, say so; describe geometry only if it is actually visible. The chart uses ADX 14/14, RSI 14, MACD 12/26/9, CCI 20, and CMF 20.
+Phase 3 (phase3): Compare up to the last three visible candles, their matching volume bars, and immediate line confluence. Respect the supplied latest-bar status.
+Phase 4 (phase4): Explicitly weigh dominant price/VWAP/Keltner and volume evidence against secondary ADX/CMF and confirming oscillators. Explain why the locked ${locked?.verdict ?? "unknown"} verdict follows, including conflicts and extension risk. State chart conditions worth watching before a fresh scan, not an entry, order, position, or execution instruction. If the chart is unreadable, say what cannot be concluded.
+
+Never calculate or reconstruct indicator values, infer unavailable prices, claim institutional transactions from CMF, assert mathematical certainty, or invent signals. Use numeric readings or price levels only when labels are legible in the image. Clearly separate visible evidence from inference. Do not return verdict, conviction, observed price, target, or invalidation: those fields are locked by the compact signal.`;
 }
 
 export const PROMPT_PREVIEW_INPUT = {
@@ -139,10 +149,12 @@ export const PROMPT_PREVIEW_INPUT = {
   inputHash: "{inputHash}",
 } as unknown as ChartAnalysisInput;
 
-export function previewPrompt(phase: PromptPhase, instructions: string): string {
+export function previewPrompt(phase: PromptPhase, instructions: string, scope: PromptScope = "auto"): string {
+  const interval = scope === "manual_1m" ? "1m" : scope === "manual_10m" ? "10m" : "5m";
+  const input = { ...PROMPT_PREVIEW_INPUT, interval: interval as ChartAnalysisInput["interval"] };
   return phase === "compact"
-    ? buildCompactAnalysisPrompt(PROMPT_PREVIEW_INPUT, instructions)
-    : buildFullAnalysisPrompt(PROMPT_PREVIEW_INPUT, {
+    ? buildCompactAnalysisPrompt(input, instructions)
+    : buildFullAnalysisPrompt(input, {
         observedPrice: "{observedPrice}",
         verdict: "{verdict}",
         conviction: "{conviction}",

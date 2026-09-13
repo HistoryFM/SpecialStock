@@ -20,6 +20,16 @@ export const indicatorReadingsSchema = z.object({
 
 export type IndicatorReadings = z.infer<typeof indicatorReadingsSchema>;
 
+const reportText = z.string().trim().min(1).max(1_200);
+export const fourPhaseReportSchema = z.object({
+  version: z.literal(1),
+  phase1: reportText,
+  phase2: reportText,
+  phase3: reportText,
+  phase4: reportText,
+});
+export type FourPhaseReport = z.infer<typeof fourPhaseReportSchema>;
+
 export const compactAnalysisWireSchema = z.object({
   p: z.number().positive().nullable(),
   v: z.enum(["bullish", "bearish", "no_trade"]),
@@ -39,20 +49,11 @@ export const compactAnalysisResultSchema = z.object({
 });
 
 export const fullAnalysisResultSchema = z.object({
-  setup_type: z.string().min(1).max(120),
-  immediate_bias: z.string().min(1).max(600),
-  broader_trend: z.string().min(1).max(600),
-  candlestick_analysis: z.string().min(1).max(1_200),
-  vwap_keltner_analysis: z.string().min(1).max(1_200),
-  cci_analysis: z.string().min(1).max(1_200),
-  indicator_readings: indicatorReadingsSchema,
-  supporting_evidence: z.array(z.string().min(1).max(300)).max(8),
-  conflicting_evidence: z.array(z.string().min(1).max(300)).max(8),
-  support_levels: z.array(z.number().positive()).max(8),
-  resistance_levels: z.array(z.number().positive()).max(8),
-  deeper_scenario: z.string().min(1).max(600),
-  data_quality_flags: z.array(z.string().min(1).max(120)).max(20),
-  summary: z.string().min(1).max(700),
+  phase1: reportText,
+  phase2: reportText,
+  phase3: reportText,
+  phase4: reportText,
+  summary: z.string().trim().min(1).max(700),
 });
 
 export type CompactAnalysisResult = z.infer<typeof compactAnalysisResultSchema>;

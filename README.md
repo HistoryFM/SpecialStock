@@ -14,7 +14,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Per-stock manual analysis at any browser-remembered combination of 1-, 5-, and 10-minute intervals, defaulting to 5 minutes regardless of market state or automatic-scan setting.
 - Concurrent mixed-interval manual batches of up to 20 symbol–interval jobs, including simultaneous 1m, 5m, and 10m scans for one symbol.
 - Raw grouped comparison pages for multi-interval actions, without a combined signal or alignment judgment.
-- Global versioned compact/full analysis instructions with immutable system guardrails and exact prompt audit provenance.
+- Separate versioned compact/full instructions for automatic 5m and manual 1m, 5m, and 10m scans, with immutable system guardrails and exact prompt audit provenance.
 - One active, grounded Gemini follow-up conversation for each completed full analysis, with cleared conversations retained as archived audit history.
 - Per-stock automatic scanning with multi-select enable/disable controls.
 - Browser-driven scans at approximately 9:35:10 AM, 9:40:10 AM, …, 3:55:10 PM America/New_York on regular-session days.
@@ -36,9 +36,9 @@ Every routine or manual scan follows this pipeline:
 5. Gemini returns only observed price, verdict, conviction, target, invalidation, and visual quality. The server validates and stores that compact signal with the chart hash and audit metadata.
 6. Authenticated UI routes verify the stored hash before returning the chart image.
 
-Opening a medium/high bullish or bearish result claims full-analysis work once. Gemini receives the already-stored, hash-verified PNG again—without a new Chart-Img request—and returns narrative/evidence fields only. It cannot change the compact signal's locked verdict, conviction, observed price, target, or invalidation. Low-conviction and no-trade results remain compact and still expose the frozen chart and audit data.
+Opening any completed result claims detailed-analysis work once when a stored chart is available. Gemini receives the already-stored, hash-verified PNG again—without a new Chart-Img request—and returns a structured four-phase report. It cannot change the compact signal's locked verdict, conviction, observed price, target, or invalidation. Previously saved detailed analyses retain their legacy presentation and are not regenerated. Opening more low-conviction and no-trade results may use additional provider credit.
 
-Compact and full prompts each combine a locked system contract, one active versioned analysis-instructions revision, and immutable runtime metadata. A scheduled or manual batch snapshots one compact revision before fan-out; a full analysis snapshots its revision when claimed. Every provider attempt stores the revision, exact rendered prompt, and SHA-256 prompt hash. The Settings prompt studio can preview, save, restore the default text, inspect history, and reactivate an earlier revision without making response schemas or safety boundaries editable.
+Compact and full prompts each combine a locked system contract, one active versioned analysis-instructions revision, and immutable runtime metadata. Automatic scans use the automatic 5m scope; manual scans use their own 1m, 5m, or 10m scope. Each batch snapshots the applicable compact revisions before fan-out, and a detailed analysis snapshots its matching revision when claimed. Every provider attempt stores the revision, exact rendered prompt, and SHA-256 prompt hash. The Settings prompt studio can preview, save, restore the default text, inspect history, and reactivate an earlier revision without making response schemas or safety boundaries editable.
 
 After a full analysis succeeds, follow-up chat re-verifies and resends the same stored PNG together with the locked compact signal and stored full analysis. Gemini sees at most the six most recent completed exchanges, cannot browse or access current prices/news, and cannot mutate analysis, thesis, alert, review, or evaluation state. Each client-generated request ID is idempotent, only one turn may be pending per conversation, and partial provider output is never displayed. Clearing chat archives the visible conversation until the source analysis expires.
 
@@ -71,13 +71,7 @@ Compact scan output includes only:
 - Bullish, bearish, or no-trade verdict and qualitative conviction.
 - Target, invalidation, and visual quality.
 
-Eligible full-analysis output adds:
-
-- Setup, immediate bias, broader trend, support, and resistance.
-- Candlestick, VWAP/Keltner, and CCI analysis.
-- Fixed visual readings for price action, VWAP, Keltner, Volume, ADX, RSI, MACD, CCI, and CMF.
-- Stance, readability, and a concise observation for each visual reading.
-- Supporting evidence, conflicting evidence, alternate/deeper scenario, data-quality flags, and summary.
+Detailed output adds a versioned four-phase report: broad session structure and visible levels; ADX, RSI, MACD, CCI, and CMF readings; a three-candle, volume, and line-confluence audit; and an explicit conflict-resolution hierarchy, locked-verdict rationale, and conditions to watch before a fresh scan. The report also has a concise summary. It may not invent unreadable values, imply institutional transactions from CMF, or offer order execution instructions.
 
 The model is locked to `google/gemini-2.5-pro` through OpenRouter. Automatic and manual compact requests use the versioned `compact-quality-v2` inference profile: a 2,048-token reasoning budget, a 2,560-token total output ceiling (leaving 512 tokens for the compact JSON), reasoning excluded from returned content, temperature 0.1, and the unchanged six-field signal schema. OpenRouter accepts either an exact reasoning budget or a qualitative effort level, so this profile uses the deterministic 2,048-token budget rather than also sending `effort: medium`. A process-wide FIFO limiter admits at most 10 compact OpenRouter attempts at once while chart captures and scan jobs remain concurrent. Provider-reported reasoning-token counts, queue wait, exact request settings, retries, and precise failure classifications are retained in the local authenticated audit record and emitted as sanitized low-cardinality Sentry attributes; reasoning text is never retained. Missing provider usage details remain unknown. Compact attempts have a 90-second provider timeout, usage reconciliation has a five-second timeout, and scan routes allow 240 seconds for chart capture, retries, and persistence within the existing five-minute scan lease. Full analysis and follow-up chat retain their low-reasoning settings. A timeout or token-limit truncation is terminal; one retry is allowed for transient HTTP, zero-token provider, empty, malformed JSON, structured-output, and validation failures. Authentication, payment, configuration, and unsupported-request failures remain terminal. Every billed attempt is persisted and charged to the daily ledger. Compact scans reserve $0.06, and each billed compact attempt retains a $0.06 estimate only when exact usage cannot be reconciled; this is an accounting estimate, not a price guarantee or spend limit.
 
@@ -209,7 +203,7 @@ Reports based on the supplied CSVs are **price returns**, excluding dividends an
 
 ### Manual analysis
 
-Every watchlist row has selectable **1m**, **5m**, and **10m** chips, with **5m** selected by default. At least one remains selected, and the browser remembers each symbol's combination. A row can launch all of its selected intervals together; **Run selected** expands every selected stock and interval into one server batch and disables submission above 20 jobs. Different intervals for one symbol can run concurrently. The same symbol and interval cannot overlap, so scheduled and manual 5m work remain mutually exclusive while manual 1m or 10m work may coexist with scheduled 5m.
+Every watchlist row has selectable **1m**, **5m**, and **10m** chips, with **5m** selected by default. At least one remains selected, and the browser remembers each symbol's combination. **Select all stocks** selects the full configured watchlist even under a direction filter; the table header checkbox selects only visible rows. The bulk interval chips add an interval to all selected stocks, or remove it when all have it; a mixed chip indicates only some selected stocks have that interval. The last interval for any stock cannot be removed. A row can launch all of its selected intervals together; **Run selected** expands every selected stock and interval into one server batch and disables submission above 20 jobs. Different intervals for one symbol can run concurrently. The same symbol and interval cannot overlap, so scheduled and manual 5m work remain mutually exclusive while manual 1m or 10m work may coexist with scheduled 5m.
 
 A multi-interval action becomes the symbol's latest dashboard event and links to a comparison page ordered 1m, 5m, 10m. The page shows each independent compact signal, status, levels, quality, capture time, cost, and frozen chart. The app does not calculate alignment, a combined target, or a group thesis. Bullish and Bearish filters match a group when any completed member matches. Opening a comparison never starts full analysis.
 
@@ -217,9 +211,9 @@ Manual scans intentionally do not create alerts, replace the active thesis, or c
 
 ### Prompt studio and analysis chat
 
-Settings includes Compact Scan and Full Analysis prompt tabs. The editable method text is limited to 8,000 characters; saving creates and immediately activates an immutable global revision. Compact revisions affect future automatic and manual compact batches. Full revisions affect future claimed full analyses. In-flight work retains its captured revision, and prior revisions remain available for audit and reactivation.
+Settings includes Compact Scan and Full Analysis prompt tabs for automatic 5m and each manual interval. The editable method text is limited to 8,000 characters; saving creates and immediately activates an immutable revision for only the selected scope and phase. Existing prompt history remains the automatic scope; manual scopes begin as copies of the previously active instructions and can then diverge. In-flight work retains its captured revision, and prior revisions remain available for audit and reactivation.
 
-Eligible detail pages show chat only after full analysis is available. Questions are plain text from 1–2,000 trimmed characters. Responses are non-streaming and grounded only in that analysis's capture-time chart and stored analysis; requests for newer market state, current prices, or news are explicitly out of scope. One turn may be pending at a time, failed turns can be retried, and **Clear chat** starts a new visible conversation while retaining the archived record until normal analysis retention removes it.
+Detail pages show chat after the saved detailed analysis is available. Questions are plain text from 1–2,000 trimmed characters. Responses are non-streaming and grounded only in that analysis's capture-time chart and stored analysis; requests for newer market state, current prices, or news are explicitly out of scope. One turn may be pending at a time, failed turns can be retried, and **Clear chat** starts a new visible conversation while retaining the archived record until normal analysis retention removes it.
 
 ### Automatic analysis
 

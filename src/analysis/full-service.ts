@@ -12,7 +12,7 @@ import { AnalysisModelError } from "@/analysis/provider";
 import type { ChartAnalysisInput, ModelAttemptResult } from "@/analysis/types";
 import { readChartArtifact } from "@/chart/artifact-storage";
 import { getDatabase } from "@/db/client";
-import { analyses, chartArtifacts, modelAttempts, modelRuns } from "@/db/schema";
+import { analyses, chartArtifacts, modelAttempts, modelRuns, scanSlots } from "@/db/schema";
 
 const LEASE_MS = 2 * 60_000;
 
@@ -25,8 +25,10 @@ async function loadAnalysis(id: string) {
     analysis: analyses,
     compactRun: modelRuns,
     artifact: chartArtifacts,
+    slot: scanSlots,
   }).from(analyses)
     .innerJoin(modelRuns, eq(modelRuns.id, analyses.modelRunId))
+    .innerJoin(scanSlots, eq(scanSlots.id, modelRuns.scanSlotId))
     .leftJoin(chartArtifacts, eq(chartArtifacts.id, modelRuns.chartArtifactId))
     .where(eq(analyses.id, id)).limit(1);
   if (!row) throw new AnalysisNotFoundError("Analysis not found.");
@@ -54,6 +56,7 @@ export async function getFullAnalysisStatus(id: string) {
       deeperScenario: analysis.deeperScenario,
       dataQualityFlags: analysis.dataQualityFlags,
       summary: analysis.summary,
+      report: analysis.fourPhaseReport,
     } : null,
   };
 }
@@ -112,7 +115,8 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
   if (!loaded.artifact?.storageReference) throw new Error("The verified chart artifact is unavailable.");
 
   const database = await getDatabase();
-  const promptRevision = await getActivePromptRevision("full");
+  const scope = loaded.slot.slotKind === "manual_smoke" ? `manual_${loaded.slot.scanInterval}` as const : "auto";
+  const promptRevision = await getActivePromptRevision("full", scope);
   const now = new Date();
   const leaseToken = randomUUID();
   const [claimed] = await database.update(analyses).set({
@@ -192,12 +196,10 @@ export async function generateFullAnalysis(id: string, options: { retry?: boolea
     await database.update(analyses).set({
       fullAnalysisState: "available", fullModelRunId: run.id,
       fullLeaseToken: null, fullLeaseExpiresAt: null, fullError: null,
-      setupType: full.setup_type, immediateBias: full.immediate_bias, broaderTrend: full.broader_trend,
-      candlestickAnalysis: full.candlestick_analysis, vwapKeltnerAnalysis: full.vwap_keltner_analysis,
-      cciAnalysis: full.cci_analysis, indicatorReadings: full.indicator_readings,
-      supportingEvidence: full.supporting_evidence, conflictingEvidence: full.conflicting_evidence,
-      supportLevels: full.support_levels, resistanceLevels: full.resistance_levels,
-      deeperScenario: full.deeper_scenario, dataQualityFlags: full.data_quality_flags, summary: full.summary,
+      fourPhaseReport: {
+        version: 1,
+        phase1: full.phase1, phase2: full.phase2, phase3: full.phase3, phase4: full.phase4,
+      }, summary: full.summary,
     }).where(and(eq(analyses.id, id), eq(analyses.fullLeaseToken, leaseToken)));
     return { claimed: true, status: await getFullAnalysisStatus(id) };
   } catch (error) {

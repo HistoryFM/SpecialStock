@@ -6,7 +6,7 @@ import { auth } from "@/auth";
 import { isAuthorizedSession } from "@/auth/authorization";
 
 const paramsSchema = z.object({ phase: z.enum(["compact", "full"]) });
-const bodySchema = z.object({ instructions: z.string() }).strict();
+const bodySchema = z.object({ instructions: z.string(), scope: z.enum(["auto", "manual_1m", "manual_5m", "manual_10m"]) }).strict();
 const HEADERS = { "Cache-Control": "private, no-store" };
 
 export async function POST(request: Request, context: { params: Promise<{ phase: string }> }) {
@@ -15,7 +15,7 @@ export async function POST(request: Request, context: { params: Promise<{ phase:
     const { phase } = paramsSchema.parse(await context.params);
     const body = bodySchema.parse(await request.json());
     const instructions = promptInstructionsSchema.parse(body.instructions);
-    return Response.json({ phase, preview: previewPrompt(phase, instructions) }, { headers: HEADERS });
+    return Response.json({ phase, scope: body.scope, preview: previewPrompt(phase, instructions, body.scope) }, { headers: HEADERS });
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: error.issues[0]?.message ?? "Invalid prompt." }, { status: 400, headers: HEADERS });
     throw error;

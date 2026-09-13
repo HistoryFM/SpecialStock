@@ -90,34 +90,12 @@ function compactJsonSchema() {
 }
 
 function fullJsonSchema() {
-  const indicator = {
-    type: "object",
-    additionalProperties: false,
-    required: ["stance", "readability", "observation"],
-    properties: {
-      stance: { type: "string", enum: ["bullish", "bearish", "neutral", "mixed", "unreadable"] },
-      readability: { type: "string", enum: ["clear", "partial", "unreadable"] },
-      observation: { type: "string" },
-    },
-  };
-  const readingKeys = ["price_action", "vwap", "keltner", "volume", "adx", "rsi", "macd", "cci", "cmf"];
+  const fields = Object.keys(fullAnalysisResultSchema.shape);
   return {
     type: "object",
     additionalProperties: false,
-    required: Object.keys(fullAnalysisResultSchema.shape),
-    properties: {
-      setup_type: { type: "string" }, immediate_bias: { type: "string" }, broader_trend: { type: "string" },
-      candlestick_analysis: { type: "string" }, vwap_keltner_analysis: { type: "string" }, cci_analysis: { type: "string" },
-      indicator_readings: {
-        type: "object", additionalProperties: false, required: readingKeys,
-        properties: Object.fromEntries(readingKeys.map((key) => [key, indicator])),
-      },
-      supporting_evidence: { type: "array", items: { type: "string" } },
-      conflicting_evidence: { type: "array", items: { type: "string" } },
-      support_levels: { type: "array", items: { type: "number" } },
-      resistance_levels: { type: "array", items: { type: "number" } },
-      deeper_scenario: { type: "string" }, data_quality_flags: { type: "array", items: { type: "string" } }, summary: { type: "string" },
-    },
+    required: fields,
+    properties: Object.fromEntries(fields.map((key) => [key, { type: "string" }])),
   };
 }
 

@@ -12,7 +12,6 @@ import type { PromptRevisionSnapshot } from "@/analysis/prompt";
 import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
 import type { ChartAnalysisInput, CompactModelRunResult, ManualScanTimeframe, ModelAttemptResult } from "@/analysis/types";
-import { isFullAnalysisEligible } from "@/analysis/validate";
 import { persistChartArtifact, readChartArtifact } from "@/chart/artifact-storage";
 import { ChartImgProvider } from "@/chart/chart-img-provider";
 import { isDemoMode } from "@/config/env";
@@ -313,7 +312,7 @@ export async function persistModelResult(input: {
           barStatus: input.frozen.barStatus,
           conviction: result.conviction,
           visualQuality: result.visual_quality,
-          fullAnalysisState: isFullAnalysisEligible(result) ? "not_requested" : "ineligible",
+          fullAnalysisState: "not_requested",
           observedPrice: result.observed_price === null ? null : String(result.observed_price),
           primaryTarget: result.primary_target === null ? null : String(result.primary_target),
           invalidationLevel:
@@ -500,7 +499,7 @@ export async function runScan(input: {
         if (input.mode === "scheduled" && !input.resolvedEntry && !entry.automaticScanEnabled) {
           throw new AutomaticScansDisabledError(`Automatic scans are disabled for ${input.symbol}.`);
         }
-        const promptRevision = input.promptRevision ?? await getActivePromptRevision("compact");
+        const promptRevision = input.promptRevision ?? await getActivePromptRevision("compact", input.mode === "scheduled" ? "auto" : `manual_${timeframe}`);
 
         stage = "market_session";
         const marketProvider = createMarketDataProvider();
