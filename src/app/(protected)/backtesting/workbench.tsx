@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent, type MouseEvent } from "react";
+import * as Sentry from "@sentry/nextjs";
 
 import { backtestModels, describePredicate, type BacktestModel, type ModelUsage, type PriceFile, type Strategy } from "@/backtesting/types";
 import { defaultReportConfig, describeAllocations, describeCondition, isPlannedRun, type AnyRun, type PlannedRun, type ReportConfig, type StrategyPlan } from "@/backtesting/plan";
@@ -20,6 +21,28 @@ async function jsonResponse<T>(response: Response): Promise<T> {
   const body = await response.json() as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
   return body;
+}
+
+async function trackedRequest<T>(action: "import" | "interpret" | "run" | "open" | "analyze" | "report", attributes: Record<string, string | number | boolean>, request: () => Promise<T>): Promise<T> {
+  const details = { "specialstock.telemetry.origin": "client", "specialstock.backtesting.action": action, ...attributes };
+  return Sentry.startNewTrace(() => Sentry.startSpan({ name: `Backtesting ${action}`, op: `specialstock.backtesting.${action}.request`, forceTransaction: true, attributes: details }, async (span) => {
+    const started = performance.now();
+    Sentry.logger.info(`backtesting.${action}.client_requested`, details);
+    try {
+      const result = await request();
+      const complete = { ...details, "specialstock.backtesting.duration_ms": Math.round(performance.now() - started) };
+      span.setAttributes(complete);
+      span.setStatus({ code: 1 });
+      Sentry.logger.info(`backtesting.${action}.client_completed`, complete);
+      return result;
+    } catch (error) {
+      const failed = { ...details, "specialstock.backtesting.duration_ms": Math.round(performance.now() - started), "error.type": error instanceof Error ? error.constructor.name : "UnknownError" };
+      span.setAttributes(failed);
+      span.setStatus({ code: 2 });
+      Sentry.logger.warn(`backtesting.${action}.client_failed`, failed);
+      throw error;
+    }
+  }));
 }
 
 function GrowthChart({ run, config }: { run: AnyRun; config: ReportConfig }) {
@@ -50,7 +73,7 @@ function GrowthChart({ run, config }: { run: AnyRun; config: ReportConfig }) {
     return [{ index, label: config.range === "full" ? date.slice(0, 4) : date.slice(0, 7) }];
   });
   return (
-    <div className="bt-chart-wrap">
+    <div className="bt-chart-wrap" data-sentry-block>
       <div className="bt-chart-legend" aria-label="Chart legend">
         <strong>{hover === null ? `Final · ${dates.at(-1)}` : dates[hover]}</strong>
         {series.map((item, index) => <span key={item.ticker} style={{ color: color(index) }}>{item.ticker} <b>{money(item.values[at])}</b></span>)}
@@ -105,7 +128,7 @@ export function BacktestingWorkbench() {
     try {
       if (!uploadFile) throw new Error("Choose a CSV file.");
       const form = new FormData(); form.set("file", uploadFile); form.set("ticker", uploadTicker.toUpperCase()); form.set("splitAdjusted", String(splitConfirmed));
-      await jsonResponse(await fetch("/api/backtesting/files", { method: "POST", body: form }));
+      await trackedRequest("import", { "specialstock.backtesting.ticker": uploadTicker.toUpperCase(), "specialstock.backtesting.file_bytes": uploadFile.size }, async () => jsonResponse(await fetch("/api/backtesting/files", { method: "POST", body: form })));
       await refresh(); setUploadFile(null); setUploadTicker(""); setSplitConfirmed(false); setPlan(null); setNotice("CSV imported and saved locally.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Upload failed."); }
     finally { setBusy(""); }
@@ -114,7 +137,7 @@ export function BacktestingWorkbench() {
   async function interpret() {
     setError(""); setNotice(""); setBusy("Interpreting strategy"); setPlan(null);
     try {
-      const answer = await jsonResponse<{ value: { clarification: string; plan: StrategyPlan | null }; usage: ModelUsage }>(await fetch("/api/backtesting/interpret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, model }) }));
+      const answer = await trackedRequest("interpret", { "gen_ai.request.model": model, "specialstock.backtesting.prompt_length": prompt.length }, async () => jsonResponse<{ value: { clarification: string; plan: StrategyPlan | null }; usage: ModelUsage }>(await fetch("/api/backtesting/interpret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, model }) })));
       if (answer.value.clarification || !answer.value.plan) throw new Error(answer.value.clarification || "Please clarify the strategy.");
       setPlan(answer.value.plan); setInterpretationUsage(answer.usage); setNotice("Review every phase and setting before running.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Interpretation failed."); }
@@ -125,7 +148,7 @@ export function BacktestingWorkbench() {
     setError(""); setNotice(""); setBusy(parentRunId ? "Testing suggestion" : "Running backtest");
     try {
       const input = { plan: nextPlan, prompt: nextPrompt, model, parentRunId, interpretationUsage: parentRunId ? undefined : interpretationUsage };
-      const result = await jsonResponse<{ run: PlannedRun }>(await fetch("/api/backtesting/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) }));
+      const result = await trackedRequest("run", { "specialstock.backtesting.engine_version": 2, "specialstock.backtesting.is_suggestion": Boolean(parentRunId) }, async () => jsonResponse<{ run: PlannedRun }>(await fetch("/api/backtesting/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) })));
       setRun(result.run); await refresh(); setNotice(parentRunId ? "Suggestion tested. Compare the two saved runs on the same dates." : "Backtest complete.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Backtest failed."); }
     finally { setBusy(""); }
@@ -133,7 +156,7 @@ export function BacktestingWorkbench() {
 
   async function openRun(id: string) {
     setError(""); setBusy("Loading run");
-    try { const result = await jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${id}`)); setRun(result.run); }
+    try { const result = await trackedRequest("open", { "specialstock.backtesting.run_id": id }, async () => jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${id}`))); setRun(result.run); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load run."); }
     finally { setBusy(""); }
   }
@@ -141,7 +164,7 @@ export function BacktestingWorkbench() {
   async function analyze() {
     if (!run) return;
     setError(""); setBusy("Asking AI to analyze results");
-    try { const result = await jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${run.id}/analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) })); setRun(result.run); }
+    try { const result = await trackedRequest("analyze", { "specialstock.backtesting.run_id": run.id, "gen_ai.request.model": model }, async () => jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${run.id}/analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) }))); setRun(result.run); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Analysis failed."); }
     finally { setBusy(""); }
   }
@@ -150,9 +173,9 @@ export function BacktestingWorkbench() {
     if (!run || !isPlannedRun(run)) return;
     setError(""); setBusy(typeof config === "string" ? "Customizing report with AI" : "Saving report view");
     try {
-      const response = await jsonResponse<{ run: PlannedRun }>(await fetch(`/api/backtesting/runs/${run.id}/report`, {
+      const response = await trackedRequest("report", { "specialstock.backtesting.run_id": run.id, "specialstock.backtesting.ai": typeof config === "string" }, async () => jsonResponse<{ run: PlannedRun }>(await fetch(`/api/backtesting/runs/${run.id}/report`, {
         method: typeof config === "string" ? "POST" : "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(typeof config === "string" ? { prompt: config, model } : config) }));
+        body: JSON.stringify(typeof config === "string" ? { prompt: config, model } : config) })));
       setRun(response.run); setReportPrompt("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Report customization failed."); }
     finally { setBusy(""); }
@@ -170,16 +193,16 @@ export function BacktestingWorkbench() {
           <label className="bt-checkbox"><input type="checkbox" checked={splitConfirmed} onChange={(event) => setSplitConfirmed(event.target.checked)} /> I confirm these historical closes are split-adjusted.</label>
           <button className="secondary-button" disabled={Boolean(busy)} type="submit">Import CSV</button>
         </form>
-        {files.length > 0 ? <div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Ticker</th><th>Dates</th><th>Rows</th><th>File</th></tr></thead><tbody>{files.map((file) => <tr key={file.id}><th>{file.ticker}</th><td>{file.firstDate} → {file.lastDate}</td><td>{file.rows.toLocaleString()}</td><td><span>{file.name}</span>{file.warnings.map((warning) => <small key={warning}>{warning}</small>)}</td></tr>)}</tbody></table></div> : <p className="muted">No CSVs imported yet.</p>}
+        {files.length > 0 ? <div className="bt-table-scroll" data-sentry-mask><table className="bt-table"><thead><tr><th>Ticker</th><th>Dates</th><th>Rows</th><th>File</th></tr></thead><tbody>{files.map((file) => <tr key={file.id}><th>{file.ticker}</th><td>{file.firstDate} → {file.lastDate}</td><td>{file.rows.toLocaleString()}</td><td><span>{file.name}</span>{file.warnings.map((warning) => <small key={warning}>{warning}</small>)}</td></tr>)}</tbody></table></div> : <p className="muted">No CSVs imported yet.</p>}
       </section>
 
       <section className="bt-panel">
         <div className="bt-section-head"><h2>2. Strategy &amp; portfolio</h2><p>Describe assets, rules, allocations, costs, dates, and optional stops in one prompt.</p></div>
         <div className="bt-grid"><label>AI model<select value={model} onChange={(event) => { setModel(event.target.value as BacktestModel); setPlan(null); }}>{backtestModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label></div>
-        <label>Describe the entire strategy<textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setPlan(null); }} rows={7} maxLength={4000} /></label>
+        <label>Describe the entire strategy<textarea data-sentry-mask value={prompt} onChange={(event) => { setPrompt(event.target.value); setPlan(null); }} rows={7} maxLength={4000} /></label>
         <p className="muted">Available CSVs: {latestTickers.join(", ") || "import files first"}. AI interprets rules; the confirmed calculation runs locally.</p>
         <div className="bt-actions"><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={interpret}>Interpret rules with AI</button></div>
-        {plan && <div className="bt-rule-preview"><h3>Review exact strategy plan · version 2</h3><p className="muted">Start in 100% cash. The first eligible phase transition runs at a close; stops take priority. Holdings drift between transitions.</p>
+        {plan && <div className="bt-rule-preview" data-sentry-mask><h3>Review exact strategy plan · version 2</h3><p className="muted">Start in 100% cash. The first eligible phase transition runs at a close; stops take priority. Holdings drift between transitions.</p>
           <ol>{plan.transitions.map((transition, index) => <li key={index}><b>{transition.from} → {transition.to}</b> when {describeCondition(transition.when)}. Target: {describeAllocations(plan.states.find((state) => state.id === transition.to)?.allocations ?? [])}.</li>)}</ol>
           {plan.stops.length > 0 && <p><b>Position stops:</b> {plan.stops.map((stop) => `${stop.ticker}: ${stop.fixedPct ?? "—"}% fixed, ${stop.trailingPct ?? "—"}% trailing`).join(" · ")}</p>}
           {plan.assumptions.map((item) => <p className="muted" key={item}>{item}</p>)}
@@ -192,10 +215,10 @@ export function BacktestingWorkbench() {
 
       {(busy || error || notice) && <div className="bt-feedback" role="status">{busy && <p>Working: {busy}…</p>}{error && <p className="form-error">{error}</p>}{notice && <p className="form-success">{notice}</p>}</div>}
 
-      {runs.length > 0 && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Each result keeps its rules, CSV versions, and engine version.</p></div><div className="bt-run-list">{runs.map((item) => <button key={item.id} className="secondary-button bt-saved-run" type="button" onClick={() => openRun(item.id)}><strong>{item.longTicker} · {item.mode} · {item.startDate}–{item.endDate} · v{item.engineVersion}</strong><span>{item.engineVersion === 1 ? "Enter" : "Transitions"}: {item.entryRule}</span><span>{item.engineVersion === 1 ? "Exit" : "Targets"}: {item.exitRule}</span><small>{new Date(item.createdAt).toLocaleString()}</small></button>)}</div></section>}
+      {runs.length > 0 && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Each result keeps its rules, CSV versions, and engine version.</p></div><div className="bt-run-list" data-sentry-mask>{runs.map((item) => <button key={item.id} className="secondary-button bt-saved-run" type="button" onClick={() => openRun(item.id)}><strong>{item.longTicker} · {item.mode} · {item.startDate}–{item.endDate} · v{item.engineVersion}</strong><span>{item.engineVersion === 1 ? "Enter" : "Transitions"}: {item.entryRule}</span><span>{item.engineVersion === 1 ? "Exit" : "Targets"}: {item.exitRule}</span><small>{new Date(item.createdAt).toLocaleString()}</small></button>)}</div></section>}
 
-      {run && config && <section className="bt-panel bt-report" aria-label="Backtest report"><div className="bt-section-head"><div><h2>Price-return report</h2><p>{run.result.startDate} to {run.result.endDate} · {backtestModels.find((item) => item.id === run.input.model)?.label} · engine v{isPlannedRun(run) ? 2 : 1}</p></div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={analyze}>Analyze with selected AI</button></div>
-        <div className="bt-report-rules"><strong>Rules used for this run</strong>{isPlannedRun(run) ? <><p>{run.plan.transitions.map((item) => `${item.from} → ${item.to}: ${describeCondition(item.when)}`).join(" · ")}</p><p>{run.plan.states.map((item) => `${item.label}: ${describeAllocations(item.allocations)}`).join(" · ")}</p></> : <><p>Enter: {run.input.strategy.entry.map(describePredicate).join(" AND ")}</p><p>Exit: {run.input.strategy.exit.map(describePredicate).join(" AND ")}</p></>}</div>
+      {run && config && <section className="bt-panel bt-report" aria-label="Backtest report" data-sentry-mask><div className="bt-section-head"><div><h2>Price-return report</h2><p>{run.result.startDate} to {run.result.endDate} · {backtestModels.find((item) => item.id === run.input.model)?.label} · engine v{isPlannedRun(run) ? 2 : 1}</p></div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={analyze}>Analyze with selected AI</button></div>
+        <div className="bt-report-rules" data-sentry-mask><strong>Rules used for this run</strong>{isPlannedRun(run) ? <><p>{run.plan.transitions.map((item) => `${item.from} → ${item.to}: ${describeCondition(item.when)}`).join(" · ")}</p><p>{run.plan.states.map((item) => `${item.label}: ${describeAllocations(item.allocations)}`).join(" · ")}</p></> : <><p>Enter: {run.input.strategy.entry.map(describePredicate).join(" AND ")}</p><p>Exit: {run.input.strategy.exit.map(describePredicate).join(" AND ")}</p></>}</div>
         <div className="bt-warning">Same-day closing-price decisions and fills are idealized. Results exclude dividends and taxes. The last year may be partial.</div>
         {isPlannedRun(run) && <details className="bt-report-settings bt-report-block">
           <summary><span className="bt-report-settings-title">Customize report</span><span className="bt-report-settings-description">Charts, tables, prices, and date range</span><span className="bt-report-settings-action" aria-hidden="true">Edit view <span>⌄</span></span></summary>
@@ -207,7 +230,7 @@ export function BacktestingWorkbench() {
               <fieldset><legend>Trade prices</legend><div className="bt-report-options">{Object.keys(run.result.fileIds).map((ticker) => <label key={ticker} className="bt-report-option"><input type="checkbox" checked={config.closeTickers.includes(ticker)} onChange={(event) => setReport({ ...config, closeTickers: event.target.checked ? [...config.closeTickers, ticker] : config.closeTickers.filter((name) => name !== ticker) })} />{ticker} close</label>)}</div></fieldset>
               <div className="bt-report-range"><label htmlFor="bt-report-date-range">Date range</label><select id="bt-report-date-range" value={config.range} onChange={(event) => setReport({ ...config, range: event.target.value as ReportConfig["range"] })}><option value="full">Full period · year labels</option><option value="last_year">Last year · month labels</option><option value="last_two_years">Last two years · month labels</option></select></div>
             </div>
-            <div className="bt-report-ai"><label htmlFor="bt-report-ai-prompt">Customize report with AI</label><div className="bt-report-ai-row"><textarea id="bt-report-ai-prompt" value={reportPrompt} onChange={(event) => setReportPrompt(event.target.value)} rows={2} placeholder="e.g. Show Strategy and QQQ for the last year, and add TQQQ close" /><button className="secondary-button" type="button" disabled={Boolean(busy) || !reportPrompt.trim()} onClick={() => setReport(reportPrompt)}>Apply AI report choices</button></div></div>
+            <div className="bt-report-ai"><label htmlFor="bt-report-ai-prompt">Customize report with AI</label><div className="bt-report-ai-row"><textarea data-sentry-mask id="bt-report-ai-prompt" value={reportPrompt} onChange={(event) => setReportPrompt(event.target.value)} rows={2} placeholder="e.g. Show Strategy and QQQ for the last year, and add TQQQ close" /><button className="secondary-button" type="button" disabled={Boolean(busy) || !reportPrompt.trim()} onClick={() => setReport(reportPrompt)}>Apply AI report choices</button></div></div>
           </div>
         </details>}
         {run.comparison && <div className="bt-report-block"><h3>Suggested change vs original · same dates</h3><p>{run.comparison.startDate} to {run.comparison.endDate}</p><div className="bt-comparison-summary"><span>Original final <b>{money(run.comparison.baseline.finalBalance)}</b></span><span>Variant final <b>{money(run.comparison.variant.finalBalance)}</b></span><span>Original max drawdown <b>{pct(run.comparison.baseline.drawdowns[0].percent)}</b></span><span>Variant max drawdown <b>{pct(run.comparison.variant.drawdowns[0].percent)}</b></span></div><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Year</th><th>Original strategy</th><th>Suggested variant</th></tr></thead><tbody>{run.comparison.variant.annual.map((row, index) => <tr key={row.year}><th>{row.year}</th><td>{pct(run.comparison!.baseline.annual[index].returns.Strategy)}</td><td>{pct(row.returns.Strategy)}</td></tr>)}</tbody></table></div></div>}
@@ -215,7 +238,7 @@ export function BacktestingWorkbench() {
         {config.sections.includes("drawdown") && <div className="bt-report-block"><h3>Maximum drawdown · full period</h3><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Series</th><th>Peak-to-trough</th><th>Peak date</th><th>Trough date</th></tr></thead><tbody>{run.result.drawdowns.map((item) => <tr key={item.ticker}><th>{item.ticker}</th><td className="bt-negative">{pct(item.percent)}</td><td>{item.peakDate}</td><td>{item.troughDate}</td></tr>)}</tbody></table></div></div>}
         {config.sections.includes("growth") && <div className="bt-report-block"><h3>Growth of {money(isPlannedRun(run) ? run.plan.settings.startingCapital : run.input.startingCapital)}</h3><p className="muted">Portfolio value in USD at each close, starting from the same amount on the same date.</p><GrowthChart key={run.id + config.range} run={run} config={config} /></div>}
         <div className="bt-report-block"><h3>Calculation assumptions</h3>{!isPlannedRun(run) && activeIndicatorSettings(run.input.strategy).length > 0 && <p>{activeIndicatorSettings(run.input.strategy).join(" · ")}</p>}<p>{isPlannedRun(run) ? `Cash ${run.plan.settings.cashRate}% · short borrow ${run.plan.settings.borrowRate}% annual · slippage ${run.plan.settings.slippage}% · fee ${money(run.plan.settings.fee)} per leg.` : `Cash ${run.input.cashRate}% annual · slippage ${run.input.slippage}% · fee ${money(run.input.fee)} per leg.`}</p>{run.result.warnings.slice(0, 2).map((warning) => <p className="muted" key={warning}>{warning}</p>)}{(isPlannedRun(run) ? run.input.interpretationUsage : run.interpretationUsage) && <p className="muted">Rule interpretation: {(isPlannedRun(run) ? run.input.interpretationUsage : run.interpretationUsage)?.actualModel}</p>}</div>
-        {latestCommentary && <div className="bt-report-block"><h3>AI analysis · {backtestModels.find((item) => item.id === latestCommentary.model)?.label}</h3><p className="muted">Actual model: {latestCommentary.usage.actualModel} · {latestCommentary.usage.inputTokens ?? "?"} input tokens · {latestCommentary.usage.outputTokens ?? "?"} output tokens · {latestCommentary.usage.costUsd === null ? "cost unavailable" : money(latestCommentary.usage.costUsd)}</p><p>{latestCommentary.summary}</p>{latestCommentary.riskNotes.length > 0 && <ul>{latestCommentary.riskNotes.map((note) => <li key={note}>{note}</li>)}</ul>}{isPlannedRun(run) && run.commentaries.at(-1)?.suggestions.map((item, index) => <div className="bt-suggestion" key={`${item.title}-${index}`}><h4>{item.title} <small>Untested hypothesis</small></h4><p>{item.reason}</p><p>{item.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · ")}</p><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => submitRun(item.plan, run.id, `${run.input.prompt}\nSuggested variation: ${item.title}. ${item.reason}`)}>Test suggestion</button></div>)}</div>}
+        {latestCommentary && <div className="bt-report-block" data-sentry-mask><h3>AI analysis · {backtestModels.find((item) => item.id === latestCommentary.model)?.label}</h3><p className="muted">Actual model: {latestCommentary.usage.actualModel} · {latestCommentary.usage.inputTokens ?? "?"} input tokens · {latestCommentary.usage.outputTokens ?? "?"} output tokens · {latestCommentary.usage.costUsd === null ? "cost unavailable" : money(latestCommentary.usage.costUsd)}</p><p>{latestCommentary.summary}</p>{latestCommentary.riskNotes.length > 0 && <ul>{latestCommentary.riskNotes.map((note) => <li key={note}>{note}</li>)}</ul>}{isPlannedRun(run) && run.commentaries.at(-1)?.suggestions.map((item, index) => <div className="bt-suggestion" key={`${item.title}-${index}`}><h4>{item.title} <small>Untested hypothesis</small></h4><p>{item.reason}</p><p>{item.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · ")}</p><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => submitRun(item.plan, run.id, `${run.input.prompt}\nSuggested variation: ${item.title}. ${item.reason}`)}>Test suggestion</button></div>)}</div>}
         {config.sections.includes("trades") && <details className="bt-report-block" open><summary>Simulated trade history · {run.result.trades.length} executed legs</summary><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Date</th><th>Action</th><th>Asset</th><th>Traded close</th>{config.closeTickers.map((ticker) => <th key={ticker}>{ticker} close</th>)}<th>Portfolio after trade</th></tr></thead><tbody>{run.result.trades.map((trade, index) => <tr key={`${trade.date}-${index}`}><td>{trade.date}</td><td>{trade.intent?.replaceAll("_", " ") ?? trade.action}{trade.reason === "stop loss" ? " · stop" : ""}</td><td>{trade.ticker}</td><td>{trade.closePrices?.[trade.ticker]?.toFixed(2) ?? "—"}</td>{config.closeTickers.map((ticker) => <td key={ticker}>{trade.closePrices?.[ticker]?.toFixed(2) ?? "—"}</td>)}<td>{money(trade.equityAfter)}</td></tr>)}</tbody></table></div></details>}
       </section>}
     </div>

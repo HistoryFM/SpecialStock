@@ -103,8 +103,9 @@ Sentry receives 100% tracing, structured logs, and replay coverage for the local
 - Quick dashboard Auto changes record the browser request and the server's authoritative before/after enabled counts, changed count, symbols, duration, and settings versions.
 - Full Settings edits record local add/remove/symbol/exchange/Auto intent, client validation or submission, and the server's added, removed, reordered, exchange-changed, and Auto-changed symbols. Optimistic-concurrency failures include the expected and observed versions.
 - Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, revision IDs, and prompt hashes. Customized prompts, chat text, and model response bodies are excluded from Sentry.
+- Backtesting traces link browser actions to CSV import, strategy interpretation, the confirmed deterministic run, optional AI analysis, and report customization. AI calls have `gen_ai.chat` spans with model, phase, reported usage, and cost; unavailable usage remains unknown. Strategy prompts, imported prices, and AI responses stay out of Sentry, and Backtesting inputs and results are masked from Replay.
 
-Useful log searches begin with `scheduler.`, `scan.batch.`, `scan.manual_batch.`, `prompt.revision.`, `chat.`, `settings.auto.`, or `settings.watchlist.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
+Useful log searches begin with `scheduler.`, `scan.batch.`, `scan.manual_batch.`, `prompt.revision.`, `chat.`, `settings.auto.`, `settings.watchlist.`, or `backtesting.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
 
 ## Requirements
 

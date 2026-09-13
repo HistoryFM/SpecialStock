@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as Sentry from "@sentry/nextjs";
 import { z } from "zod";
 
 import { auth } from "@/auth";
@@ -33,7 +34,14 @@ export async function POST(request: Request) {
         requiredTickers(input.plan).some((ticker) => !parent.result.fileIds[ticker]))) throw new Error("A suggestion must use the original settings and uploaded assets.");
       const tickers = requiredTickers(input.plan);
       const files = parent ? await loadPriceFilesById(parent.result.fileIds) : await loadLatestPriceFiles(tickers);
-      let result = runPlannedBacktest(input.plan, files);
+      let result = await Sentry.startSpan({ name: "Calculate confirmed backtest", op: "specialstock.backtesting.run", attributes: {
+        "specialstock.telemetry.origin": "server", "specialstock.backtesting.engine_version": 2,
+        "specialstock.backtesting.asset_count": tickers.length, "specialstock.backtesting.is_suggestion": Boolean(parent),
+      } }, (span) => {
+        const calculated = runPlannedBacktest(input.plan, files);
+        span.setAttributes({ "specialstock.backtesting.daily_values": calculated.dates.length, "specialstock.backtesting.trade_legs": calculated.trades.length });
+        return calculated;
+      });
       let comparison: SavedRun["comparison"];
       if (parent && isPlannedRun(parent)) {
         const startDate = result.startDate > parent.result.startDate ? result.startDate : parent.result.startDate;
@@ -50,6 +58,10 @@ export async function POST(request: Request) {
         input: { ...input, interpretationUsage: input.interpretationUsage as ModelUsage | undefined }, result, comparison,
         reportConfig: defaultReportConfig(result), reportUsage: [], commentaries: [] };
       await saveRun(run);
+      Sentry.logger.info("backtesting.run.completed", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.run_id": run.id,
+        "specialstock.backtesting.engine_version": 2, "specialstock.backtesting.asset_count": tickers.length,
+        "specialstock.backtesting.daily_values": result.dates.length, "specialstock.backtesting.trade_legs": result.trades.length,
+        "specialstock.backtesting.is_suggestion": Boolean(parent) });
       return Response.json({ run }, { headers });
     }
     const body = bodySchema.parse(raw);
@@ -77,8 +89,13 @@ export async function POST(request: Request) {
     const run: SavedRun = { id: randomUUID(), createdAt: new Date().toISOString(), input, result, comparison, commentaries: [],
       interpretationUsage: body.interpretationUsage as ModelUsage | undefined };
     await saveRun(run);
+    Sentry.logger.info("backtesting.run.completed", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.run_id": run.id,
+      "specialstock.backtesting.engine_version": 1, "specialstock.backtesting.asset_count": tickers.length,
+      "specialstock.backtesting.daily_values": result.dates.length, "specialstock.backtesting.trade_legs": result.trades.length,
+      "specialstock.backtesting.is_suggestion": Boolean(parent) });
     return Response.json({ run }, { headers });
   } catch (error) {
+    Sentry.logger.warn("backtesting.run.failed", { "specialstock.telemetry.origin": "server", "error.type": error instanceof Error ? error.constructor.name : "UnknownError" });
     return Response.json({ error: error instanceof Error ? error.message : "Backtest failed." }, { status: 400, headers });
   }
 }

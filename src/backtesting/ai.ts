@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+import * as Sentry from "@sentry/nextjs";
 import { z } from "zod";
 
 import { getServerEnv } from "@/config/env";
@@ -27,7 +29,55 @@ function canonicalizeNumericFields(value: unknown): unknown {
     numeric.has(key) && typeof item === "string" && /^\d+(?:\.\d+)?$/.test(item.trim()) ? Number(item) : canonicalizeNumericFields(item)]));
 }
 
-async function callModel<T>(model: BacktestModel, messages: { role: "system" | "user"; content: string }[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
+type BacktestAiPhase = "interpret" | "analysis" | "report";
+
+async function callModel<T>(phase: BacktestAiPhase, model: BacktestModel, messages: { role: "system" | "user"; content: string }[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
+  const promptHash = createHash("sha256").update(JSON.stringify(messages)).digest("hex");
+  const promptBytes = messages.reduce((total, message) => total + Buffer.byteLength(message.content), 0);
+  const attributes: Record<string, string | number | boolean> = {
+    "gen_ai.operation.name": "chat",
+    "gen_ai.operation.type": "ai_client",
+    "gen_ai.provider.name": "openrouter",
+    "gen_ai.request.model": model,
+    "gen_ai.request.max_tokens": 6_000,
+    "gen_ai.response.streaming": false,
+    "gen_ai.prompt.name": `specialstock.backtesting.${phase}`,
+    "gen_ai.function_id": `specialstock.backtesting.${phase}`,
+    "gen_ai.pipeline.name": "specialstock.backtesting",
+    "gen_ai.input.messages": JSON.stringify([{ role: "user", parts: [{ type: "text", content: JSON.stringify({ sha256: promptHash, byte_length: promptBytes }) }] }]),
+    "specialstock.telemetry.origin": "server",
+    "specialstock.backtesting.phase": phase,
+    "specialstock.backtesting.prompt_sha256": promptHash,
+    "specialstock.backtesting.prompt_byte_length": promptBytes,
+  };
+  if (model === "google/gemini-2.5-pro") attributes["specialstock.backtesting.reasoning_budget_tokens"] = 2_048;
+  else attributes["gen_ai.request.reasoning.level"] = "high";
+  return Sentry.startSpan({ name: `chat ${model}`, op: "gen_ai.chat", attributes }, async (span) => {
+    Sentry.logger.info("backtesting.model.started", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.phase": phase, "gen_ai.request.model": model, "specialstock.backtesting.prompt_sha256": promptHash });
+    try {
+      const answer = await requestModel(model, messages, validator);
+      const { usage } = answer;
+      const measured: Record<string, string | number | boolean> = { "gen_ai.response.model": usage.actualModel };
+      if (usage.inputTokens !== null) measured["gen_ai.usage.input_tokens"] = usage.inputTokens;
+      if (usage.outputTokens !== null) measured["gen_ai.usage.output_tokens"] = usage.outputTokens;
+      if (usage.inputTokens !== null && usage.outputTokens !== null) measured["gen_ai.usage.total_tokens"] = usage.inputTokens + usage.outputTokens;
+      if (usage.reasoningTokens !== null) measured["gen_ai.usage.reasoning.output_tokens"] = usage.reasoningTokens;
+      if (usage.costUsd !== null) measured["gen_ai.cost.total_tokens"] = usage.costUsd;
+      measured["gen_ai.output.messages"] = JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: JSON.stringify({ schema: phase, validated: true }) }] }]);
+      span.setAttributes(measured);
+      span.setStatus({ code: 1 });
+      Sentry.logger.info("backtesting.model.completed", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.phase": phase, "gen_ai.request.model": model, ...measured, "specialstock.backtesting.usage_complete": usage.inputTokens !== null && usage.outputTokens !== null && usage.costUsd !== null });
+      return answer;
+    } catch (error) {
+      span.setAttribute("error.type", error instanceof Error ? error.constructor.name : "UnknownError");
+      span.setStatus({ code: 2 });
+      Sentry.logger.warn("backtesting.model.failed", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.phase": phase, "gen_ai.request.model": model, "error.type": error instanceof Error ? error.constructor.name : "UnknownError" });
+      throw error;
+    }
+  });
+}
+
+async function requestModel<T>(model: BacktestModel, messages: { role: "system" | "user"; content: string }[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
   const key = getServerEnv().OPENROUTER_API_KEY;
   if (!key) throw new Error("Configure the existing OpenRouter key to use AI in Backtesting.");
   const reasoning = model === "google/gemini-2.5-pro" ? { max_tokens: 2_048, exclude: true } : { effort: "high", exclude: true };
@@ -68,7 +118,7 @@ async function callModel<T>(model: BacktestModel, messages: { role: "system" | "
 export async function interpretStrategy(prompt: string, selectedModel: string) {
   const model = modelSchema.parse(selectedModel);
   const system = `Return one valid JSON object with exactly these top-level keys: clarification and strategy. Successful example: {"clarification":"","strategy":{"entry":[{"kind":"price_sma","period":50,"relation":"crosses_above"}],"exit":[{"kind":"price_sma","period":50,"relation":"crosses_below"}],"rsiPeriod":14,"rsiOversold":30,"rsiOverbought":70,"macdFast":12,"macdSlow":26,"macdSignal":9}}. For an unclear strategy return {"clarification":"explain what is missing","strategy":null}. Adapt the example to the user's actual rules; never copy it when the user specifies different rules. Entry and exit must each be JSON arrays, even for one condition. The only supported predicate kinds are price_sma (requires period 50 or 200), sma_pair (50-day SMA vs 200-day SMA), rsi (requires numeric threshold), and macd (MACD line vs signal). The only supported relations are above, below, crosses_above, crosses_below. Combine each entry or exit array using strict AND. A crossover is a one-day event. If entry or exit is missing, contradictory, unclear, uses OR, or needs any other indicator, return a clarification and null strategy. Never invent an exit. Use RSI defaults 14/30/70 and MACD defaults 12/26/9 unless specified. Do not calculate performance. JSON only.`;
-  return callModel(model, [{ role: "system", content: system }, { role: "user", content: prompt }], interpretationSchema);
+  return callModel("interpret", model, [{ role: "system", content: system }, { role: "user", content: prompt }], interpretationSchema);
 }
 
 export async function analyzeRun(input: { model: BacktestModel; prompt: string; strategy: Strategy; result: RunResult }): Promise<Commentary> {
@@ -80,7 +130,7 @@ export async function analyzeRun(input: { model: BacktestModel; prompt: string; 
     finalBalances: Object.fromEntries(input.result.series.map((series) => [series.ticker, series.values.at(-1)])),
   };
   const system = `Return one valid JSON object with exactly these keys: summary (string), riskNotes (array of strings), suggestions (array of zero to three objects). Each suggestion must have title (string), reason (string), and strategy with entry and exit arrays of supported predicates plus indicator parameters. Example shape: {"summary":"Measured performance observation","riskNotes":["Measured drawdown observation"],"suggestions":[{"title":"Test RSI filter","reason":"Hypothesis only; not yet measured","strategy":{"entry":[{"kind":"price_sma","period":50,"relation":"crosses_above"},{"kind":"rsi","threshold":40,"relation":"below"}],"exit":[{"kind":"price_sma","period":50,"relation":"crosses_below"}],"rsiPeriod":14,"rsiOversold":30,"rsiOverbought":70,"macdFast":12,"macdSlow":26,"macdSignal":9}}]}. Each predicate kind must be exactly price_sma, sma_pair, rsi, or macd. Each relation must be exactly above, below, crosses_above, or crosses_below. price_sma requires period 50 or 200; rsi requires a numeric threshold. Entry and exit must each be arrays joined by strict AND. Analyze this already-calculated price-return backtest using only supplied metrics. Suggest only specific variations using SMA50, SMA200, RSI, MACD. Suggestions are untested hypotheses; do not claim improvement until separately measured. Do not invent numbers or provide execution instructions. JSON only.`;
-  const { value, usage } = await callModel(input.model, [{ role: "system", content: system }, { role: "user", content: JSON.stringify(compact) }], commentarySchema);
+  const { value, usage } = await callModel("analysis", input.model, [{ role: "system", content: system }, { role: "user", content: JSON.stringify(compact) }], commentarySchema);
   const suggestions = value.suggestions.flatMap((candidate) => {
     const parsed = suggestionSchema.safeParse(candidate);
     return parsed.success ? [parsed.data] : [];
@@ -95,7 +145,7 @@ export async function analyzeRun(input: { model: BacktestModel; prompt: string; 
 export async function interpretPlan(prompt: string, selectedModel: string, availableTickers: string[]) {
   const model = modelSchema.parse(selectedModel);
   const system = `You interpret historical daily-close portfolio strategies. Return exactly JSON keys clarification and plan. If ambiguous, contradictory, unsupported, or a required asset is unavailable, return {"clarification":"specific question","plan":null}; do not invent a condition. Available CSV tickers: ${availableTickers.join(", ")}. SPY and QQQ CSVs are required. Do not calculate returns or generate executable code. Successful plan shape: {"version":2,"settings":{"startingCapital":1000,"cashRate":0,"borrowRate":0,"slippage":0,"fee":0,"startDate":"first_january"},"states":[{"id":"long","label":"Long TQQQ","allocations":[{"ticker":"TQQQ","side":"long","percent":100}]}],"transitions":[{"from":"cash","to":"long","when":{"any":[[{"kind":"price_sma","ticker":"TQQQ","period":50,"bandPct":0,"relation":"crosses_above"}]]}},{"from":"long","to":"cash","when":{"any":[[{"kind":"price_sma","ticker":"TQQQ","period":50,"bandPct":0,"relation":"crosses_below"}]]}}],"stops":[],"assumptions":[]}. Return this as the plan value and clarification "" only when it matches the actual prompt. Percentage setting values are percentage points, never decimal fractions: '2.5% annual cash interest' means cashRate:2.5, not 0.025; '1% borrow' means borrowRate:1, and '0.5% slippage' means slippage:0.5. The implicit initial state is cash; never include a cash state in states. States hold target allocations (gross exposure <=100%; residual is interest-earning cash). Transitions are ordered and only the first eligible transition from the current state executes per close; stops have priority. Model multi-step phases and asset-specific signals explicitly. A condition is an OR of AND groups via when.any. Atoms: price_sma(ticker,period 50 or 200,bandPct from -50 to 50,relation), rsi(ticker,period default 14,threshold,relation), macd(ticker,fast default 12,slow default 26,signal default 9,relation). Relations: above, below, at_or_above, at_or_below, crosses_above, crosses_below. For 'x% above SMA' set bandPct +x; 'x% below' set -x. A crossover is a one-day event, never a persistent level. For 'reenter when higher' use above. Use fixedPct/trailingPct per-asset stops only if requested. No daily rebalance, no leverage, no naked short proceeds interest. Settings default to $1000 and zero rates/costs; startDate first_january means first shared January trading day after indicator warm-up. If text asks for arbitrary indicators, intraday fills, unknown x%, or a condition whose meaning cannot be resolved, ask a clarification. Do not add the 200-day SMA unless explicitly requested. JSON only.`;
-  const answer = await callModel(model, [{ role: "system", content: system }, { role: "user", content: prompt }], planInterpretationSchema);
+  const answer = await callModel("interpret", model, [{ role: "system", content: system }, { role: "user", content: prompt }], planInterpretationSchema);
   if (answer.value.plan) {
     const requested = [
       { key: "cashRate" as const, name: "Cash interest", patterns: [/(\d+(?:\.\d+)?)\s*%\s*(?:annual(?:ized)?\s*)?(?:interest|yield)\s+on\s+cash/i, /(?:cash\s+(?:interest|yield)|cash\s+at)\s*(?:at|of|=)?\s*(\d+(?:\.\d+)?)\s*%/i] },
@@ -128,7 +178,7 @@ export async function analyzePlannedRun(input: { model: BacktestModel; prompt: s
     annualReturns: input.result.annual, drawdowns: input.result.drawdowns, tradeCount: input.result.trades.length,
     finalBalances: Object.fromEntries(input.result.series.map((item) => [item.ticker, item.values.at(-1)])) };
   const system = `Return JSON keys summary, riskNotes (up to six strings), suggestions (up to three objects with title, reason, plan). Analyze only supplied calculated price-return metrics. Each suggestion is an untested hypothesis. A suggested plan must use the same version 2 structure, settings, and uploaded assets as the supplied plan, with explicit states and transitions. Only suggest supported SMA 50/200, RSI, MACD, percentage bands, allocations, or position stops. Do not invent measured results, executable code, or execution advice. JSON only.`;
-  const { value, usage } = await callModel(input.model, [{ role: "system", content: system }, { role: "user", content: JSON.stringify(context) }], planCommentarySchema);
+  const { value, usage } = await callModel("analysis", input.model, [{ role: "system", content: system }, { role: "user", content: JSON.stringify(context) }], planCommentarySchema);
   const allowedTickers = new Set(Object.keys(input.result.fileIds));
   const suggestions = value.suggestions.flatMap((item) => { const parsed = planSuggestionSchema.safeParse(item);
     return parsed.success && JSON.stringify(parsed.data.plan.settings) === JSON.stringify(input.plan.settings) &&
@@ -143,5 +193,5 @@ export async function analyzePlannedRun(input: { model: BacktestModel; prompt: s
 
 export async function customizeReport(input: { model: BacktestModel; prompt: string; current: ReportConfig; series: string[]; tickers: string[] }) {
   const system = `Choose only supported report controls; no code or HTML. Return JSON with exactly visibleSeries (subset of ${JSON.stringify(input.series)}), sections (nonempty ordered subset of annual,drawdown,growth,trades), closeTickers (subset of ${JSON.stringify(input.tickers)}), range (full,last_year,last_two_years). Preserve existing selections unless asked to change them. Current settings: ${JSON.stringify(input.current)}. JSON only.`;
-  return callModel(input.model, [{ role: "system", content: system }, { role: "user", content: input.prompt }], reportConfigSchema);
+  return callModel("report", input.model, [{ role: "system", content: system }, { role: "user", content: input.prompt }], reportConfigSchema);
 }
