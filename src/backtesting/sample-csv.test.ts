@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 
 import { runBacktest } from "./engine";
+import { runPlannedBacktest } from "./plan-engine";
+import { strategyPlanSchema } from "./plan";
 import { parsePriceCsv } from "./csv";
 import type { PriceRow, RunInput, Strategy } from "./types";
 
@@ -29,7 +31,6 @@ it.skipIf(!process.env.SPECIALSTOCK_SAMPLE_CSV_DIR)("parses and computes the use
     expect(result.startDate).toBe(period === 50 ? "2017-01-03" : "2018-01-02");
     expect(result.endDate).toBe("2026-09-11");
     expect(result.series.map((item) => item.ticker)).toEqual(["Strategy", "SPY", "QQQ"]);
-    console.log(JSON.stringify({ period, start: result.startDate, end: result.endDate, trades: result.trades.length, firstTrades: result.trades.slice(0, 4), finalBalances: result.series.map((item) => [item.ticker, item.values.at(-1)]), drawdowns: result.drawdowns, annual: result.annual }));
   }
   // Independently hand-calculated from the uploaded closes using a 50-day-only rule and 2.5% cash yield.
   const corrected = runBacktest({ ...input, cashRate: 2.5 }, files);
@@ -39,4 +40,15 @@ it.skipIf(!process.env.SPECIALSTOCK_SAMPLE_CSV_DIR)("parses and computes the use
   expect(corrected.series.map((series) => series.values.at(-1))).toEqual([expect.closeTo(10_468.67, 2), expect.closeTo(3_393.23, 2), expect.closeTo(5_980.26, 2)]);
   expect(corrected.drawdowns[0]).toMatchObject({ percent: expect.closeTo(-56.05, 2), peakDate: "2021-11-19", troughDate: "2023-01-18" });
   expect(corrected.annual.find((row) => row.year === "2022")?.returns.Strategy).toBeCloseTo(-49.04, 2);
+  const confirmedPlan = strategyPlanSchema.parse({ version: 2, settings: { startingCapital: 1000, cashRate: 2.5, borrowRate: 0, slippage: 0, fee: 0, startDate: "first_january" },
+    states: [{ id: "long", label: "Long TQQQ", allocations: [{ ticker: "TQQQ", side: "long", percent: 100 }] }],
+    transitions: [
+      { from: "cash", to: "long", when: { any: [[{ kind: "price_sma", ticker: "TQQQ", period: 50, bandPct: 0, relation: "crosses_above" }]] } },
+      { from: "long", to: "cash", when: { any: [[{ kind: "price_sma", ticker: "TQQQ", period: 50, bandPct: 0, relation: "crosses_below" }]] } },
+    ], stops: [], assumptions: [] });
+  const version2 = runPlannedBacktest(confirmedPlan, files);
+  expect(version2.series[0].values).toHaveLength(2436);
+  expect(version2.series[0].values.at(-1)).toBeCloseTo(10_468.67, 2);
+  expect(version2.drawdowns[0].percent).toBeCloseTo(-56.05, 2);
+  expect(Math.max(...version2.series[0].values.map((value, index) => Math.abs(value - corrected.series[0].values[index])))).toBeLessThan(1e-6);
 }, 30_000);

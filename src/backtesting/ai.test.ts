@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/config/env", () => ({ getServerEnv: () => ({ OPENROUTER_API_KEY: "mock-key", OPENROUTER_API_URL: "https://provider.example.test" }) }));
 
-import { analyzeRun, interpretStrategy } from "./ai";
+import { analyzeRun, interpretPlan, interpretStrategy } from "./ai";
 import type { RunResult, Strategy } from "./types";
 
 const response = (model: string, content: unknown) => Response.json({ model, choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 100, completion_tokens: 200, completion_tokens_details: { reasoning_tokens: 50 }, cost: 0.01 } });
@@ -10,6 +10,18 @@ const response = (model: string, content: unknown) => Response.json({ model, cho
 afterEach(() => vi.unstubAllGlobals());
 
 describe("backtesting AI boundary", () => {
+  it("normalizes explicit percentage-point rates and rejects invented assets", async () => {
+    const plan = { version: 2, settings: { startingCapital: 1000, cashRate: 0.025, borrowRate: 0, slippage: 0, fee: 0, startDate: "first_january" },
+      states: [{ id: "long", label: "Long TQQQ", allocations: [{ ticker: "TQQQ", side: "long", percent: 100 }] }],
+      transitions: [{ from: "cash", to: "long", when: { any: [[{ kind: "price_sma", ticker: "TQQQ", period: 50, bandPct: 0, relation: "crosses_above" }]] } }], stops: [], assumptions: [] };
+    vi.stubGlobal("fetch", vi.fn(async () => response("google/gemini-2.5-pro", { clarification: "", plan })));
+    const parsed = await interpretPlan("Start with 2.5% annual interest on cash. Buy TQQQ at the 50-day crossover.", "google/gemini-2.5-pro", ["TQQQ", "SPY", "QQQ"]);
+    expect(parsed.value.plan?.settings.cashRate).toBe(2.5);
+    expect(parsed.value.plan?.assumptions).toContain("Cash interest normalized to the stated 2.5%.");
+    const missing = await interpretPlan("Buy TQQQ at the 50-day crossover.", "google/gemini-2.5-pro", ["SPY", "QQQ"]);
+    expect(missing.value.plan).toBeNull();
+    expect(missing.value.clarification).toMatch(/without an uploaded CSV/);
+  });
   it("requests high reasoning and safely canonicalizes a singleton rule from JSON mode", async () => {
     const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
       const request = JSON.parse(init.body as string);

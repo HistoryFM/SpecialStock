@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { auth } from "@/auth";
 import { isAuthorizedSession } from "@/auth/authorization";
-import { analyzeRun } from "@/backtesting/ai";
+import { analyzePlannedRun, analyzeRun } from "@/backtesting/ai";
+import { isPlannedRun } from "@/backtesting/plan";
 import { getRun, saveRun } from "@/backtesting/storage";
 import { modelSchema } from "@/backtesting/types";
 
@@ -16,8 +17,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!run) return Response.json({ error: "Run not found." }, { status: 404, headers });
   try {
     const model = modelSchema.parse((await request.json() as { model?: unknown }).model);
-    const commentary = await analyzeRun({ model, prompt: run.input.prompt, strategy: run.input.strategy, result: run.result });
-    run.commentaries.push(commentary);
+    if (isPlannedRun(run)) run.commentaries.push(await analyzePlannedRun({ model, prompt: run.input.prompt, plan: run.plan, result: run.result }));
+    else run.commentaries.push(await analyzeRun({ model, prompt: run.input.prompt, strategy: run.input.strategy, result: run.result }));
     await saveRun(run);
     return Response.json({ run }, { headers });
   } catch (error) {

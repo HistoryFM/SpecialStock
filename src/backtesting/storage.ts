@@ -6,7 +6,8 @@ import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parsePriceCsv } from "./csv";
-import { describePredicate, type PriceFile, type PriceRow, type SavedRun } from "./types";
+import { describePredicate, type PriceFile, type PriceRow } from "./types";
+import { describeAllocations, isPlannedRun, type AnyRun } from "./plan";
 
 const e2eDatabase = resolve(process.env.LOCAL_DATABASE_PATH ?? ".data/e2e");
 const isolatedE2e = process.env.SPECIALSTOCK_E2E_ISOLATED === "1" && e2eDatabase.startsWith(`${resolve(tmpdir())}${sep}specialstock-e2e-`);
@@ -71,20 +72,24 @@ export async function loadPriceFilesById(ids: Record<string, string>): Promise<R
   return output;
 }
 
-export async function listRunSummaries(): Promise<Array<{ id: string; createdAt: string; longTicker: string; mode: string; model: string; startDate: string; endDate: string; entryRule: string; exitRule: string }>> {
+export async function listRunSummaries(): Promise<Array<{ id: string; createdAt: string; longTicker: string; mode: string; model: string; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number }>> {
   const names = await listJson(runsDir);
-  const runs = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(runsDir, name), "utf8")) as SavedRun));
-  return runs.map((run) => ({ id: run.id, createdAt: run.createdAt, longTicker: run.input.longTicker, mode: run.input.mode, model: run.input.model, startDate: run.result.startDate, endDate: run.result.endDate,
-    entryRule: run.input.strategy.entry.map(describePredicate).join(" AND "), exitRule: run.input.strategy.exit.map(describePredicate).join(" AND ") })).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const runs = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(runsDir, name), "utf8")) as AnyRun));
+  return runs.map((run) => isPlannedRun(run)
+    ? { id: run.id, createdAt: run.createdAt, longTicker: run.plan.states.flatMap((state) => state.allocations.map((item) => item.ticker))[0] ?? "CASH", mode: "multi-asset", model: run.input.model,
+      startDate: run.result.startDate, endDate: run.result.endDate, entryRule: run.plan.transitions.map((item) => `${item.from} → ${item.to}`).join(" · "),
+      exitRule: run.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · "), engineVersion: 2 }
+    : { id: run.id, createdAt: run.createdAt, longTicker: run.input.longTicker, mode: run.input.mode, model: run.input.model, startDate: run.result.startDate, endDate: run.result.endDate,
+      entryRule: run.input.strategy.entry.map(describePredicate).join(" AND "), exitRule: run.input.strategy.exit.map(describePredicate).join(" AND "), engineVersion: 1 }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function saveRun(run: SavedRun): Promise<void> {
+export async function saveRun(run: AnyRun): Promise<void> {
   await mkdir(runsDir, { recursive: true });
   await atomicJson(join(runsDir, `${run.id}.json`), run);
 }
 
-export async function getRun(id: string): Promise<SavedRun | null> {
+export async function getRun(id: string): Promise<AnyRun | null> {
   if (!/^[0-9a-f-]{36}$/.test(id)) return null;
-  try { return JSON.parse(await readFile(join(runsDir, `${id}.json`), "utf8")) as SavedRun; }
+  try { return JSON.parse(await readFile(join(runsDir, `${id}.json`), "utf8")) as AnyRun; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }

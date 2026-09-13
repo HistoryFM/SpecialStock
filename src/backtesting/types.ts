@@ -46,7 +46,8 @@ export type RunInput = z.infer<typeof runInputSchema>;
 
 export type PriceRow = { date: string; close: number; open: number | null; high: number | null; low: number | null; volume: number | null };
 export type PriceFile = { id: string; ticker: string; name: string; uploadedAt: string; firstDate: string; lastDate: string; rows: number; splitAdjustedConfirmed: boolean; warnings: string[] };
-export type Trade = { date: string; action: "buy" | "sell"; ticker: string; equityAfter: number; fee: number; slippagePercent: number };
+export type Trade = { date: string; action: "buy" | "sell"; ticker: string; equityAfter: number; fee: number; slippagePercent: number;
+  intent?: "buy_long" | "sell_long" | "open_short" | "cover_short"; reason?: string; closePrices?: Record<string, number> };
 export type Series = { ticker: string; values: number[] };
 export type Drawdown = { ticker: string; percent: number; peakDate: string; troughDate: string };
 export type AnnualRow = { year: string; returns: Record<string, number> };
