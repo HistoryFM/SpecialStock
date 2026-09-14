@@ -138,7 +138,7 @@ describe("automatic scan scheduler", () => {
     expect(fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/batch")).toHaveLength(1);
     expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(1);
     expect(sentryMocks.suppressTracing).toHaveBeenCalledTimes(
-      fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/status").length,
+      fetchMock.mock.calls.filter(([request]) => String(request).startsWith("/api/scans/status") || String(request).startsWith("/api/scans/progress")).length,
     );
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(sentryMocks.info).toHaveBeenCalledWith(
@@ -219,7 +219,7 @@ describe("automatic scan scheduler", () => {
     expect(batchCalls).toBe(2);
     expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(2);
     expect(sentryMocks.suppressTracing).toHaveBeenCalledTimes(
-      fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/status").length,
+      fetchMock.mock.calls.filter(([request]) => String(request).startsWith("/api/scans/status") || String(request).startsWith("/api/scans/progress")).length,
     );
     await vi.advanceTimersByTimeAsync(10_000);
     expect(batchCalls).toBe(2);
@@ -302,5 +302,42 @@ describe("automatic scan scheduler", () => {
       "specialstock.scan.manual_batch.request",
       "ui.action.click",
     ]));
+  });
+
+  it("shows 16 manual jobs settling before the single batch response finishes", async () => {
+    const symbols = DEFAULT_WATCHLIST.slice(0, 16).map((entry) => entry.symbol);
+    let release: ((response: Response) => void) | undefined;
+    const batch = new Promise<Response>((resolve) => { release = resolve; });
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request);
+      if (url === "/api/scans/status" && !init?.method) return Response.json({
+        due: false, slotKey: null, nextScanAt: null, marketOpen: true,
+        automaticSymbols: [], enabledCount: 0, configuredCount: 16, runningScans: [], scanRevision: null,
+      });
+      if (url === "/api/scans/status") return Response.json({ ok: true });
+      if (url.startsWith("/api/scans/progress?mode=manual")) return Response.json({
+        items: symbols.map((symbol, index) => ({ symbol, timeframe: "5m", status: index < 8 ? "completed" : "running" })),
+      });
+      if (url === "/api/scans/manual-batch") return batch;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SchedulerClient
+      initialItems={symbols.map(item)}
+      database={{ engine: "PGlite", status: "connected" }}
+      budget={{ todayUsd: 0, monthUsd: 0, targetUsd: 1 }}
+      demoMode={false}
+    />);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select all visible stocks" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all visible stocks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
+    await waitFor(() => expect(screen.getByText("Manual batch: 8/16 settled")).toBeInTheDocument());
+    expect(screen.getByRole("row", { name: `Open ${symbols[0]} analysis` })).toHaveTextContent("Batch: 5m completed");
+    expect(screen.getByRole("row", { name: `Open ${symbols[15]} analysis` })).toHaveTextContent("Batch: 5m running");
+    expect(fetchMock.mock.calls.filter(([request]) => String(request) === "/api/scans/manual-batch")).toHaveLength(1);
+    release?.(Response.json({ counts: { completed: 16, reused: 0, alreadyRunning: 0, failed: 0 },
+      results: symbols.map((symbol) => ({ symbol, timeframe: "5m", outcome: "completed" })) }));
+    await waitFor(() => expect(screen.getByText("Manual batch settled · 16 completed.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Manual batch: 8/16 settled")).not.toBeInTheDocument());
   });
 });

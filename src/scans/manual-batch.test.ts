@@ -114,4 +114,40 @@ describe("manual scan batch", () => {
       "specialstock.scan.batch_interval_10m": 1,
     }));
   });
+
+  it("settles 16 jobs in one mocked chart-plus-model interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const symbols = DEFAULT_WATCHLIST.slice(0, 16).map((entry) => entry.symbol);
+      let chartFinished = 0;
+      let modelFinished = 0;
+      mocks.runScan.mockImplementation(async ({ symbol }: { symbol: string }) => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        chartFinished += 1;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        modelFinished += 1;
+        return { slotId: `slot-${symbol}`, analysisId: `analysis-${symbol}`, status: "completed", reused: false };
+      });
+      let settled = false;
+      const pending = runManualBatch({
+        runs: symbols.map((symbol) => ({ symbol, timeframe: "5m" as const })),
+        requestId: "b154a58f-f535-4ac9-a604-13d2bf258f24",
+        now: new Date("2026-09-03T14:02:00.000Z"),
+      }).then((result) => { settled = true; return result; });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.runScan).toHaveBeenCalledTimes(16);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(chartFinished).toBe(16);
+      expect(modelFinished).toBe(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(40);
+      const result = await pending;
+      expect(modelFinished).toBe(16);
+      expect(result.counts).toEqual({ completed: 16, reused: 0, alreadyRunning: 0, failed: 0 });
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

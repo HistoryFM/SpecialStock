@@ -24,6 +24,10 @@ type Status = {
   scanRevision: string | null;
 };
 
+type ProgressStatus = "pending" | "running" | "completed" | "failed";
+type ProgressItem = { symbol: string; timeframe: ManualScanTimeframe; status: ProgressStatus };
+type ProgressBatch = { label: string; items: ProgressItem[] };
+
 const LEADER_KEY = "specialstock-scheduler-leader";
 const LEASE_MS = 15_000;
 
@@ -58,7 +62,7 @@ export function SchedulerClient({
   const schedulerStatusHealthy = useRef(true);
   const [message, setMessage] = useState("Scheduler is checking the market session…");
   const [automaticOverrides, setAutomaticOverrides] = useState<Map<string, boolean>>(new Map());
-  const [batchBusySymbols, setBatchBusySymbols] = useState<Set<string>>(new Set());
+  const [progressBatches, setProgressBatches] = useState<Record<string, ProgressBatch>>({});
   const [remoteBusySymbols, setRemoteBusySymbols] = useState<Set<string>>(new Set());
   const items = useMemo(() => initialItems.map((item) => ({
     ...item,
@@ -80,6 +84,54 @@ export function SchedulerClient({
     return false;
   }, []);
 
+  const trackProgress = useCallback((mode: "manual" | "scheduled", id: string, runs: Array<{ symbol: string; timeframe: ManualScanTimeframe }>) => {
+    const key = `${mode}:${id}`;
+    const initial = runs.map((run) => ({ ...run, status: "pending" as const }));
+    const lastStatuses = new Map(initial.map((run) => [`${run.symbol}:${run.timeframe}`, run.status as ProgressStatus]));
+    let active = true;
+    let polling = false;
+    setProgressBatches((current) => ({ ...current, [key]: {
+      label: mode === "manual" ? "Manual batch" : "Automatic batch", items: initial,
+    } }));
+    const poll = async () => {
+      if (!active || polling) return;
+      polling = true;
+      try {
+        const response = await Sentry.suppressTracing(() => fetch(`/api/scans/progress?mode=${mode}&id=${encodeURIComponent(id)}`, { cache: "no-store" }));
+        if (!response.ok) return;
+        const payload = (await response.json()) as { items: ProgressItem[] };
+        if (!active) return;
+        const found = new Map(payload.items.map((item) => [`${item.symbol}:${item.timeframe}`, item.status]));
+        const next = initial.map((item) => ({ ...item, status: found.get(`${item.symbol}:${item.timeframe}`) ?? "pending" }));
+        const newlySettled = next.some((item) => {
+          const runKey = `${item.symbol}:${item.timeframe}`;
+          const previous = lastStatuses.get(runKey);
+          lastStatuses.set(runKey, item.status);
+          return (item.status === "completed" || item.status === "failed") && previous !== item.status;
+        });
+        setProgressBatches((current) => current[key]
+          ? { ...current, [key]: { ...current[key], items: next } } : current);
+        if (newlySettled) router.refresh();
+      } catch {
+        // The final batch response remains authoritative when progress polling is unavailable.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 3_000);
+    void poll();
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      setProgressBatches((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    };
+  }, [router]);
+
   const runManualBatch = useCallback(async (
     runs: ManualBatchRun[],
   ): Promise<ManualBatchSelectionResult | null> => {
@@ -87,7 +139,7 @@ export function SchedulerClient({
     const symbols = [...new Set(runs.map(({ symbol }) => symbol))];
     const intervals = new Set(runs.map(({ timeframe }) => timeframe));
     const intervalProfile = intervals.size === 1 ? runs[0]?.timeframe ?? "5m" : "mixed";
-    setBatchBusySymbols(new Set(runs.map(({ symbol, timeframe }) => `${symbol}:${timeframe}`)));
+    const stopProgress = trackProgress("manual", requestId, runs);
     return Sentry.startNewTrace(() => Sentry.startSpan(
       {
         name: "Request manual scan batch",
@@ -171,11 +223,11 @@ export function SchedulerClient({
           setMessage(message);
           return null;
         } finally {
-          setBatchBusySymbols(new Set());
+          stopProgress();
         }
       },
     ));
-  }, [router]);
+  }, [router, trackProgress]);
 
   const runScheduledBatch = useCallback(async (symbols: string[], slotKey: string) => {
     if (batchInFlight.current) {
@@ -188,7 +240,7 @@ export function SchedulerClient({
       return false;
     }
     batchInFlight.current = slotKey;
-    setBatchBusySymbols(new Set(symbols.map((symbol) => `${symbol}:5m`)));
+    const stopProgress = trackProgress("scheduled", slotKey, symbols.map((symbol) => ({ symbol, timeframe: "5m" })));
     const retry = pendingScheduledSlot.current === slotKey;
     return Sentry.startNewTrace(() => Sentry.startSpan(
       {
@@ -308,11 +360,11 @@ export function SchedulerClient({
           return false;
         } finally {
           batchInFlight.current = null;
-          setBatchBusySymbols(new Set());
+          stopProgress();
         }
       },
     ));
-  }, [router]);
+  }, [router, trackProgress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -512,6 +564,10 @@ export function SchedulerClient({
   }, []);
 
   const enabledCount = items.filter((item) => item.automaticScanEnabled).length;
+  const activeProgress = Object.entries(progressBatches);
+  const batchBusySymbols = new Set(activeProgress.flatMap(([, batch]) => batch.items
+    .filter((item) => item.status === "pending" || item.status === "running")
+    .map((item) => `${item.symbol}:${item.timeframe}`)));
   const allBusyRuns = new Set([...remoteBusySymbols, ...batchBusySymbols]);
   const busySymbolList = [...new Set([...allBusyRuns].map((run) => run.split(":")[0]!))];
   const busyLabel = `${busySymbolList.length} stock${busySymbolList.length === 1 ? "" : "s"}`;
@@ -538,9 +594,18 @@ export function SchedulerClient({
         </span>
         <span className="tabular"><strong>2k routine</strong> {budget.routineProjectionUsd === null || budget.routineProjectionUsd === undefined ? "Collecting data" : `$${budget.routineProjectionUsd.toFixed(2)}`}</span>
       </div>
+      {activeProgress.map(([key, batch]) => {
+        const completed = batch.items.filter((item) => item.status === "completed").length;
+        const failed = batch.items.filter((item) => item.status === "failed").length;
+        return <div className="workspace-status-strip" aria-live="polite" key={key}>
+          <strong>{batch.label}: {completed + failed}/{batch.items.length} settled{failed ? ` · ${failed} failed` : ""}</strong>
+          <span>{batch.items.map((item) => `${item.symbol} ${item.timeframe}: ${item.status}`).join(" · ")}</span>
+        </div>;
+      })}
       <WatchlistTable
         items={items}
         busyRuns={allBusyRuns}
+        progressRuns={activeProgress.flatMap(([, batch]) => batch.items)}
         onAutomaticScanChange={setAutomaticScanning}
         onRun={runManualBatch}
         onRunSelected={runManualBatch}
