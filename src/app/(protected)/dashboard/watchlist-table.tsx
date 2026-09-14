@@ -194,12 +194,14 @@ export function runStateCopy(
 export function WatchlistTable({
   items,
   busyRuns,
+  progressRuns = [],
   onRun,
   onRunSelected,
   onAutomaticScanChange,
 }: {
   items: SymbolDashboardItem[];
   busyRuns: Set<string>;
+  progressRuns?: Array<{ symbol: string; timeframe: ManualScanTimeframe; status: "pending" | "running" | "completed" | "failed" }>;
   onRun: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
   onRunSelected: (runs: ManualBatchRun[]) => Promise<ManualBatchSelectionResult | null>;
   onAutomaticScanChange: (symbols: string[], enabled: boolean) => Promise<boolean>;
@@ -401,6 +403,7 @@ export function WatchlistTable({
               const signal = signalCopy(item);
               const running = MANUAL_INTERVALS.some((timeframe) => busyRuns.has(`${item.symbol}:${timeframe}`)) || item.attemptIsRunning;
               const runState = runStateCopy(item, running);
+              const rowProgress = progressRuns.filter((run) => run.symbol === item.symbol);
               const conviction = convictionCopy(item.conviction);
               const selectedIntervals = timeframes[item.symbol] ?? ["5m"];
               const completedGroupMembers = item.manualGroup?.members.filter((member) => member.status === "completed").length ?? 0;
@@ -437,6 +440,7 @@ export function WatchlistTable({
                       </span>;
                     })}</div> : <div className={`signal-badge ${item.verdict ?? "neutral"}`}><span aria-hidden="true">{signal.icon}</span><strong>{signal.label}</strong>{conviction ? <span className="conviction-label">{conviction}</span> : null}</div>}
                     <small className={`run-state ${runState.tone}`}>{runState.label}</small>
+                    {rowProgress.length ? <small className="run-state running">Batch: {rowProgress.map((run) => `${run.timeframe} ${run.status}`).join(" · ")}</small> : null}
                   </td>
                   <td>
                     <span className={`auto-state ${item.automaticScanEnabled ? "on" : "off"}`}>

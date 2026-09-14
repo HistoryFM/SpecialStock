@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { reserveAnalysisBudget, settleAnalysisBudget } from "@/analysis/budget";
 import { createAnalysisModelProvider } from "@/analysis/factory";
 import { COMPACT_PROMPT_VERSION } from "@/analysis/prompt";
-import { COMPACT_INFERENCE_PROFILE } from "@/analysis/inference-profiles";
+import { compactInferenceProfileFor } from "@/analysis/inference-profiles";
 import type { PromptRevisionSnapshot } from "@/analysis/prompt";
 import { getActivePromptRevision } from "@/analysis/prompt-revisions";
 import { AnalysisModelError } from "@/analysis/provider";
@@ -336,10 +336,11 @@ async function runModel(input: {
   promptRevision: PromptRevisionSnapshot;
 }) {
   const database = await getDatabase();
+  const inferenceProfile = compactInferenceProfileFor(input.usageClass).id;
   const [pendingRun] = await database.insert(modelRuns).values({
     scanSlotId: input.slotId, chartArtifactId: input.chartArtifactId, runRole: "primary",
     phase: "compact", requestedModel: input.model, promptVersion: COMPACT_PROMPT_VERSION,
-    inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
+    inferenceProfile,
     promptRevisionId: input.promptRevision.id,
     inputHash: input.frozen.inputHash, status: "pending",
   }).onConflictDoUpdate({
@@ -347,7 +348,7 @@ async function runModel(input: {
     set: {
       chartArtifactId: input.chartArtifactId,
       promptVersion: COMPACT_PROMPT_VERSION,
-      inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
+      inferenceProfile,
       promptRevisionId: input.promptRevision.id,
       inputHash: input.frozen.inputHash,
       status: "pending",
@@ -374,7 +375,7 @@ async function runModel(input: {
       error instanceof AnalysisModelError
         ? error
         : new AnalysisModelError(error instanceof Error ? error.message : "Analysis model failed.", {
-            inferenceProfile: COMPACT_INFERENCE_PROFILE.id,
+            inferenceProfile,
             status: "failed",
             requestedModel: input.model,
             actualModel: null,

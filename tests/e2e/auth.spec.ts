@@ -149,11 +149,11 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByRole("img", { name: /AAPL exact Chart-Img model input/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Exact image submitted to the model" })).toBeVisible();
   await expect(page.getByText("google/gemini-2.5-pro").first()).toBeVisible();
-  await expect(page.getByText("compact-quality-v2", { exact: true })).toBeVisible();
+  await expect(page.getByText("compact-manual-medium-v1", { exact: true })).toBeVisible();
   await page.getByText("Compact provider attempts", { exact: true }).click();
   await expect(page.getByText(/Reasoning \/ output tokens: 1,800 \/ 1,880/)).toBeVisible();
   await expect(page.getByText(/queued \d+ ms/).first()).toBeVisible();
-  await expect(page.getByText(/"max_tokens": 2048/)).toBeVisible();
+  await expect(page.getByText(/"effort": "medium"/)).toBeVisible();
 
   await page.getByRole("tab", { name: "Review" }).click();
   await expect(page.getByRole("heading", { name: "Review this analysis" })).toBeVisible();

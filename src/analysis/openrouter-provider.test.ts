@@ -34,6 +34,9 @@ const sentry = vi.hoisted(() => {
   return { spans, info, warn, startSpan };
 });
 
+const modelSpans = () => sentry.spans.filter((span) => span.options.op === "gen_ai.chat");
+const queueSpans = () => sentry.spans.filter((span) => span.options.op === "specialstock.provider.queue");
+
 vi.mock("@sentry/nextjs", () => ({
   startSpan: sentry.startSpan,
   logger: { info: sentry.info, warn: sentry.warn },
@@ -88,7 +91,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       });
     }));
 
-    await new OpenRouterAnalysisModelProvider().analyze({
+    const result = await new OpenRouterAnalysisModelProvider().analyze({
       frozen,
       png: Buffer.from("exact-png"),
       model: "google/gemini-2.5-pro",
@@ -98,9 +101,17 @@ describe("OpenRouterAnalysisModelProvider", () => {
     });
 
     expect(requestBody.model).toBe("google/gemini-2.5-pro");
-    expect(requestBody.max_tokens).toBe(2_560);
-    expect(requestBody.reasoning).toEqual({ max_tokens: 2_048, exclude: true });
-    expect(requestBody.reasoning).not.toHaveProperty("effort");
+    const automatic = usageClass === "routine_compact";
+    const inferenceProfile = automatic ? "compact-auto-medium-v1" : "compact-manual-medium-v1";
+    expect(requestBody.max_tokens).toBe(5_120);
+    expect(requestBody.reasoning).toEqual({ effort: "medium", exclude: true });
+    expect(requestBody.reasoning).not.toHaveProperty("max_tokens");
+    expect(result.inferenceProfile).toBe(inferenceProfile);
+    expect(result.attempts[0]?.requestSettings).toMatchObject({
+      inferenceProfile,
+      max_tokens: 5_120,
+      reasoning: requestBody.reasoning,
+    });
     const serialized = JSON.stringify(requestBody);
     expect(serialized).toContain("data:image/png;base64");
     expect(serialized).toContain("chart is the sole source");
@@ -116,8 +127,10 @@ describe("OpenRouterAnalysisModelProvider", () => {
     expect(compactSchema.anyOf[0]?.properties.p.type).toBe("number");
     expect(compactSchema.anyOf[2]?.properties.t.type).toBe("null");
 
-    expect(sentry.spans).toHaveLength(1);
-    const span = sentry.spans[0]!;
+    expect(modelSpans()).toHaveLength(1);
+    expect(queueSpans()).toHaveLength(1);
+    expect(queueSpans()[0]?.statuses).toEqual([{ code: 1 }]);
+    const span = modelSpans()[0]!;
     expect(span.options).toMatchObject({
       name: "chat google/gemini-2.5-pro",
       op: "gen_ai.chat",
@@ -126,13 +139,14 @@ describe("OpenRouterAnalysisModelProvider", () => {
         "gen_ai.request.model": "google/gemini-2.5-pro",
         "specialstock.analysis.phase": "compact",
         "specialstock.analysis.usage_class": usageClass,
-        "specialstock.inference.profile": "compact-quality-v2",
-        "specialstock.request.thinking_budget_tokens": 2_048,
+        "specialstock.inference.profile": inferenceProfile,
         "specialstock.request.reasoning_excluded": true,
         "specialstock.provider.timeout_ms": 90_000,
-        "gen_ai.request.max_tokens": 2_560,
+        "gen_ai.request.max_tokens": 5_120,
       },
     });
+    expect(span.attributes["gen_ai.request.reasoning.level"]).toBe("medium");
+    expect(span.attributes["specialstock.request.thinking_budget_tokens"]).toBeUndefined();
     const telemetryInput = String(span.attributes["gen_ai.input.messages"]);
     expect(telemetryInput).not.toContain("chart is the sole source");
     const telemetryMessages = JSON.parse(telemetryInput) as Array<{
@@ -156,7 +170,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     );
   });
 
-  it("limits overlapping scheduled and manual compact provider attempts to ten", async () => {
+  it("admits 16 scheduled and manual compact attempts in one wave and queues the 17th", async () => {
     const resolvers: Array<(response: Response) => void> = [];
     let active = 0;
     let peak = 0;
@@ -175,23 +189,62 @@ describe("OpenRouterAnalysisModelProvider", () => {
       choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 100, cost: 0.01 },
     });
-    const calls = Array.from({ length: 12 }, (_, index) =>
+    const calls = Array.from({ length: 17 }, (_, index) =>
       new OpenRouterAnalysisModelProvider().analyze({
         frozen, png: Buffer.from(`png-${index}`), model: "google/gemini-2.5-pro",
         phase: "compact", usageClass: index % 2 ? "manual_compact" : "routine_compact", maxAttempts: 1,
       }),
     );
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(10));
-    expect(peak).toBe(10);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
+    expect(peak).toBe(16);
+    expect(queueSpans()).toHaveLength(17);
+    expect(fetchMock).toHaveBeenCalledTimes(16);
     resolvers.shift()?.(response());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(11));
-    resolvers.shift()?.(response());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(12));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(17));
     resolvers.splice(0).forEach((resolve) => resolve(response()));
     const results = await Promise.all(calls);
-    expect(results.every((result) => result.inferenceProfile === "compact-quality-v2")).toBe(true);
-    expect(peak).toBe(10);
+    expect(results.every((result, index) => result.inferenceProfile ===
+      (index % 2 ? "compact-manual-medium-v1" : "compact-auto-medium-v1"))).toBe(true);
+    expect(peak).toBe(16);
+    expect(queueSpans().every((span) => span.statuses[0]?.code === 1)).toBe(true);
+  });
+
+  it("releases a failed attempt before its retry so another queued scan can enter", async () => {
+    const resolvers: Array<(response: Response) => void> = [];
+    let active = 0;
+    let peak = 0;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      resolvers.push((response) => { active -= 1; resolve(response); });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = () => Response.json({
+      model: "google/gemini-2.5-pro", provider: "google",
+      choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 100, completion_tokens: 100, cost: 0.01 },
+    });
+    const calls = Array.from({ length: 17 }, (_, index) =>
+      new OpenRouterAnalysisModelProvider().analyze({
+        frozen, png: Buffer.from(`png-${index}`), model: "google/gemini-2.5-pro",
+        phase: "compact", usageClass: "manual_compact", maxAttempts: index === 0 ? 2 : 1,
+      }),
+    );
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
+    resolvers.shift()?.(Response.json({ error: "upstream unavailable" }, { status: 504 }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(17));
+    expect(peak).toBe(16);
+    resolvers.splice(0).forEach((resolve) => resolve(response()));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(18), { timeout: 4_000 });
+    resolvers.shift()?.(response());
+    const results = await Promise.all(calls);
+    expect(results[0]?.attempts).toMatchObject([
+      { failureKind: "http_transient" }, { status: "valid" },
+    ]);
+    expect(peak).toBe(16);
+    expect(queueSpans()).toHaveLength(18);
   });
 
   it.each([0, 1_800])("retains %i reasoning tokens in audit usage and telemetry without retaining reasoning text", async (reasoningTokens) => {
@@ -216,15 +269,15 @@ describe("OpenRouterAnalysisModelProvider", () => {
       reasoningTokens,
       failureKind: null,
       requestSettings: {
-        inferenceProfile: "compact-quality-v2",
-        max_tokens: 2_560,
+        inferenceProfile: "compact-manual-medium-v1",
+        max_tokens: 5_120,
         provider_timeout_ms: 90_000,
-        reasoning: { max_tokens: 2_048, exclude: true },
+        reasoning: { effort: "medium", exclude: true },
       },
     });
     expect(result.outputTokens).toBe(reasoningTokens + 80);
     expect(result.costUsd).toBe(0.025);
-    expect(sentry.spans[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(reasoningTokens);
+    expect(modelSpans()[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(reasoningTokens);
     expect(sentry.info).toHaveBeenCalledWith("Gemini visual analysis completed", expect.objectContaining({ reasoning_tokens: reasoningTokens }));
     expect(JSON.stringify([result.rawResponse, sentry.spans, sentry.info.mock.calls])).not.toContain("private thinking");
   });
@@ -258,7 +311,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       model: "google/gemini-2.5-pro",
       provider: "google",
       choices: [{ message: { content: "{" }, finish_reason: "length" }],
-      usage: { prompt_tokens: 1_200, completion_tokens: 2_560, cost: 0.05, completion_tokens_details: { reasoning_tokens: 2_048 } },
+      usage: { prompt_tokens: 1_200, completion_tokens: 5_120, cost: 0.05, completion_tokens_details: { reasoning_tokens: 2_560 } },
     }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -274,8 +327,8 @@ describe("OpenRouterAnalysisModelProvider", () => {
       metadata: { status: "invalid", requestedModel: "google/gemini-2.5-pro", attempts: [{ failureKind: "token_limit" }] },
     });
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(sentry.spans[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(2_048);
-    expect(sentry.warn).toHaveBeenCalledWith("Gemini visual analysis failed", expect.objectContaining({ reasoning_tokens: 2_048, failure_kind: "token_limit" }));
+    expect(modelSpans()[0]?.attributes["gen_ai.usage.reasoning_tokens"]).toBe(2_560);
+    expect(sentry.warn).toHaveBeenCalledWith("Gemini visual analysis failed", expect.objectContaining({ reasoning_tokens: 2_560, failure_kind: "token_limit" }));
   });
 
   it("recovers when an automatic attempt returns an empty response", async () => {
@@ -303,18 +356,19 @@ describe("OpenRouterAnalysisModelProvider", () => {
     })).resolves.toMatchObject({ analysis, costUsd: 0.12, attempts: [{ status: "invalid", failureKind: "empty_response" }, { status: "valid", failureKind: null }] });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     for (const [, init] of fetchMock.mock.calls) {
-      expect(JSON.parse(String(init.body))).toMatchObject({ max_tokens: 2_560, reasoning: { max_tokens: 2_048, exclude: true } });
+      expect(JSON.parse(String(init.body))).toMatchObject({ max_tokens: 5_120, reasoning: { effort: "medium", exclude: true } });
     }
-    expect(sentry.spans).toHaveLength(2);
-    expect(sentry.spans[0]?.attributes).toMatchObject({
+    expect(modelSpans()).toHaveLength(2);
+    expect(queueSpans()).toHaveLength(2);
+    expect(modelSpans()[0]?.attributes).toMatchObject({
       "specialstock.analysis.status": "invalid",
       "specialstock.analysis.will_retry": true,
       "specialstock.analysis.retry_outcome": "retrying",
       "specialstock.cost.estimated": true,
       "specialstock.cost.source": "estimated",
     });
-    expect(sentry.spans[0]?.statuses[0]).toMatchObject({ code: 2 });
-    expect(sentry.spans[1]?.attributes).toMatchObject({
+    expect(modelSpans()[0]?.statuses[0]).toMatchObject({ code: 2 });
+    expect(modelSpans()[1]?.attributes).toMatchObject({
       "specialstock.analysis.status": "valid",
       "specialstock.analysis.will_retry": false,
       "specialstock.analysis.retry_outcome": "terminal",
@@ -327,6 +381,33 @@ describe("OpenRouterAnalysisModelProvider", () => {
       "Gemini visual analysis completed",
       expect.objectContaining({ usage_class: "routine_compact", attempt: 2 }),
     );
+  });
+
+  it("backs off a transient 504 before the second attempt and records the recovered failure", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const callsAt: number[] = [];
+    const fetchMock = vi.fn(async () => {
+      callsAt.push(performance.now());
+      return callsAt.length === 1
+        ? Response.json({ error: "upstream unavailable" }, { status: 504 })
+        : Response.json({
+          model: "google/gemini-2.5-pro", provider: "google",
+          choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
+        });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new OpenRouterAnalysisModelProvider().analyze({
+      frozen, png: Buffer.from("png"), model: "google/gemini-2.5-pro",
+      phase: "compact", usageClass: "manual_compact", maxAttempts: 2,
+    });
+    random.mockRestore();
+    expect(callsAt[1]! - callsAt[0]!).toBeGreaterThanOrEqual(1_990);
+    expect(result.attempts).toMatchObject([
+      { failureKind: "http_transient", status: "failed" }, { status: "valid" },
+    ]);
+    expect(sentry.warn).toHaveBeenCalledWith("Gemini visual analysis failed", expect.objectContaining({
+      failure_kind: "http_transient", will_retry: true,
+    }));
   });
 
   it("retries a zero-token provider finish error with a precise classification", async () => {
@@ -396,8 +477,8 @@ describe("OpenRouterAnalysisModelProvider", () => {
     }>;
     expect(secondMessages[0]?.content[0]?.text).toContain("Retry correction:");
     expect(secondMessages[0]?.content[0]?.text).toContain("directional analysis requires observed price");
-    expect(String(sentry.spans[1]?.attributes["gen_ai.input.messages"])).not.toContain("Retry correction:");
-    expect(sentry.spans[0]?.attributes["gen_ai.output.messages"]).toBeUndefined();
+    expect(String(modelSpans()[1]?.attributes["gen_ai.input.messages"])).not.toContain("Retry correction:");
+    expect(modelSpans()[0]?.attributes["gen_ai.output.messages"]).toBeUndefined();
     expect(JSON.stringify(sentry.spans)).not.toContain("test-openrouter-key");
     expect(JSON.stringify(sentry.spans)).not.toContain("data:image/png;base64");
   });
@@ -422,7 +503,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(sentry.spans[0]?.attributes).toMatchObject({
+    expect(modelSpans()[0]?.attributes).toMatchObject({
       "gen_ai.response.id": "generation-id",
       "gen_ai.usage.input_tokens": 321,
       "gen_ai.usage.output_tokens": 123,

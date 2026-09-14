@@ -7,8 +7,8 @@ import { z } from "zod";
 import { AnalysisModelError, type AnalysisModelProvider } from "@/analysis/provider";
 import { compactProviderLimiter } from "@/analysis/compact-limiter";
 import {
-  COMPACT_INFERENCE_PROFILE,
   FULL_INFERENCE_PROFILE,
+  compactInferenceProfileFor,
 } from "@/analysis/inference-profiles";
 import { buildCompactAnalysisPrompt, buildFullAnalysisPrompt, COMPACT_PROMPT_VERSION, FULL_PROMPT_VERSION } from "@/analysis/prompt";
 import {
@@ -103,13 +103,14 @@ function retryableStatus(status: number) {
   return status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
-function retryDelay(response: Response | null) {
+function retryDelay(response: Response | null, failure: ModelFailureKind) {
   const header = response?.headers.get("retry-after");
-  if (!header) return 300;
+  const base = failure === "http_transient" ? 2_000 + Math.floor(Math.random() * 1_000) : 300;
+  if (!header) return base;
   const seconds = Number(header);
-  if (Number.isFinite(seconds)) return Math.min(10_000, Math.max(0, seconds * 1_000));
+  if (Number.isFinite(seconds)) return Math.min(10_000, Math.max(base, seconds * 1_000));
   const date = Date.parse(header);
-  return Number.isFinite(date) ? Math.min(10_000, Math.max(0, date - Date.now())) : 300;
+  return Number.isFinite(date) ? Math.min(10_000, Math.max(base, date - Date.now())) : base;
 }
 
 async function reconcileUsage(apiKey: string, responseId: string) {
@@ -293,11 +294,13 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
     const prompt = compact
       ? buildCompactAnalysisPrompt(frozen, promptRevision?.instructions)
       : buildFullAnalysisPrompt(frozen, lockedSignal, promptRevision?.instructions);
-    const profile = compact ? COMPACT_INFERENCE_PROFILE : FULL_INFERENCE_PROFILE;
+    const profile = compact ? compactInferenceProfileFor(usageClass === "routine_compact" ? "routine_compact" : "manual_compact") : FULL_INFERENCE_PROFILE;
     const { temperature, maxTokens, providerTimeoutMs } = profile.settings;
-    const reasoning = compact
-      ? { max_tokens: COMPACT_INFERENCE_PROFILE.settings.reasoning.maxTokens, exclude: true }
-      : { effort: FULL_INFERENCE_PROFILE.settings.reasoning.effort };
+    const reasoningSettings = profile.settings.reasoning;
+    const reasoning = {
+      effort: reasoningSettings.effort,
+      ...("exclude" in reasoningSettings && reasoningSettings.exclude ? { exclude: true } : {}),
+    };
     const requestSettings: Record<string, unknown> = {
       inferenceProfile: profile.id,
       model,
@@ -347,13 +350,27 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
         "specialstock.prompt.sha256": promptHash,
         "specialstock.prompt.byte_length": Buffer.byteLength(attemptPrompt),
       };
-      if (compact) {
-        spanAttributes["specialstock.request.thinking_budget_tokens"] = COMPACT_INFERENCE_PROFILE.settings.reasoning.maxTokens;
-        spanAttributes["specialstock.request.reasoning_excluded"] = true;
-      } else {
-        spanAttributes["gen_ai.request.reasoning.level"] = "low";
-      }
-      const lease = compact ? await compactProviderLimiter.acquire() : null;
+      spanAttributes["gen_ai.request.reasoning.level"] = reasoningSettings.effort;
+      if (compact) spanAttributes["specialstock.request.reasoning_excluded"] = true;
+      const lease = compact ? await Sentry.startSpan(
+        {
+          name: "Wait for compact provider capacity",
+          op: "specialstock.provider.queue",
+          attributes: {
+            "specialstock.symbol": frozen.symbol,
+            "specialstock.analysis.phase": phase,
+            "specialstock.analysis.usage_class": usageClass,
+            "specialstock.analysis.attempt": index + 1,
+          },
+        },
+        async (queueSpan) => {
+          const acquired = await compactProviderLimiter.acquire();
+          queueSpan.setAttribute("specialstock.provider.queue_wait_ms", acquired.queueWaitMs);
+          queueSpan.setAttribute("specialstock.provider.active_attempts", acquired.activeCount);
+          queueSpan.setStatus({ code: 1 });
+          return acquired;
+        },
+      ) : null;
       const queueWaitMs = lease?.queueWaitMs ?? 0;
       spanAttributes["specialstock.inference.profile"] = profile.id;
       spanAttributes["specialstock.provider.timeout_ms"] = providerTimeoutMs;
@@ -428,6 +445,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             const usage = await resolveUsage(apiKey, raw);
             const classifiedFailure = failureKind({ error, response, raw, providerResponse });
             const willRetry = classifiedFailure !== "timeout" && classifiedFailure !== "token_limit" && shouldRetry && index + 1 < maxAttempts;
+            const retryAfterMs = willRetry ? retryDelay(response, classifiedFailure) : 0;
             const attempt: ModelAttemptResult = {
               attemptNumber: index + 1, responseId: raw?.id ?? null,
               status: timedOut ? "timed_out" : raw || providerResponse !== null ? "invalid" : "failed",
@@ -440,6 +458,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               rawResponse: withoutReasoningText(providerResponse ?? raw), promptSnapshot: attemptPrompt, promptHash,
             };
             setAttemptSpanAttributes(span, raw, attempt, willRetry);
+            if (willRetry) span.setAttribute("specialstock.analysis.retry_delay_ms", retryAfterMs);
             span.setStatus({ code: 2, message: timedOut ? "provider_timeout" : response && !response.ok ? `provider_http_${response.status}` : "provider_response_invalid" });
             Sentry.logger.warn("Gemini visual analysis failed", {
               ...usageLogAttributes({
@@ -447,6 +466,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
                 attempt, raw, model, willRetry,
               }),
               error_type: classifiedFailure,
+              retry_delay_ms: retryAfterMs,
             });
             nextCorrection = response?.ok ? correctivePrompt(error) : null;
             return {
@@ -454,7 +474,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               error,
               attempt,
               willRetry,
-              retryAfterMs: retryDelay(response),
+              retryAfterMs,
             };
           } finally {
             clearTimeout(timeout);

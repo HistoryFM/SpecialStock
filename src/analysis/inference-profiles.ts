@@ -2,22 +2,32 @@ export type InferenceRequestSettings = {
   temperature: number;
   maxTokens: number;
   providerTimeoutMs: number;
-  reasoning:
-    | { mode: "max_tokens"; maxTokens: number; exclude: true }
-    | { mode: "effort"; effort: "low" };
+  reasoning: { mode: "effort"; effort: "low" | "medium"; exclude?: true };
 };
 
+const MEDIUM_COMPACT_SETTINGS = {
+  temperature: 0.1,
+  maxTokens: 5_120,
+  providerTimeoutMs: 90_000,
+  reasoning: { mode: "effort", effort: "medium", exclude: true },
+} as const satisfies InferenceRequestSettings;
+
 export const COMPACT_INFERENCE_PROFILE = {
-  id: "compact-quality-v2",
-  settings: {
-    temperature: 0.1,
-    maxTokens: 2_560,
-    providerTimeoutMs: 90_000,
-    reasoning: { mode: "max_tokens", maxTokens: 2_048, exclude: true },
-  } satisfies InferenceRequestSettings,
+  id: "compact-manual-medium-v1",
+  settings: MEDIUM_COMPACT_SETTINGS,
   estimatedCostUsd: 0.06,
-  concurrencyLimit: 10,
+  concurrencyLimit: 16,
 } as const;
+
+export const AUTO_COMPACT_INFERENCE_PROFILE = {
+  id: "compact-auto-medium-v1",
+  settings: MEDIUM_COMPACT_SETTINGS,
+  estimatedCostUsd: COMPACT_INFERENCE_PROFILE.estimatedCostUsd,
+} as const;
+
+export function compactInferenceProfileFor(usageClass: "routine_compact" | "manual_compact") {
+  return usageClass === "routine_compact" ? AUTO_COMPACT_INFERENCE_PROFILE : COMPACT_INFERENCE_PROFILE;
+}
 
 export const FULL_INFERENCE_PROFILE = {
   id: "full-low-v1",
