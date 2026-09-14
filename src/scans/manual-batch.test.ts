@@ -115,10 +115,10 @@ describe("manual scan batch", () => {
     }));
   });
 
-  it("settles 16 jobs in one mocked chart-plus-model interval", async () => {
+  it("settles 20 jobs in one mocked chart-plus-model interval", async () => {
     vi.useFakeTimers();
     try {
-      const symbols = DEFAULT_WATCHLIST.slice(0, 16).map((entry) => entry.symbol);
+      const symbols = DEFAULT_WATCHLIST.slice(0, 20).map((entry) => entry.symbol);
       let chartFinished = 0;
       let modelFinished = 0;
       mocks.runScan.mockImplementation(async ({ symbol }: { symbol: string }) => {
@@ -136,15 +136,15 @@ describe("manual scan batch", () => {
       }).then((result) => { settled = true; return result; });
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(mocks.runScan).toHaveBeenCalledTimes(16);
+      expect(mocks.runScan).toHaveBeenCalledTimes(20);
       await vi.advanceTimersByTimeAsync(20);
-      expect(chartFinished).toBe(16);
+      expect(chartFinished).toBe(20);
       expect(modelFinished).toBe(0);
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(40);
       const result = await pending;
-      expect(modelFinished).toBe(16);
-      expect(result.counts).toEqual({ completed: 16, reused: 0, alreadyRunning: 0, failed: 0 });
+      expect(modelFinished).toBe(20);
+      expect(result.counts).toEqual({ completed: 20, reused: 0, alreadyRunning: 0, failed: 0 });
       expect(settled).toBe(true);
     } finally {
       vi.useRealTimers();

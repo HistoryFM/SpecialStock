@@ -16,7 +16,7 @@ export const COMPACT_INFERENCE_PROFILE = {
   id: "compact-manual-medium-v1",
   settings: MEDIUM_COMPACT_SETTINGS,
   estimatedCostUsd: 0.06,
-  concurrencyLimit: 16,
+  concurrencyLimit: 20,
 } as const;
 
 export const AUTO_COMPACT_INFERENCE_PROFILE = {
