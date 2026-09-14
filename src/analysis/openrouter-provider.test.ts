@@ -170,7 +170,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     );
   });
 
-  it("admits 16 scheduled and manual compact attempts in one wave and queues the 17th", async () => {
+  it("admits 20 scheduled and manual compact attempts in one wave and queues the 21st", async () => {
     const resolvers: Array<(response: Response) => void> = [];
     let active = 0;
     let peak = 0;
@@ -189,24 +189,24 @@ describe("OpenRouterAnalysisModelProvider", () => {
       choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 100, cost: 0.01 },
     });
-    const calls = Array.from({ length: 17 }, (_, index) =>
+    const calls = Array.from({ length: 21 }, (_, index) =>
       new OpenRouterAnalysisModelProvider().analyze({
         frozen, png: Buffer.from(`png-${index}`), model: "google/gemini-2.5-pro",
         phase: "compact", usageClass: index % 2 ? "manual_compact" : "routine_compact", maxAttempts: 1,
       }),
     );
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
-    expect(peak).toBe(16);
-    expect(queueSpans()).toHaveLength(17);
-    expect(fetchMock).toHaveBeenCalledTimes(16);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(20));
+    expect(peak).toBe(20);
+    expect(queueSpans()).toHaveLength(21);
+    expect(fetchMock).toHaveBeenCalledTimes(20);
     resolvers.shift()?.(response());
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(17));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(21));
     resolvers.splice(0).forEach((resolve) => resolve(response()));
     const results = await Promise.all(calls);
     expect(results.every((result, index) => result.inferenceProfile ===
       (index % 2 ? "compact-manual-medium-v1" : "compact-auto-medium-v1"))).toBe(true);
-    expect(peak).toBe(16);
+    expect(peak).toBe(20);
     expect(queueSpans().every((span) => span.statuses[0]?.code === 1)).toBe(true);
   });
 
@@ -225,26 +225,26 @@ describe("OpenRouterAnalysisModelProvider", () => {
       choices: [{ message: { content: JSON.stringify(wireAnalysis) }, finish_reason: "stop" }],
       usage: { prompt_tokens: 100, completion_tokens: 100, cost: 0.01 },
     });
-    const calls = Array.from({ length: 17 }, (_, index) =>
+    const calls = Array.from({ length: 21 }, (_, index) =>
       new OpenRouterAnalysisModelProvider().analyze({
         frozen, png: Buffer.from(`png-${index}`), model: "google/gemini-2.5-pro",
         phase: "compact", usageClass: "manual_compact", maxAttempts: index === 0 ? 2 : 1,
       }),
     );
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(20));
     resolvers.shift()?.(Response.json({ error: "upstream unavailable" }, { status: 504 }));
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(17));
-    expect(peak).toBe(16);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(21));
+    expect(peak).toBe(20);
     resolvers.splice(0).forEach((resolve) => resolve(response()));
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(18), { timeout: 4_000 });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(22), { timeout: 4_000 });
     resolvers.shift()?.(response());
     const results = await Promise.all(calls);
     expect(results[0]?.attempts).toMatchObject([
       { failureKind: "http_transient" }, { status: "valid" },
     ]);
-    expect(peak).toBe(16);
-    expect(queueSpans()).toHaveLength(18);
+    expect(peak).toBe(20);
+    expect(queueSpans()).toHaveLength(22);
   });
 
   it.each([0, 1_800])("retains %i reasoning tokens in audit usage and telemetry without retaining reasoning text", async (reasoningTokens) => {
