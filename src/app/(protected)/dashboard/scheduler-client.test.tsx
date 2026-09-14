@@ -14,12 +14,14 @@ const sentryMocks = vi.hoisted(() => ({
   info: vi.fn(),
   warn: vi.fn(),
   startNewTrace: vi.fn((callback: () => unknown) => callback()),
+  withActiveSpan: vi.fn((_span: unknown, callback: () => unknown) => callback()),
   suppressTracing: vi.fn((callback: () => unknown) => callback()),
   spans: [] as Array<{ options: { op?: string }; setAttributes: ReturnType<typeof vi.fn> }>,
 }));
 vi.mock("@sentry/nextjs", () => ({
   logger: { info: sentryMocks.info, warn: sentryMocks.warn },
   startNewTrace: sentryMocks.startNewTrace,
+  withActiveSpan: sentryMocks.withActiveSpan,
   suppressTracing: sentryMocks.suppressTracing,
   startSpan: vi.fn(async (options, callback) => {
     const span = { setAttribute: vi.fn(), setAttributes: vi.fn(), setStatus: vi.fn() };
@@ -67,6 +69,7 @@ describe("automatic scan scheduler", () => {
     sentryMocks.info.mockReset();
     sentryMocks.warn.mockReset();
     sentryMocks.startNewTrace.mockClear();
+    sentryMocks.withActiveSpan.mockClear();
     sentryMocks.suppressTracing.mockClear();
     sentryMocks.spans.length = 0;
     localStorage.clear();
@@ -293,6 +296,7 @@ describe("automatic scan scheduler", () => {
     ));
 
     expect(sentryMocks.startNewTrace).toHaveBeenCalledTimes(3);
+    expect(sentryMocks.withActiveSpan).toHaveBeenCalledTimes(2);
     expect(sentryMocks.spans.map(({ options }) => options.op)).toEqual(expect.arrayContaining([
       "specialstock.scan.manual_batch.request",
       "specialstock.scan.manual_batch.request",

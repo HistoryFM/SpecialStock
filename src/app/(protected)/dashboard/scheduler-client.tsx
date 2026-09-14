@@ -129,7 +129,8 @@ export function SchedulerClient({
           if (!response.ok || !payload.counts || !payload.results) {
             throw new Error(payload.error ?? "Manual batch failed.");
           }
-          const completed = payload.counts.completed + payload.counts.reused;
+          const counts = payload.counts;
+          const completed = counts.completed + counts.reused;
           span.setAttributes({
             "specialstock.scan.batch_completed": payload.counts.completed,
             "specialstock.scan.batch_reused": payload.counts.reused,
@@ -138,15 +139,15 @@ export function SchedulerClient({
             "specialstock.scan.duration_ms": Math.round(performance.now() - started),
           });
           span.setStatus({ code: 1 });
-          Sentry.logger.info("scan.manual_batch.client_completed", {
+          Sentry.withActiveSpan(span, () => Sentry.logger.info("scan.manual_batch.client_completed", {
             "specialstock.telemetry.origin": "client",
             "specialstock.scan.request_id": requestId,
-            "specialstock.scan.batch_completed": payload.counts.completed,
-            "specialstock.scan.batch_reused": payload.counts.reused,
-            "specialstock.scan.batch_running": payload.counts.alreadyRunning,
-            "specialstock.scan.batch_failed": payload.counts.failed,
+            "specialstock.scan.batch_completed": counts.completed,
+            "specialstock.scan.batch_reused": counts.reused,
+            "specialstock.scan.batch_running": counts.alreadyRunning,
+            "specialstock.scan.batch_failed": counts.failed,
             "specialstock.scan.duration_ms": Math.round(performance.now() - started),
-          });
+          }));
           setMessage(
             `Manual batch settled · ${completed} completed${payload.counts.alreadyRunning ? ` · ${payload.counts.alreadyRunning} already running` : ""}${payload.counts.failed ? ` · ${payload.counts.failed} failed` : ""}.`,
           );
@@ -160,13 +161,13 @@ export function SchedulerClient({
             "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
           });
           span.setStatus({ code: 2, message: message.slice(0, 200) });
-          Sentry.logger.warn("scan.manual_batch.client_failed", {
+          Sentry.withActiveSpan(span, () => Sentry.logger.warn("scan.manual_batch.client_failed", {
             "specialstock.telemetry.origin": "client",
             "specialstock.scan.request_id": requestId,
             "specialstock.scan.batch_size": runs.length,
             "specialstock.scan.duration_ms": Math.round(performance.now() - started),
             "error.type": error instanceof Error ? error.constructor.name : "UnknownError",
-          });
+          }));
           setMessage(message);
           return null;
         } finally {
