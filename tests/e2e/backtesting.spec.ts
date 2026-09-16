@@ -101,8 +101,10 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(savedCard).toContainText("Max drawdown:");
   await savedCard.getByRole("button", { name: "Reuse strategy" }).click();
   await expect(page.getByText("Saved strategy loaded as a new draft. The original run is unchanged.")).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept("Reusable momentum run"));
   await savedCard.getByRole("button", { name: "Rename" }).click();
+  const renameDialog = savedCard.getByRole("dialog", { name: "Rename saved run" });
+  await renameDialog.getByRole("textbox", { name: "Saved run name" }).fill("Reusable momentum run");
+  await renameDialog.getByRole("button", { name: "Save name" }).click();
   await expect(page.locator(".bt-saved-run").filter({ hasText: "Reusable momentum run" })).toBeVisible();
 
   const legacy = { longTicker: "TQQQ", comparisons: [], mode: "cash", startingCapital: 1000, cashRate: 0, slippage: 0, fee: 0,
@@ -115,7 +117,9 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   const legacyCard = page.locator(".bt-saved-run").filter({ hasText: "v1" });
   await legacyCard.locator(".bt-saved-run-open").click();
   await expect(page.getByRole("region", { name: "Backtest report" }).locator(".bt-report-rules")).toContainText("200-day SMA");
-  page.once("dialog", (dialog) => dialog.accept());
   await legacyCard.getByRole("button", { name: "Delete" }).click();
+  const deleteDialog = legacyCard.getByRole("alertdialog", { name: "Delete saved run" });
+  await expect(deleteDialog).toContainText("Imported CSV files will be kept.");
+  await deleteDialog.getByRole("button", { name: "Delete saved run" }).click();
   await expect(page.locator(".bt-saved-run").filter({ hasText: "v1" })).toHaveCount(0);
 });

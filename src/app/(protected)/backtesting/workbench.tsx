@@ -7,6 +7,7 @@ import { backtestModels, describePredicate, type BacktestModel, type BacktestTim
 import { defaultReportConfig, describeAllocations, describeCondition, isPlannedRun, type AnyRun, type PlannedRun, type ReportConfig, type StrategyPlan } from "@/backtesting/plan";
 
 type RunSummary = { id: string; name: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number };
+type SavedRunAction = { id: string; kind: "rename" | "delete" };
 const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 function activeIndicatorSettings(strategy: Strategy): string[] {
@@ -120,6 +121,8 @@ export function BacktestingWorkbench() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [savedRunAction, setSavedRunAction] = useState<SavedRunAction | null>(null);
+  const [savedRunName, setSavedRunName] = useState("");
   const reportRef = useRef<HTMLElement>(null);
   const strategyRef = useRef<HTMLElement>(null);
 
@@ -201,17 +204,18 @@ export function BacktestingWorkbench() {
   }
 
   async function renameSaved(item: RunSummary) {
-    const name = window.prompt("Name this saved run", item.name)?.trim(); if (!name || name === item.name) return;
-    setError("");
-    try { await trackedRequest("rename", { "specialstock.backtesting.run_id": item.id }, async () => jsonResponse(await fetch(`/api/backtesting/runs/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }))); await refresh(); if (run?.id === item.id) setRun({ ...run, name }); }
+    const name = savedRunName.trim(); if (!name || name === item.name) { setSavedRunAction(null); return; }
+    setError(""); setNotice(""); setBusy("Renaming saved run");
+    try { await trackedRequest("rename", { "specialstock.backtesting.run_id": item.id }, async () => jsonResponse(await fetch(`/api/backtesting/runs/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }))); await refresh(); if (run?.id === item.id) setRun({ ...run, name }); setSavedRunAction(null); setNotice("Saved run renamed."); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not rename run."); }
+    finally { setBusy(""); }
   }
 
   async function removeSaved(item: RunSummary) {
-    if (!window.confirm(`Delete “${item.name}”? Imported CSV files will be kept.`)) return;
-    setError("");
-    try { await trackedRequest("delete", { "specialstock.backtesting.run_id": item.id }, async () => { const response = await fetch(`/api/backtesting/runs/${item.id}`, { method: "DELETE" }); if (!response.ok) await jsonResponse(response); }); if (run?.id === item.id) setRun(null); await refresh(); setNotice("Saved run deleted. Imported CSV files were kept."); }
+    setError(""); setNotice(""); setBusy("Deleting saved run");
+    try { await trackedRequest("delete", { "specialstock.backtesting.run_id": item.id }, async () => { const response = await fetch(`/api/backtesting/runs/${item.id}`, { method: "DELETE" }); if (!response.ok) await jsonResponse(response); }); if (run?.id === item.id) setRun(null); await refresh(); setSavedRunAction(null); setNotice("Saved run deleted. Imported CSV files were kept."); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not delete run."); }
+    finally { setBusy(""); }
   }
 
   async function sendResultChat() {
@@ -278,7 +282,10 @@ export function BacktestingWorkbench() {
 
       {(busy || error || notice) && <div className="bt-feedback" role="status">{busy && <p>Working: {busy}…</p>}{error && <p className="form-error">{error}</p>}{notice && <p className="form-success">{notice}</p>}</div>}
 
-      {runs.length > 0 && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Open results, reuse a strategy, rename it, or remove an old run.</p></div><div className="bt-run-list" data-sentry-mask>{runs.map((item) => <article key={item.id} className={`bt-saved-run ${run?.id === item.id ? "bt-saved-run-selected" : ""}`}><button className="bt-saved-run-open" type="button" onClick={() => openRun(item.id)}><strong>{item.name}</strong><span>{item.longTicker} · {item.timeframe} · {item.startDate}–{item.endDate} · v{item.engineVersion}</span><span>Final strategy value: <b>{money(item.finalValue)}</b> · Max drawdown: <b className="bt-negative">{pct(item.maxDrawdown)}</b></span><small>{new Date(item.createdAt).toLocaleString()}</small></button><div className="bt-saved-run-actions"><button type="button" className="secondary-button" onClick={() => reuseRun(item.id)}>Reuse strategy</button><button type="button" className="secondary-button" onClick={() => renameSaved(item)}>Rename</button><button type="button" className="secondary-button danger-button" onClick={() => removeSaved(item)}>Delete</button></div></article>)}</div></section>}
+      {runs.length > 0 && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Open results, reuse a strategy, rename it, or remove an old run.</p></div><div className="bt-run-list" data-sentry-mask>{runs.map((item) => <article key={item.id} className={`bt-saved-run ${run?.id === item.id ? "bt-saved-run-selected" : ""}`}><button className="bt-saved-run-open" type="button" onClick={() => openRun(item.id)}><strong>{item.name}</strong><span>{item.longTicker} · {item.timeframe} · {item.startDate}–{item.endDate} · v{item.engineVersion}</span><span>Final strategy value: <b>{money(item.finalValue)}</b> · Max drawdown: <b className="bt-negative">{pct(item.maxDrawdown)}</b></span><small>{new Date(item.createdAt).toLocaleString()}</small></button><div className="bt-saved-run-actions"><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => reuseRun(item.id)}>Reuse strategy</button><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "rename" }); setSavedRunName(item.name); setError(""); }}>Rename</button><button type="button" className="secondary-button danger-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "delete" }); setError(""); }}>Delete</button></div>
+        {savedRunAction?.id === item.id && savedRunAction.kind === "rename" && <form className="bt-saved-run-dialog" role="dialog" aria-label="Rename saved run" onSubmit={(event) => { event.preventDefault(); void renameSaved(item); }}><label>Saved run name<input autoFocus value={savedRunName} onChange={(event) => setSavedRunName(event.target.value)} maxLength={80} required /></label><div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => setSavedRunAction(null)}>Cancel</button><button className="primary-button" type="submit" disabled={Boolean(busy) || !savedRunName.trim()}>Save name</button></div></form>}
+        {savedRunAction?.id === item.id && savedRunAction.kind === "delete" && <div className="bt-saved-run-dialog" role="alertdialog" aria-label="Delete saved run"><strong>Delete “{item.name}”?</strong><p>Its stored results and conversations will be removed. Imported CSV files will be kept.</p><div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => setSavedRunAction(null)}>Cancel</button><button className="secondary-button danger-button" type="button" disabled={Boolean(busy)} onClick={() => void removeSaved(item)}>Delete saved run</button></div></div>}
+      </article>)}</div></section>}
 
       {run && config && <section ref={reportRef} className="bt-panel bt-report" aria-label="Backtest report" data-sentry-mask tabIndex={-1}><div className="bt-section-head"><div><h2>{run.name ?? "Price-return report"}</h2><p>{run.result.startDate} to {run.result.endDate} · {isPlannedRun(run) ? run.plan.settings.timeframe ?? "daily" : run.input.timeframe ?? "daily"} · {backtestModels.find((item) => item.id === run.input.model)?.label} · engine v{isPlannedRun(run) ? run.engineVersion : 1}</p></div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={analyze}>Analyze with selected AI</button></div>
         <div className="bt-report-rules" data-sentry-mask><strong>Rules used for this run</strong>{isPlannedRun(run) ? <><p>{run.plan.transitions.map((item) => `${item.from} → ${item.to}: ${describeCondition(item.when, run.plan.settings.timeframe ?? "daily")}`).join(" · ")}</p><p>{run.plan.states.map((item) => `${item.label}: ${describeAllocations(item.allocations)}`).join(" · ")}</p></> : <><p>Enter: {run.input.strategy.entry.map(describePredicate).join(" AND ")}</p><p>Exit: {run.input.strategy.exit.map(describePredicate).join(" AND ")}</p></>}</div>

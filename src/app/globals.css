@@ -3468,6 +3468,11 @@ h1 {
 .bt-saved-run span, .bt-saved-run small { font-weight: 400; line-height: 1.35; }
 .bt-saved-run-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .bt-saved-run-actions .secondary-button { padding: .45rem .65rem; }
+.bt-saved-run-dialog { display: grid; gap: .7rem; margin-top: .2rem; padding: .75rem; border: 1px solid var(--border-bright); border-radius: .65rem; background: #0b1712; }
+.bt-saved-run-dialog p { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.bt-saved-run-dialog input { min-height: 2.35rem; }
+.bt-saved-run-dialog > div { display: flex; justify-content: flex-end; gap: .45rem; }
+.bt-saved-run-dialog .primary-button, .bt-saved-run-dialog .secondary-button { padding: .5rem .7rem; font-size: .77rem; }
 .danger-button { color: #ffaaaa; }
 .bt-report-rules { margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--border-bright); border-radius: .75rem; background: var(--surface-soft); }
 .bt-report-rules p { margin: .45rem 0 0; }
@@ -3536,7 +3541,7 @@ h1 {
 .bt-chat-compose .secondary-button { flex: none; }
 @media (max-width: 1050px) { .bt-report-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 850px) { .bt-upload-form { grid-template-columns: 1fr 1fr; } .bt-section-head { display: block; } .bt-section-head p { margin-top: .3rem; } }
-@media (max-width: 550px) { .bt-upload-form, .bt-report-controls { grid-template-columns: 1fr; } .bt-panel { padding: 1rem; } .bt-report-settings-description { display: none; } .bt-report-ai-row, .bt-chat-compose { flex-direction: column; } .bt-report-ai-row .secondary-button, .bt-chat-compose .secondary-button { align-self: stretch; } .bt-chat-turn { max-width: 100%; } }
+@media (max-width: 550px) { .bt-upload-form, .bt-report-controls { grid-template-columns: 1fr; } .bt-panel { padding: 1rem; } .bt-report-settings-description { display: none; } .bt-report-ai-row, .bt-chat-compose { flex-direction: column; } .bt-report-ai-row .secondary-button, .bt-chat-compose .secondary-button { align-self: stretch; } .bt-chat-turn { max-width: 100%; } .bt-saved-run-dialog > div { align-items: stretch; flex-direction: column-reverse; } }
 
 /* Isolated Swing Trade workspace */
 .swing-shell { width: min(94vw, 90rem); }
