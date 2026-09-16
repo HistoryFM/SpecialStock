@@ -7,6 +7,7 @@ export const backtestModels = [
 ] as const;
 export const modelSchema = z.enum(["google/gemini-2.5-pro", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"]);
 export type BacktestModel = z.infer<typeof modelSchema>;
+export type BacktestStrategy = { id: string; name: string; createdAt: string };
 export const timeframeSchema = z.enum(["daily", "weekly"]);
 export type BacktestTimeframe = z.infer<typeof timeframeSchema>;
 
@@ -60,7 +61,7 @@ export type Suggestion = { title: string; reason: string; strategy: Strategy };
 export type Commentary = { model: BacktestModel; summary: string; riskNotes: string[]; suggestions: Suggestion[]; usage: ModelUsage };
 export const conversationTurnSchema = z.object({ id: z.string().uuid(), role: z.enum(["user", "assistant"]), content: z.string().trim().min(1).max(6000), at: z.iso.datetime(), usage: z.unknown().optional() }).strict();
 export type ConversationTurn = { id: string; role: "user" | "assistant"; content: string; at: string; usage?: ModelUsage };
-export type SavedRun = { id: string; createdAt: string; name?: string; input: RunInput; result: RunResult; interpretationUsage?: ModelUsage; commentaries: Commentary[];
+export type SavedRun = { id: string; createdAt: string; name?: string; strategyId?: string; input: RunInput; result: RunResult; interpretationUsage?: ModelUsage; commentaries: Commentary[];
   setupConversation?: ConversationTurn[]; resultConversation?: ConversationTurn[];
   comparison?: { baselineRunId: string; startDate: string; endDate: string; baseline: { annual: AnnualRow[]; drawdowns: Drawdown[]; finalBalance: number }; variant: { annual: AnnualRow[]; drawdowns: Drawdown[]; finalBalance: number } } };
 

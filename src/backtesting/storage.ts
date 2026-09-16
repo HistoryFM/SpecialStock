@@ -6,7 +6,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parsePriceCsv } from "./csv";
-import { describePredicate, type BacktestTimeframe, type PriceFile, type PriceRow } from "./types";
+import { describePredicate, type BacktestStrategy, type BacktestTimeframe, type PriceFile, type PriceRow } from "./types";
 import { describeAllocations, isPlannedRun, type AnyRun } from "./plan";
 
 const e2eDatabase = resolve(process.env.LOCAL_DATABASE_PATH ?? ".data/e2e");
@@ -14,6 +14,11 @@ const isolatedE2e = process.env.SPECIALSTOCK_E2E_ISOLATED === "1" && e2eDatabase
 const root = isolatedE2e ? join(dirname(e2eDatabase), "backtesting") : resolve(process.cwd(), ".data", "backtesting");
 const filesDir = join(root, "files");
 const runsDir = join(root, "runs");
+const strategiesPath = join(root, "strategies.json");
+export const DEFAULT_BACKTEST_STRATEGY_ID = "00000000-0000-4000-8000-000000000001";
+const defaultStrategy: BacktestStrategy = { id: DEFAULT_BACKTEST_STRATEGY_ID, name: "TQQQ-Daily", createdAt: "2026-01-01T00:00:00.000Z" };
+type StrategyRegistry = { version: 1; strategies: BacktestStrategy[] };
+let strategyMutation: Promise<unknown> = Promise.resolve();
 
 async function atomicJson(path: string, value: unknown) {
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -24,6 +29,50 @@ async function atomicJson(path: string, value: unknown) {
 async function listJson(directory: string): Promise<string[]> {
   try { return (await readdir(directory)).filter((name) => name.endsWith(".json")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+}
+
+async function readStrategyRegistry(): Promise<StrategyRegistry> {
+  try {
+    const parsed = JSON.parse(await readFile(strategiesPath, "utf8")) as StrategyRegistry;
+    if (parsed.version !== 1 || !Array.isArray(parsed.strategies) || !parsed.strategies.some((strategy) => strategy.id === DEFAULT_BACKTEST_STRATEGY_ID)) {
+      throw new Error("Backtesting strategy registry is invalid.");
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const registry: StrategyRegistry = { version: 1, strategies: [defaultStrategy] };
+    await mkdir(root, { recursive: true });
+    await atomicJson(strategiesPath, registry);
+    return registry;
+  }
+}
+
+export async function listBacktestStrategies(): Promise<{ strategies: BacktestStrategy[]; defaultStrategyId: string }> {
+  const registry = await readStrategyRegistry();
+  return { strategies: [...registry.strategies].sort((a, b) => a.createdAt.localeCompare(b.createdAt)), defaultStrategyId: DEFAULT_BACKTEST_STRATEGY_ID };
+}
+
+export async function resolveBacktestStrategyId(strategyId?: string): Promise<string> {
+  const id = strategyId ?? DEFAULT_BACKTEST_STRATEGY_ID;
+  const registry = await readStrategyRegistry();
+  if (!registry.strategies.some((strategy) => strategy.id === id)) throw new Error("Backtesting strategy was not found.");
+  return id;
+}
+
+export async function createBacktestStrategy(name: string): Promise<BacktestStrategy> {
+  const normalized = name.trim();
+  if (!normalized || normalized.length > 80) throw new Error("Strategy name must contain 1–80 characters.");
+  const operation = strategyMutation.then(async () => {
+    const registry = await readStrategyRegistry();
+    if (registry.strategies.some((strategy) => strategy.name.toLocaleLowerCase() === normalized.toLocaleLowerCase())) {
+      throw new Error("A strategy with this name already exists.");
+    }
+    const strategy: BacktestStrategy = { id: randomUUID(), name: normalized, createdAt: new Date().toISOString() };
+    await atomicJson(strategiesPath, { ...registry, strategies: [...registry.strategies, strategy] });
+    return strategy;
+  });
+  strategyMutation = operation.then(() => undefined, () => undefined);
+  return operation;
 }
 
 const normalizeFile = (file: Omit<PriceFile, "timeframe"> & { timeframe?: BacktestTimeframe }): PriceFile => ({ ...file, timeframe: file.timeframe ?? "daily" });
@@ -74,15 +123,19 @@ export async function loadPriceFilesById(ids: Record<string, string>): Promise<R
   return output;
 }
 
-export async function listRunSummaries(): Promise<Array<{ id: string; name: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number }>> {
+export async function listRunSummaries(): Promise<Array<{ id: string; name: string; strategyId: string; strategyName: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number }>> {
   const names = await listJson(runsDir);
   const runs = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(runsDir, name), "utf8")) as AnyRun));
+  const registry = await readStrategyRegistry();
+  const strategyNames = new Map(registry.strategies.map((strategy) => [strategy.id, strategy.name]));
   return runs.map((run) => {
     const strategy = run.result.series.find((item) => item.ticker === "Strategy") ?? run.result.series[0];
     const drawdown = run.result.drawdowns.find((item) => item.ticker === "Strategy") ?? run.result.drawdowns[0];
     const timeframe = isPlannedRun(run) ? run.plan.settings.timeframe ?? "daily" : run.input.timeframe ?? "daily";
     const primary = isPlannedRun(run) ? run.plan.states.flatMap((state) => state.allocations.map((item) => item.ticker))[0] ?? "CASH" : run.input.longTicker;
-    const common = { id: run.id, name: run.name ?? `${primary} ${timeframe === "weekly" ? "weekly" : "daily"} strategy`, createdAt: run.createdAt, timeframe,
+    const strategyId = run.strategyId ?? DEFAULT_BACKTEST_STRATEGY_ID;
+    const common = { id: run.id, name: run.name ?? `${primary} ${timeframe === "weekly" ? "weekly" : "daily"} strategy`, strategyId,
+      strategyName: strategyNames.get(strategyId) ?? defaultStrategy.name, createdAt: run.createdAt, timeframe,
       finalValue: strategy.values.at(-1) ?? 0, maxDrawdown: drawdown?.percent ?? 0 };
     return isPlannedRun(run)
     ? { ...common, longTicker: primary, mode: "multi-asset", model: run.input.model,
@@ -95,12 +148,16 @@ export async function listRunSummaries(): Promise<Array<{ id: string; name: stri
 
 export async function saveRun(run: AnyRun): Promise<void> {
   await mkdir(runsDir, { recursive: true });
-  await atomicJson(join(runsDir, `${run.id}.json`), run);
+  const strategyId = await resolveBacktestStrategyId(run.strategyId);
+  await atomicJson(join(runsDir, `${run.id}.json`), { ...run, strategyId });
 }
 
 export async function getRun(id: string): Promise<AnyRun | null> {
   if (!/^[0-9a-f-]{36}$/.test(id)) return null;
-  try { return JSON.parse(await readFile(join(runsDir, `${id}.json`), "utf8")) as AnyRun; }
+  try {
+    const run = JSON.parse(await readFile(join(runsDir, `${id}.json`), "utf8")) as AnyRun;
+    return { ...run, strategyId: await resolveBacktestStrategyId(run.strategyId) };
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
 

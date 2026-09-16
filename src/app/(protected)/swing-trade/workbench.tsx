@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { SWING_WATCHLIST_MAX_ENTRIES } from "@/swing/types";
+
 type Revision = { id: string; revisionNumber: number; instructions: string; instructionsHash: string; templateVersion: string; createdAt: string; active: boolean };
 type Version = { id: string; versionNumber: number; sourceFilename: string; sourceType: string; entryCount: number; createdAt: string; active: boolean };
 type RunSummary = { id: string; mode: string; status: string; sessionDate: string; stage: string; completedCandidates: number; failedCandidates: number; totalCandidates: number; providerCalls: number; costUsd: number | null; createdAt: string; completedAt: string | null };
 type Candidate = { id: string; status: string; stockName: string; symbol: string; exchange: string; direction: "LONG" | "SHORT" | "NO_TRADE" | null; observedPrice: number | null; entryZoneLow: number | null; entryZoneHigh: number | null; stopLoss: number | null; profitTarget1: number | null; profitTarget2: number | null; conviction: string | null; riskReward: number | null; proximityPercent: number | null; visualQuality: string | null; errorMessage: string | null; rejectionReason: string | null; completedAt: string | null };
+type WatchlistCandidate = { stockName: string; symbol: string; exchange: string };
 type RunDetail = RunSummary & { macroResult: null | { regime: string; summary: string; anchors: Record<string, { stance: string; observation: string; visual_quality: string }> }; candidates: Candidate[]; actionableIds: string[]; errorMessage?: string | null };
 type Initial = {
   configuration: { settings: { automaticEnabled: boolean; activeWatchlistVersionId: string | null }; entries: Array<{ stockName: string; symbol: string; exchange: string; position: number }>; versions: Version[] };
@@ -30,6 +33,11 @@ export function SwingTradeWorkbench({ initial }: { initial: Initial }) {
   const [selected, setSelected] = useState<RunDetail | null>(initial.latest);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
+  const [watchlistFile, setWatchlistFile] = useState<File | null>(null);
+  const [watchlistCandidates, setWatchlistCandidates] = useState<WatchlistCandidate[]>([]);
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
+  const [candidateSearch, setCandidateSearch] = useState("");
+  const [uploadKey, setUploadKey] = useState(0);
   const dirty = draft !== active.instructions;
   const running = selected?.status === "running" || selected?.status === "scheduled";
   const selectedId = selected?.id;
@@ -84,17 +92,46 @@ export function SwingTradeWorkbench({ initial }: { initial: Initial }) {
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [draft, phase]);
 
+  async function activateWatchlist(file: File, symbols: string[]) {
+    const form = new FormData(); form.set("file", file); form.set("selectedSymbols", JSON.stringify(symbols));
+    const response = await fetch("/api/swing/watchlists", { method: "POST", body: form });
+    const payload = await response.json() as { error?: string; issues?: string[] };
+    if (!response.ok) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "Watchlist import failed.");
+    await refreshState();
+    setWatchlistFile(null); setWatchlistCandidates([]); setSelectedSymbols([]); setCandidateSearch(""); setUploadKey((value) => value + 1);
+    setMessage("Swing watchlist imported and activated.");
+  }
+
   async function importWatchlist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setPending(true); setMessage("");
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
+    const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/api/swing/watchlists", { method: "POST", body: form });
-      const payload = await response.json() as { error?: string; issues?: string[] };
-      if (!response.ok) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "Watchlist import failed.");
-      await refreshState(); setMessage("Swing watchlist imported and activated."); formElement.reset();
+      const file = form.get("file");
+      if (!(file instanceof File)) throw new Error("Choose a CSV or XLSX watchlist file.");
+      const response = await fetch("/api/swing/watchlists/preview", { method: "POST", body: form });
+      const payload = await response.json() as { candidates?: WatchlistCandidate[]; rowCount?: number; error?: string; issues?: string[] };
+      if (!response.ok || !payload.candidates) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "Watchlist preview failed.");
+      if (payload.candidates.length <= 20) await activateWatchlist(file, payload.candidates.map((candidate) => candidate.symbol));
+      else {
+        setWatchlistFile(file); setWatchlistCandidates(payload.candidates); setSelectedSymbols([]); setCandidateSearch("");
+        setMessage(`${payload.rowCount ?? payload.candidates.length} valid rows found. Choose 1–${SWING_WATCHLIST_MAX_ENTRIES} stocks to activate.`);
+      }
     } catch (error) { setMessage(error instanceof Error ? error.message : "Watchlist import failed."); }
     finally { setPending(false); }
+  }
+
+  async function activateSelectedWatchlist() {
+    if (!watchlistFile) return;
+    setPending(true); setMessage("");
+    try { await activateWatchlist(watchlistFile, selectedSymbols); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Watchlist import failed."); }
+    finally { setPending(false); }
+  }
+
+  function toggleCandidate(symbol: string) {
+    setSelectedSymbols((current) => current.includes(symbol)
+      ? current.filter((item) => item !== symbol)
+      : current.length < SWING_WATCHLIST_MAX_ENTRIES ? [...current, symbol] : current);
   }
 
   async function toggleAutomatic(enabled: boolean) {
@@ -148,7 +185,16 @@ export function SwingTradeWorkbench({ initial }: { initial: Initial }) {
       <article className="settings-card">
         <p className="eyebrow">Independent universe</p><h2>Swing watchlist</h2>
         <p className="muted">{configuration.entries.length ? `${configuration.entries.length} stocks · version ${configuration.versions.find((version) => version.active)?.versionNumber}` : "No active watchlist. Automatic runs are disabled until one is imported."}</p>
-        <form className="swing-upload" onSubmit={importWatchlist} data-sentry-mask><label><span>Watchlist CSV or XLSX</span><input accept=".csv,.xlsx" name="file" required type="file" /></label><button className="primary-button compact" disabled={pending} type="submit">Import and activate</button></form>
+        <form className="swing-upload" onSubmit={importWatchlist} data-sentry-mask><label><span>Watchlist CSV or XLSX</span><input accept=".csv,.xlsx" key={uploadKey} name="file" required type="file" /></label><button className="primary-button compact" disabled={pending} type="submit">Import and activate</button></form>
+        {watchlistCandidates.length > 20 ? <section className="swing-watchlist-picker" data-sentry-mask aria-label="Choose Swing stocks">
+          <div className="swing-picker-head"><div><strong>Choose stocks</strong><span>{selectedSymbols.length} of {SWING_WATCHLIST_MAX_ENTRIES} selected · {watchlistCandidates.length} valid rows</span></div><label>Search<input aria-label="Search uploaded stocks" value={candidateSearch} onChange={(event) => setCandidateSearch(event.target.value)} placeholder="Name or symbol" /></label></div>
+          <div className="swing-picker-actions"><button className="secondary-button compact" type="button" disabled={pending} onClick={() => setSelectedSymbols(watchlistCandidates.slice(0, 20).map((candidate) => candidate.symbol))}>Select first 20</button><button className="secondary-button compact" type="button" disabled={pending || watchlistCandidates.length > SWING_WATCHLIST_MAX_ENTRIES} onClick={() => setSelectedSymbols(watchlistCandidates.map((candidate) => candidate.symbol))}>Select all</button><button className="secondary-button compact" type="button" disabled={pending || !selectedSymbols.length} onClick={() => setSelectedSymbols([])}>Clear</button></div>
+          <div className="swing-picker-list">{watchlistCandidates.filter((candidate) => `${candidate.stockName} ${candidate.symbol} ${candidate.exchange}`.toLowerCase().includes(candidateSearch.trim().toLowerCase())).map((candidate) => {
+            const checked = selectedSymbols.includes(candidate.symbol);
+            return <label key={candidate.symbol}><input checked={checked} disabled={!checked && selectedSymbols.length >= SWING_WATCHLIST_MAX_ENTRIES} onChange={() => toggleCandidate(candidate.symbol)} type="checkbox" /><span>{candidate.stockName}</span><strong>{candidate.exchange}:{candidate.symbol}</strong></label>;
+          })}</div>
+          <div className="swing-picker-footer"><button className="secondary-button" disabled={pending} onClick={() => { setWatchlistFile(null); setWatchlistCandidates([]); setSelectedSymbols([]); setCandidateSearch(""); setMessage(""); setUploadKey((value) => value + 1); }} type="button">Cancel</button><button className="primary-button" disabled={pending || selectedSymbols.length < 1 || selectedSymbols.length > SWING_WATCHLIST_MAX_ENTRIES} onClick={() => void activateSelectedWatchlist()} type="button">Activate {selectedSymbols.length || "selected"}</button></div>
+        </section> : null}
         {configuration.entries.length ? <ol className="swing-symbol-list">{configuration.entries.map((entry) => <li key={entry.symbol}><span>{entry.stockName}</span><strong>{entry.exchange}:{entry.symbol}</strong></li>)}</ol> : null}
         <details><summary>Watchlist version history</summary><div className="swing-history-list">{configuration.versions.map((version) => <div key={version.id}><span>v{version.versionNumber} · {version.entryCount} rows · {version.sourceFilename}</span>{version.active ? <span className="status-pill live">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void restoreWatchlist(version.id)} type="button">Restore</button>}</div>)}</div></details>
       </article>

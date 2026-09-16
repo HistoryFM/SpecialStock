@@ -2,7 +2,7 @@ import "server-only";
 
 import ExcelJS from "exceljs";
 
-import { swingWatchlistEntrySchema, type SwingWatchlistEntry } from "@/swing/types";
+import { SWING_WATCHLIST_MAX_ENTRIES, swingWatchlistCandidateSchema, swingWatchlistEntrySchema, type SwingWatchlistCandidate, type SwingWatchlistEntry } from "@/swing/types";
 
 export const SWING_WATCHLIST_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -35,18 +35,17 @@ function normalizeExchange(value: string): string {
   return normalized === "NYSE AMERICAN" ? "AMEX" : normalized;
 }
 
-export function validateSwingWatchlistRows(rows: Array<Record<string, unknown>>): SwingWatchlistEntry[] {
+export function validateSwingWatchlistSourceRows(rows: Array<Record<string, unknown>>): SwingWatchlistCandidate[] {
   const issues: string[] = [];
-  if (rows.length < 1 || rows.length > 20) issues.push("The watchlist must contain 1–20 data rows.");
+  if (rows.length < 1) issues.push("The watchlist must contain at least one data row.");
   const seen = new Set<string>();
   const entries = rows.flatMap((row, position) => {
     const candidate = {
       stockName: String(row["stock name"] ?? "").trim(),
       symbol: String(row.symbol ?? "").trim(),
       exchange: normalizeExchange(String(row.exchange ?? "")),
-      position,
     };
-    const parsed = swingWatchlistEntrySchema.safeParse(candidate);
+    const parsed = swingWatchlistCandidateSchema.safeParse(candidate);
     if (!parsed.success) {
       issues.push(...parsed.error.issues.map((issue) => `Row ${position + 2}: ${String(issue.path.at(-1) ?? "value")} ${issue.message}.`));
       return [];
@@ -59,7 +58,27 @@ export function validateSwingWatchlistRows(rows: Array<Record<string, unknown>>)
   return entries;
 }
 
-export function parseSwingWatchlistCsv(content: string): SwingWatchlistEntry[] {
+export function selectSwingWatchlistEntries(candidates: SwingWatchlistCandidate[], selectedSymbols?: string[]): SwingWatchlistEntry[] {
+  if (!selectedSymbols) {
+    if (candidates.length > SWING_WATCHLIST_MAX_ENTRIES) {
+      throw new SwingWatchlistValidationError([`The file contains ${candidates.length} valid data rows. Choose 1–${SWING_WATCHLIST_MAX_ENTRIES} stocks to activate.`]);
+    }
+    selectedSymbols = candidates.map((candidate) => candidate.symbol);
+  }
+  const normalized = selectedSymbols.map((symbol) => symbol.trim().toUpperCase());
+  if (normalized.length < 1 || normalized.length > SWING_WATCHLIST_MAX_ENTRIES) throw new SwingWatchlistValidationError([`Choose 1–${SWING_WATCHLIST_MAX_ENTRIES} stocks to activate.`]);
+  if (new Set(normalized).size !== normalized.length) throw new SwingWatchlistValidationError(["The selected stocks contain a duplicate symbol."]);
+  const selected = new Set(normalized);
+  const entries = candidates.filter((candidate) => selected.has(candidate.symbol)).map((candidate, position) => swingWatchlistEntrySchema.parse({ ...candidate, position }));
+  if (entries.length !== normalized.length) throw new SwingWatchlistValidationError(["One or more selected stocks are not present in the uploaded file."]);
+  return entries;
+}
+
+export function validateSwingWatchlistRows(rows: Array<Record<string, unknown>>): SwingWatchlistEntry[] {
+  return selectSwingWatchlistEntries(validateSwingWatchlistSourceRows(rows));
+}
+
+export function parseSwingWatchlistCsvSource(content: string): SwingWatchlistCandidate[] {
   const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) throw new SwingWatchlistValidationError(["CSV needs a header and at least one data row."]);
   const header = csvFields(lines[0]).map((value) => value.trim().toLowerCase());
@@ -72,10 +91,14 @@ export function parseSwingWatchlistCsv(content: string): SwingWatchlistEntry[] {
     if (values.length !== header.length) throw new SwingWatchlistValidationError([`Row ${index + 2}: wrong number of columns.`]);
     return Object.fromEntries(header.map((name, column) => [name, values[column]]));
   });
-  return validateSwingWatchlistRows(rows);
+  return validateSwingWatchlistSourceRows(rows);
 }
 
-export async function parseSwingWatchlistXlsx(content: Buffer): Promise<SwingWatchlistEntry[]> {
+export function parseSwingWatchlistCsv(content: string): SwingWatchlistEntry[] {
+  return selectSwingWatchlistEntries(parseSwingWatchlistCsvSource(content));
+}
+
+export async function parseSwingWatchlistXlsxSource(content: Buffer): Promise<SwingWatchlistCandidate[]> {
   const workbook = new ExcelJS.Workbook();
   try { await workbook.xlsx.load(Uint8Array.from(content).buffer); }
   catch { throw new SwingWatchlistValidationError(["XLSX could not be read as a valid Excel workbook."]); }
@@ -107,5 +130,9 @@ export async function parseSwingWatchlistXlsx(content: Buffer): Promise<SwingWat
     if (values.length > header.length) throw new SwingWatchlistValidationError([`Row ${index + 2}: contains data outside the declared headers.`]);
     return Object.fromEntries(header.map((name, column) => [name, values[column] ?? ""]));
   });
-  return validateSwingWatchlistRows(records);
+  return validateSwingWatchlistSourceRows(records);
+}
+
+export async function parseSwingWatchlistXlsx(content: Buffer): Promise<SwingWatchlistEntry[]> {
+  return selectSwingWatchlistEntries(await parseSwingWatchlistXlsxSource(content));
 }

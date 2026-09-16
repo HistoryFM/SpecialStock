@@ -3,7 +3,7 @@ import * as Sentry from "@sentry/nextjs";
 import { auth } from "@/auth";
 import { isAuthorizedSession } from "@/auth/authorization";
 import { saveSwingWatchlist } from "@/swing/repository";
-import { parseSwingWatchlistCsv, parseSwingWatchlistXlsx, SWING_WATCHLIST_MAX_BYTES, SwingWatchlistValidationError } from "@/swing/watchlist";
+import { parseSwingWatchlistCsvSource, parseSwingWatchlistXlsxSource, selectSwingWatchlistEntries, SWING_WATCHLIST_MAX_BYTES, SwingWatchlistValidationError } from "@/swing/watchlist";
 
 export async function POST(request: Request) {
   if (!isAuthorizedSession(await auth())) return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -16,9 +16,19 @@ export async function POST(request: Request) {
       if (file.size > SWING_WATCHLIST_MAX_BYTES) return Response.json({ error: "Watchlist files must be 5 MB or smaller." }, { status: 413 });
       const extension = file.name.split(".").at(-1)?.toLowerCase();
       if (extension !== "csv" && extension !== "xlsx") return Response.json({ error: "Watchlist files must use .csv or .xlsx." }, { status: 415 });
-      const entries = extension === "xlsx"
-        ? await parseSwingWatchlistXlsx(Buffer.from(await file.arrayBuffer()))
-        : parseSwingWatchlistCsv(await file.text());
+      const candidates = extension === "xlsx"
+        ? await parseSwingWatchlistXlsxSource(Buffer.from(await file.arrayBuffer()))
+        : parseSwingWatchlistCsvSource(await file.text());
+      const rawSelection = form.get("selectedSymbols");
+      let selectedSymbols: string[] | undefined;
+      if (typeof rawSelection === "string") {
+        const parsed = JSON.parse(rawSelection) as unknown;
+        if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+          throw new SwingWatchlistValidationError(["The selected stocks are invalid."]);
+        }
+        selectedSymbols = parsed;
+      }
+      const entries = selectSwingWatchlistEntries(candidates, selectedSymbols);
       const version = await saveSwingWatchlist({ entries, filename: file.name, sourceType: extension });
       span.setAttributes({ "specialstock.swing.watchlist_version": version.versionNumber, "specialstock.swing.watchlist_count": entries.length });
       span.setStatus({ code: 1 });

@@ -7,15 +7,16 @@ import { isAuthorizedSession } from "@/auth/authorization";
 import { runBacktest } from "@/backtesting/engine";
 import { runPlannedBacktest } from "@/backtesting/plan-engine";
 import { defaultReportConfig, isPlannedRun, requiredTickers, strategyPlanSchema, type PlannedRun } from "@/backtesting/plan";
-import { getRun, listRunSummaries, loadLatestPriceFiles, loadPriceFilesById, saveRun } from "@/backtesting/storage";
+import { getRun, listRunSummaries, loadLatestPriceFiles, loadPriceFilesById, resolveBacktestStrategyId, saveRun } from "@/backtesting/storage";
 import { conversationTurnSchema, modelSchema, runInputSchema, type ModelUsage, type SavedRun } from "@/backtesting/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "private, no-store" };
-const bodySchema = z.object({ input: runInputSchema, interpretationUsage: z.unknown().optional() }).strict();
+const bodySchema = z.object({ input: runInputSchema, strategyId: z.string().uuid().optional(), interpretationUsage: z.unknown().optional() }).strict();
 const plannedBodySchema = z.object({ input: z.object({ plan: strategyPlanSchema, prompt: z.string().min(3).max(4000), model: modelSchema,
-  parentRunId: z.string().uuid().optional(), interpretationUsage: z.unknown().optional(), setupConversation: z.array(conversationTurnSchema).max(40).optional() }).strict() }).strict();
+  parentRunId: z.string().uuid().optional(), interpretationUsage: z.unknown().optional(), setupConversation: z.array(conversationTurnSchema).max(40).optional() }).strict(),
+  strategyId: z.string().uuid().optional() }).strict();
 
 export async function GET() {
   if (!isAuthorizedSession(await auth())) return Response.json({ error: "Unauthorized" }, { status: 401, headers });
@@ -27,9 +28,11 @@ export async function POST(request: Request) {
   try {
     const raw = await request.json();
     if (raw?.input?.plan) {
-      const { input } = plannedBodySchema.parse(raw);
+      const { input, strategyId: requestedStrategyId } = plannedBodySchema.parse(raw);
       const parent = input.parentRunId ? await getRun(input.parentRunId) : null;
       if (input.parentRunId && (!parent || !isPlannedRun(parent))) throw new Error("Original version 2 run was not found.");
+      const strategyId = parent?.strategyId ?? await resolveBacktestStrategyId(requestedStrategyId);
+      if (parent && requestedStrategyId && requestedStrategyId !== strategyId) throw new Error("A suggested run must remain in its original strategy.");
       const inputSettings = { ...input.plan.settings, timeframe: input.plan.settings.timeframe ?? "daily" };
       const parentSettings = parent && isPlannedRun(parent) ? { ...parent.plan.settings, timeframe: parent.plan.settings.timeframe ?? "daily" } : null;
       if (parent && isPlannedRun(parent) && (JSON.stringify(inputSettings) !== JSON.stringify(parentSettings) ||
@@ -58,7 +61,7 @@ export async function POST(request: Request) {
       }
       const primary = input.plan.states.flatMap((state) => state.allocations.map((item) => item.ticker))[0] ?? "CASH";
       const normalizedPlan = { ...input.plan, version: 3 as const };
-      const run: PlannedRun = { id: randomUUID(), createdAt: new Date().toISOString(), name: `${primary} ${input.plan.settings.timeframe} strategy`, engineVersion: 3, plan: normalizedPlan,
+      const run: PlannedRun = { id: randomUUID(), createdAt: new Date().toISOString(), name: `${primary} ${input.plan.settings.timeframe} strategy`, strategyId, engineVersion: 3, plan: normalizedPlan,
         input: { ...input, plan: normalizedPlan, setupConversation: input.setupConversation as PlannedRun["setupConversation"], interpretationUsage: input.interpretationUsage as ModelUsage | undefined }, result, comparison,
         setupConversation: input.setupConversation as PlannedRun["setupConversation"], resultConversation: [],
         reportConfig: defaultReportConfig(result), reportUsage: [], commentaries: [] };
@@ -73,6 +76,8 @@ export async function POST(request: Request) {
     const input = body.input;
     const parent = input.parentRunId ? await getRun(input.parentRunId) : null;
     if (input.parentRunId && !parent) throw new Error("Original run was not found.");
+    const strategyId = parent?.strategyId ?? await resolveBacktestStrategyId(body.strategyId);
+    if (parent && body.strategyId && body.strategyId !== strategyId) throw new Error("A suggested run must remain in its original strategy.");
     if (parent && (isPlannedRun(parent) || input.longTicker !== parent.input.longTicker || input.mode !== parent.input.mode || input.inverseTicker !== parent.input.inverseTicker ||
       JSON.stringify(input.comparisons) !== JSON.stringify(parent.input.comparisons) || input.startingCapital !== parent.input.startingCapital ||
       input.cashRate !== parent.input.cashRate || input.slippage !== parent.input.slippage || input.fee !== parent.input.fee)) throw new Error("A suggestion must use the original assets, capital, and costs.");
@@ -91,7 +96,7 @@ export async function POST(request: Request) {
         baseline: { annual: baseline.annual, drawdowns: baseline.drawdowns, finalBalance: baseline.series[0].values.at(-1)! },
         variant: { annual: result.annual, drawdowns: result.drawdowns, finalBalance: result.series[0].values.at(-1)! } };
     }
-    const run: SavedRun = { id: randomUUID(), createdAt: new Date().toISOString(), input, result, comparison, commentaries: [],
+    const run: SavedRun = { id: randomUUID(), createdAt: new Date().toISOString(), strategyId, input, result, comparison, commentaries: [],
       interpretationUsage: body.interpretationUsage as ModelUsage | undefined };
     await saveRun(run);
     Sentry.logger.info("backtesting.run.completed", { "specialstock.telemetry.origin": "server", "specialstock.backtesting.run_id": run.id,

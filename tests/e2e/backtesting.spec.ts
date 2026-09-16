@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const tradingDays: Date[] = [];
-for (let day = new Date(Date.UTC(2021, 0, 1)); day <= new Date(Date.UTC(2022, 0, 6)); day = new Date(day.getTime() + 86400000)) {
+for (let day = new Date(Date.UTC(2021, 0, 1)); day <= new Date(Date.UTC(2023, 0, 10)); day = new Date(day.getTime() + 86400000)) {
   if (day.getUTCDay() !== 0 && day.getUTCDay() !== 6) tradingDays.push(day);
 }
 const format = (date: Date) => `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}/${date.getUTCFullYear()}`;
@@ -23,6 +23,7 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("link", { name: "Backtesting" }).click();
   await expect(page.getByRole("heading", { name: "Backtesting" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Strategy Name" })).toHaveValue("00000000-0000-4000-8000-000000000001");
 
   for (const ticker of ["TQQQ", "SPY", "QQQ", "XLK"]) {
     await page.getByLabel("Ticker", { exact: true }).fill(ticker);
@@ -60,8 +61,18 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(report.getByRole("columnheader", { name: "TQQQ close", exact: true })).toBeVisible();
   await expect(report.getByLabel("Chart legend")).toContainText("TQQQ close");
 
+  const zoomControls = report.getByRole("group", { name: "Chart zoom controls" });
+  await expect(zoomControls.getByRole("button", { name: "− Zoom out" })).toBeDisabled();
+  await expect(zoomControls.getByRole("button", { name: "+ Zoom in" })).toBeEnabled();
+  await zoomControls.getByRole("button", { name: "+ Zoom in" }).click();
+  await expect(zoomControls.getByRole("button", { name: "− Zoom out" })).toBeEnabled();
+  await expect(zoomControls.getByRole("button", { name: "Reset" })).toBeEnabled();
+  await zoomControls.getByRole("button", { name: "− Zoom out" }).click();
+  await expect(zoomControls.getByRole("button", { name: "− Zoom out" })).toBeDisabled();
+
   await expect(report.locator(".bt-report-settings")).not.toHaveAttribute("open", "");
   await report.locator(".bt-report-settings > summary").click();
+  await expect(report.getByRole("combobox", { name: "Date range" })).toHaveValue("full");
   const sectionToggle = await report.getByRole("checkbox", { name: "Annual returns" }).boundingBox();
   expect(sectionToggle?.width).toBeLessThanOrEqual(20);
   expect(sectionToggle?.height).toBeLessThanOrEqual(20);
@@ -96,7 +107,14 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await report.getByRole("button", { name: "Send" }).last().click();
   await expect(report.getByText("The saved maximum drawdown is the main measured risk in this run.")).toBeVisible();
 
+  await page.getByRole("combobox", { name: "Strategy Name" }).selectOption("__new__");
+  await page.getByLabel("New strategy name").fill("Second strategy");
+  await page.getByRole("button", { name: "Create strategy" }).click();
+  await expect(page.getByText("No saved runs for this strategy yet.")).toBeVisible();
+  await expect(page.locator(".bt-panel").first().getByRole("rowheader", { name: "TQQQ" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Strategy Name" }).selectOption({ label: "TQQQ-Daily" });
   const savedCard = page.locator(".bt-saved-run").first();
+  await expect(savedCard).toBeVisible();
   await expect(savedCard).toContainText("Final strategy value:");
   await expect(savedCard).toContainText("Max drawdown:");
   await savedCard.getByRole("button", { name: "Reuse strategy" }).click();

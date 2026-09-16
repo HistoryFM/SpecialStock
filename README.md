@@ -22,7 +22,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
 - Authenticated Backtesting tab with versioned local CSV imports, confirmed multi-asset AI-interpreted plans, deterministic simulations, saved customizable reports, and manually tested AI suggestions.
-- An isolated authenticated Swing Trade workspace with an independent versioned 1–20-stock watchlist, daily macro-first visual analysis, ranked 3–21-day candidates, automatic and manual run history, verified chart/model audit, and a dedicated immutable prompt history.
+- An isolated authenticated Swing Trade workspace with an independent versioned 1–100-stock watchlist, daily macro-first visual analysis, ranked 3–21-day candidates, automatic and manual run history, verified chart/model audit, and a dedicated immutable prompt history.
 
 Automatic scanning requires an authenticated dashboard tab to remain open. It is intentionally not a background cloud service.
 
@@ -255,7 +255,7 @@ Keep the dashboard open, the laptop awake, and the internet connection active.
 
 ### Swing Trade
 
-Open **Swing Trade** after signing in. Import a separate CSV or XLSX watchlist with case-insensitive `Stock Name`, `Symbol`, and `Exchange` headers. It accepts 1–20 ordered US symbols from NASDAQ, NYSE, or AMEX and normalizes `NYSE American` to AMEX. Import validation is atomic: an invalid row leaves the active version unchanged. XLSX workbooks must contain exactly one populated worksheet. Previous immutable versions can be restored.
+Open **Swing Trade** after signing in. Import a separate CSV or XLSX watchlist with case-insensitive `Stock Name`, `Symbol`, and `Exchange` headers. It accepts 1–100 ordered US symbols from NASDAQ, NYSE, or AMEX and normalizes `NYSE American` to AMEX. Files with more than 20 valid rows open a searchable selection step with quick actions for the first 20 or every row. Import validation is atomic: an invalid row leaves the active version unchanged. XLSX workbooks must contain exactly one populated worksheet. Previous immutable versions can be restored.
 
 Automatic Swing analysis is off by default. **Run now** remains available regardless of that toggle. The page reports macro capture, macro analysis, stock capture, and stock analysis progress; keeps automatic and manual history separate; and shows the macro regime, ranked actionable candidates, NO_TRADE results, and per-symbol failures. Opening a candidate displays the exact recomputed-hash-verified PNG, frozen Chart-Img metadata and input hash, prompt revision/hash and snapshot, locked macro context, validated JSON, rendered blueprint, inference settings, attempts, latency, usage, and cost.
 

@@ -4,16 +4,21 @@ export const SWING_MODEL_ID = "google/gemini-2.5-pro" as const;
 export const SWING_TEMPLATE_VERSION = "swing-daily-v2" as const;
 export const SWING_MACRO_SYMBOLS = ["SPY", "QQQ", "GLD", "TLT"] as const;
 export const SWING_EXCHANGES = ["NASDAQ", "NYSE", "AMEX"] as const;
+export const SWING_WATCHLIST_MAX_ENTRIES = 100;
 
-export const swingWatchlistEntrySchema = z.object({
+export const swingWatchlistCandidateSchema = z.object({
   stockName: z.string().trim().min(1).max(120),
   symbol: z.string().trim().transform((value) => value.toUpperCase()).pipe(
     z.string().min(1).max(10).regex(/^[A-Z][A-Z0-9.-]*$/, "Use a valid US stock symbol"),
   ),
   exchange: z.enum(SWING_EXCHANGES),
-  position: z.number().int().min(0).max(19),
 });
 
+export const swingWatchlistEntrySchema = swingWatchlistCandidateSchema.extend({
+  position: z.number().int().min(0).max(SWING_WATCHLIST_MAX_ENTRIES - 1),
+});
+
+export type SwingWatchlistCandidate = z.infer<typeof swingWatchlistCandidateSchema>;
 export type SwingWatchlistEntry = z.infer<typeof swingWatchlistEntrySchema>;
 
 const anchorSchema = z.object({

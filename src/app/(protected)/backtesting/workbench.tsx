@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react";
 import * as Sentry from "@sentry/nextjs";
 
-import { backtestModels, describePredicate, type BacktestModel, type BacktestTimeframe, type ConversationTurn, type ModelUsage, type PriceFile, type Strategy } from "@/backtesting/types";
+import { chartRangeIndices, chartZoomAvailability, zoomChartRange } from "@/backtesting/chart-range";
+import { backtestModels, describePredicate, type BacktestModel, type BacktestStrategy, type BacktestTimeframe, type ConversationTurn, type ModelUsage, type PriceFile, type Strategy } from "@/backtesting/types";
 import { defaultReportConfig, describeAllocations, describeCondition, isPlannedRun, type AnyRun, type PlannedRun, type ReportConfig, type StrategyPlan } from "@/backtesting/plan";
 
-type RunSummary = { id: string; name: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number };
+type RunSummary = { id: string; name: string; strategyId: string; strategyName: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number };
 type SavedRunAction = { id: string; kind: "rename" | "delete" };
 const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value);
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -24,7 +25,7 @@ async function jsonResponse<T>(response: Response): Promise<T> {
   return body;
 }
 
-async function trackedRequest<T>(action: "import" | "interpret" | "run" | "open" | "analyze" | "report" | "chat" | "delete" | "rename", attributes: Record<string, string | number | boolean>, request: () => Promise<T>): Promise<T> {
+async function trackedRequest<T>(action: "import" | "interpret" | "run" | "open" | "analyze" | "report" | "chat" | "delete" | "rename" | "strategy", attributes: Record<string, string | number | boolean>, request: () => Promise<T>): Promise<T> {
   const details = { "specialstock.telemetry.origin": "client", "specialstock.backtesting.action": action, ...attributes };
   return Sentry.startNewTrace(() => Sentry.startSpan({ name: `Backtesting ${action}`, op: `specialstock.backtesting.${action}.request`, forceTransaction: true, attributes: details }, async (span) => {
     const started = performance.now();
@@ -50,11 +51,7 @@ function GrowthChart({ run, config, onRange }: { run: AnyRun; config: ReportConf
   const [hover, setHover] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ start: number; end: number } | null>(null);
   const dragRef = useRef<{ start: number; end: number } | null>(null);
-  const days = config.range === "last_month" ? 31 : config.range === "last_quarter" ? 93 : config.range === "last_year" ? 365 : config.range === "last_two_years" ? 730 : 0;
-  const cutoff = config.range === "custom" ? config.startDate ?? run.result.startDate : days ? new Date(Date.parse(run.result.endDate) - days * 86400000).toISOString().slice(0, 10) : run.result.startDate;
-  const finish = config.range === "custom" ? config.endDate ?? run.result.endDate : run.result.endDate;
-  const start = Math.max(0, run.result.dates.findIndex((date) => date >= cutoff));
-  const end = Math.max(start, run.result.dates.findLastIndex((date) => date <= finish));
+  const { start, end } = chartRangeIndices(run.result.dates, config);
   const dates = run.result.dates.slice(start, end + 1);
   const series = run.result.series.filter((item) => config.visibleSeries.includes(item.ticker)).map((item) => ({ ...item, values: item.values.slice(start, end + 1) }));
   const closeSeries = (run.result.closeSeries ?? []).map((item) => ({ ...item, values: item.values.slice(start, end + 1) }));
@@ -104,7 +101,12 @@ function GrowthChart({ run, config, onRange }: { run: AnyRun; config: ReportConf
 export function BacktestingWorkbench() {
   const [files, setFiles] = useState<PriceFile[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [strategies, setStrategies] = useState<BacktestStrategy[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState("");
+  const [creatingStrategy, setCreatingStrategy] = useState(false);
+  const [newStrategyName, setNewStrategyName] = useState("");
   const [run, setRun] = useState<AnyRun | null>(null);
+  const [legacyReportConfig, setLegacyReportConfig] = useState<ReportConfig | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadTicker, setUploadTicker] = useState("");
   const [uploadTimeframe, setUploadTimeframe] = useState<BacktestTimeframe>("daily");
@@ -138,11 +140,29 @@ export function BacktestingWorkbench() {
     Promise.all([
       fetch("/api/backtesting/files").then((response) => jsonResponse<{ files: PriceFile[] }>(response)),
       fetch("/api/backtesting/runs").then((response) => jsonResponse<{ runs: RunSummary[] }>(response)),
-    ]).then(([fileData, runData]) => {
-      if (active) { setFiles(fileData.files); setRuns(runData.runs); }
+      fetch("/api/backtesting/strategies").then((response) => jsonResponse<{ strategies: BacktestStrategy[]; defaultStrategyId: string }>(response)),
+    ]).then(([fileData, runData, strategyData]) => {
+      if (active) {
+        setFiles(fileData.files); setRuns(runData.runs); setStrategies(strategyData.strategies);
+        const remembered = window.localStorage.getItem("specialstock.backtesting.strategy");
+        setSelectedStrategyId(strategyData.strategies.some((strategy) => strategy.id === remembered) ? remembered! : strategyData.defaultStrategyId);
+      }
     }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : "Could not load Backtesting."); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (selectedStrategyId) window.localStorage.setItem("specialstock.backtesting.strategy", selectedStrategyId);
+  }, [selectedStrategyId]);
+
+  async function createStrategy(event: FormEvent) {
+    event.preventDefault(); setError(""); setNotice(""); setBusy("Creating strategy");
+    try {
+      const result = await trackedRequest("strategy", { "specialstock.backtesting.strategy_name_length": newStrategyName.trim().length }, async () => jsonResponse<{ strategy: BacktestStrategy }>(await fetch("/api/backtesting/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: newStrategyName }) })));
+      setStrategies((current) => [...current, result.strategy]); setSelectedStrategyId(result.strategy.id); setNewStrategyName(""); setCreatingStrategy(false); setNotice(`Strategy “${result.strategy.name}” created.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not create strategy."); }
+    finally { setBusy(""); }
+  }
 
   async function upload(event: FormEvent) {
     event.preventDefault(); setError(""); setNotice(""); setBusy("Uploading CSV");
@@ -174,9 +194,11 @@ export function BacktestingWorkbench() {
   async function submitRun(nextPlan: StrategyPlan, parentRunId?: string, nextPrompt = prompt) {
     setError(""); setNotice(""); setBusy(parentRunId ? "Testing suggestion" : "Running backtest");
     try {
+      if (!selectedStrategyId) throw new Error("Choose a Strategy Name before running a backtest.");
       const runTimeframe = parentRunId && run && isPlannedRun(run) ? run.plan.settings.timeframe ?? "daily" : timeframe;
       const input = { plan: { ...nextPlan, version: 3 as const, settings: { ...nextPlan.settings, timeframe: runTimeframe } }, prompt: nextPrompt, model, parentRunId, interpretationUsage: parentRunId ? undefined : interpretationUsage, setupConversation: parentRunId ? undefined : setupConversation };
-      const result = await trackedRequest("run", { "specialstock.backtesting.engine_version": 3, "specialstock.backtesting.is_suggestion": Boolean(parentRunId) }, async () => jsonResponse<{ run: PlannedRun }>(await fetch("/api/backtesting/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) })));
+      const strategyId = parentRunId ? run?.strategyId ?? selectedStrategyId : selectedStrategyId;
+      const result = await trackedRequest("run", { "specialstock.backtesting.engine_version": 3, "specialstock.backtesting.is_suggestion": Boolean(parentRunId) }, async () => jsonResponse<{ run: PlannedRun }>(await fetch("/api/backtesting/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input, strategyId }) })));
       setRun(result.run); await refresh(); setNotice(parentRunId ? "Suggestion tested. Compare the two saved runs on the same dates." : "Backtest complete.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Backtest failed."); }
     finally { setBusy(""); }
@@ -184,7 +206,7 @@ export function BacktestingWorkbench() {
 
   async function openRun(id: string) {
     setError(""); setBusy("Loading run");
-    try { const result = await trackedRequest("open", { "specialstock.backtesting.run_id": id }, async () => jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${id}`))); setRun(result.run); setNotice("Saved results loaded."); requestAnimationFrame(() => { reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); reportRef.current?.focus({ preventScroll: true }); }); }
+    try { const result = await trackedRequest("open", { "specialstock.backtesting.run_id": id }, async () => jsonResponse<{ run: AnyRun }>(await fetch(`/api/backtesting/runs/${id}`))); setRun(result.run); setLegacyReportConfig(isPlannedRun(result.run) ? null : defaultReportConfig(result.run.result)); setNotice("Saved results loaded."); requestAnimationFrame(() => { reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); reportRef.current?.focus({ preventScroll: true }); }); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load run."); }
     finally { setBusy(""); }
   }
@@ -235,7 +257,11 @@ export function BacktestingWorkbench() {
   }
 
   async function setReport(config: ReportConfig | string) {
-    if (!run || !isPlannedRun(run)) return;
+    if (!run) return;
+    if (!isPlannedRun(run)) {
+      if (typeof config !== "string") setLegacyReportConfig(config);
+      return;
+    }
     setError(""); setBusy(typeof config === "string" ? "Customizing report with AI" : "Saving report view");
     try {
       const response = await trackedRequest("report", { "specialstock.backtesting.run_id": run.id, "specialstock.backtesting.ai": typeof config === "string" }, async () => jsonResponse<{ run: PlannedRun }>(await fetch(`/api/backtesting/runs/${run.id}/report`, {
@@ -246,7 +272,9 @@ export function BacktestingWorkbench() {
     finally { setBusy(""); }
   }
   const latestTickers = [...new Set(files.filter((file) => file.timeframe === timeframe).map((file) => file.ticker))].sort();
-  const config = run ? isPlannedRun(run) ? run.reportConfig : defaultReportConfig(run.result) : null;
+  const filteredRuns = runs.filter((item) => item.strategyId === selectedStrategyId);
+  const config = run ? isPlannedRun(run) ? run.reportConfig : legacyReportConfig ?? defaultReportConfig(run.result) : null;
+  const zoomAvailability = run && config ? chartZoomAvailability(run.result.dates, config) : { canZoomIn: false, canZoomOut: false };
   const latestCommentary = run?.commentaries.at(-1);
   return (
     <div className="bt-layout">
@@ -264,7 +292,8 @@ export function BacktestingWorkbench() {
 
       <section className="bt-panel" ref={strategyRef}>
         <div className="bt-section-head"><h2>2. Strategy &amp; portfolio</h2><p>Describe assets, rules, allocations, costs, dates, and optional stops in one prompt.</p></div>
-        <div className="bt-grid"><label>AI model<select value={model} onChange={(event) => { setModel(event.target.value as BacktestModel); setPlan(null); }}>{backtestModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Strategy timeframe<select value={timeframe} onChange={(event) => { const next = event.target.value as BacktestTimeframe; setTimeframe(next); setPlan(null); setSetupConversation([]); setPrompt((value) => next === "weekly" ? value.replaceAll("daily", "weekly").replaceAll("day SMA", "week SMA").replaceAll("trading day", "weekly bar") : value.replaceAll("weekly", "daily").replaceAll("week SMA", "day SMA").replaceAll("weekly bar", "trading day")); }}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label></div>
+        <div className="bt-grid"><label>Strategy Name<select aria-label="Strategy Name" value={selectedStrategyId} onChange={(event) => { if (event.target.value === "__new__") { setCreatingStrategy(true); setNewStrategyName(""); } else { setSelectedStrategyId(event.target.value); setCreatingStrategy(false); setRun(null); } }}><option disabled value="">Loading strategies…</option>{strategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.name}</option>)}<option value="__new__">New Strategy…</option></select></label><label>AI model<select value={model} onChange={(event) => { setModel(event.target.value as BacktestModel); setPlan(null); }}>{backtestModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Strategy timeframe<select value={timeframe} onChange={(event) => { const next = event.target.value as BacktestTimeframe; setTimeframe(next); setPlan(null); setSetupConversation([]); setPrompt((value) => next === "weekly" ? value.replaceAll("daily", "weekly").replaceAll("day SMA", "week SMA").replaceAll("trading day", "weekly bar") : value.replaceAll("weekly", "daily").replaceAll("week SMA", "day SMA").replaceAll("weekly bar", "trading day")); }}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label></div>
+        {creatingStrategy && <form className="bt-new-strategy" onSubmit={createStrategy}><label>New strategy name<input autoFocus value={newStrategyName} onChange={(event) => setNewStrategyName(event.target.value)} maxLength={80} required /></label><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => { setCreatingStrategy(false); setNewStrategyName(""); }}>Cancel</button><button className="primary-button" type="submit" disabled={Boolean(busy) || !newStrategyName.trim()}>Create strategy</button></form>}
         <label>Describe the entire strategy<textarea data-sentry-mask value={prompt} onChange={(event) => { setPrompt(event.target.value); setPlan(null); }} rows={7} maxLength={4000} /></label>
         <p className="muted">Available CSVs: {latestTickers.join(", ") || "import files first"}. AI interprets rules; the confirmed calculation runs locally.</p>
         <div className="bt-actions"><button className="secondary-button" type="button" disabled={Boolean(busy) || Boolean(setupConversation.length)} onClick={() => sendStrategy(prompt)}>Start strategy conversation</button><button className="secondary-button" type="button" disabled={Boolean(busy) || !setupConversation.length} onClick={() => { setSetupConversation([]); setPlan(null); setNotice("Strategy conversation cleared."); }}>Start over</button></div>
@@ -277,15 +306,15 @@ export function BacktestingWorkbench() {
             {([ ["startingCapital", "Starting capital ($)"], ["cashRate", "Cash interest (% annual)"], ["borrowRate", "Short borrow (% annual)"], ["slippage", "Slippage (% per leg)"], ["fee", "Fee ($ per leg)"] ] as const).map(([key, label]) => <label key={key}>{label}<input type="number" min="0" step="0.01" value={plan.settings[key]} onChange={(event) => setPlan({ ...plan, settings: { ...plan.settings, [key]: Number(event.target.value) } })} /></label>)}
             <label>Start date<select value={plan.settings.startDate === "first_january" ? "first_january" : "specific"} onChange={(event) => setPlan({ ...plan, settings: { ...plan.settings, startDate: event.target.value === "first_january" ? "first_january" : "2020-01-02" } })}><option value="first_january">First shared January session</option><option value="specific">Specific date</option></select></label>
             {plan.settings.startDate !== "first_january" && <label>Earliest start<input type="date" value={plan.settings.startDate} onChange={(event) => setPlan({ ...plan, settings: { ...plan.settings, startDate: event.target.value } })} /></label>}
-          </div><button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => submitRun(plan)}>Run confirmed strategy</button></div>}
+          </div><button className="primary-button" type="button" disabled={Boolean(busy) || !selectedStrategyId} onClick={() => submitRun(plan)}>Run confirmed strategy</button></div>}
       </section>
 
       {(busy || error || notice) && <div className="bt-feedback" role="status">{busy && <p>Working: {busy}…</p>}{error && <p className="form-error">{error}</p>}{notice && <p className="form-success">{notice}</p>}</div>}
 
-      {runs.length > 0 && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Open results, reuse a strategy, rename it, or remove an old run.</p></div><div className="bt-run-list" data-sentry-mask>{runs.map((item) => <article key={item.id} className={`bt-saved-run ${run?.id === item.id ? "bt-saved-run-selected" : ""}`}><button className="bt-saved-run-open" type="button" onClick={() => openRun(item.id)}><strong>{item.name}</strong><span>{item.longTicker} · {item.timeframe} · {item.startDate}–{item.endDate} · v{item.engineVersion}</span><span>Final strategy value: <b>{money(item.finalValue)}</b> · Max drawdown: <b className="bt-negative">{pct(item.maxDrawdown)}</b></span><small>{new Date(item.createdAt).toLocaleString()}</small></button><div className="bt-saved-run-actions"><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => reuseRun(item.id)}>Reuse strategy</button><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "rename" }); setSavedRunName(item.name); setError(""); }}>Rename</button><button type="button" className="secondary-button danger-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "delete" }); setError(""); }}>Delete</button></div>
+      {selectedStrategyId && <section className="bt-panel"><div className="bt-section-head"><h2>Saved runs</h2><p>Runs for {strategies.find((strategy) => strategy.id === selectedStrategyId)?.name ?? "the selected strategy"}. Price files remain shared across strategies.</p></div>{filteredRuns.length ? <div className="bt-run-list" data-sentry-mask>{filteredRuns.map((item) => <article key={item.id} className={`bt-saved-run ${run?.id === item.id ? "bt-saved-run-selected" : ""}`}><button className="bt-saved-run-open" type="button" onClick={() => openRun(item.id)}><strong>{item.name}</strong><span>{item.longTicker} · {item.timeframe} · {item.startDate}–{item.endDate} · v{item.engineVersion}</span><span>Final strategy value: <b>{money(item.finalValue)}</b> · Max drawdown: <b className="bt-negative">{pct(item.maxDrawdown)}</b></span><small>{new Date(item.createdAt).toLocaleString()}</small></button><div className="bt-saved-run-actions"><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => reuseRun(item.id)}>Reuse strategy</button><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "rename" }); setSavedRunName(item.name); setError(""); }}>Rename</button><button type="button" className="secondary-button danger-button" disabled={Boolean(busy)} onClick={() => { setSavedRunAction({ id: item.id, kind: "delete" }); setError(""); }}>Delete</button></div>
         {savedRunAction?.id === item.id && savedRunAction.kind === "rename" && <form className="bt-saved-run-dialog" role="dialog" aria-label="Rename saved run" onSubmit={(event) => { event.preventDefault(); void renameSaved(item); }}><label>Saved run name<input autoFocus value={savedRunName} onChange={(event) => setSavedRunName(event.target.value)} maxLength={80} required /></label><div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => setSavedRunAction(null)}>Cancel</button><button className="primary-button" type="submit" disabled={Boolean(busy) || !savedRunName.trim()}>Save name</button></div></form>}
         {savedRunAction?.id === item.id && savedRunAction.kind === "delete" && <div className="bt-saved-run-dialog" role="alertdialog" aria-label="Delete saved run"><strong>Delete “{item.name}”?</strong><p>Its stored results and conversations will be removed. Imported CSV files will be kept.</p><div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={() => setSavedRunAction(null)}>Cancel</button><button className="secondary-button danger-button" type="button" disabled={Boolean(busy)} onClick={() => void removeSaved(item)}>Delete saved run</button></div></div>}
-      </article>)}</div></section>}
+      </article>)}</div> : <p className="muted">No saved runs for this strategy yet.</p>}</section>}
 
       {run && config && <section ref={reportRef} className="bt-panel bt-report" aria-label="Backtest report" data-sentry-mask tabIndex={-1}><div className="bt-section-head"><div><h2>{run.name ?? "Price-return report"}</h2><p>{run.result.startDate} to {run.result.endDate} · {isPlannedRun(run) ? run.plan.settings.timeframe ?? "daily" : run.input.timeframe ?? "daily"} · {backtestModels.find((item) => item.id === run.input.model)?.label} · engine v{isPlannedRun(run) ? run.engineVersion : 1}</p></div><button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={analyze}>Analyze with selected AI</button></div>
         <div className="bt-report-rules" data-sentry-mask><strong>Rules used for this run</strong>{isPlannedRun(run) ? <><p>{run.plan.transitions.map((item) => `${item.from} → ${item.to}: ${describeCondition(item.when, run.plan.settings.timeframe ?? "daily")}`).join(" · ")}</p><p>{run.plan.states.map((item) => `${item.label}: ${describeAllocations(item.allocations)}`).join(" · ")}</p></> : <><p>Enter: {run.input.strategy.entry.map(describePredicate).join(" AND ")}</p><p>Exit: {run.input.strategy.exit.map(describePredicate).join(" AND ")}</p></>}</div>
@@ -306,7 +335,7 @@ export function BacktestingWorkbench() {
         {run.comparison && <div className="bt-report-block"><h3>Suggested change vs original · same dates</h3><p>{run.comparison.startDate} to {run.comparison.endDate}</p><div className="bt-comparison-summary"><span>Original final <b>{money(run.comparison.baseline.finalBalance)}</b></span><span>Variant final <b>{money(run.comparison.variant.finalBalance)}</b></span><span>Original max drawdown <b>{pct(run.comparison.baseline.drawdowns[0].percent)}</b></span><span>Variant max drawdown <b>{pct(run.comparison.variant.drawdowns[0].percent)}</b></span></div><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Year</th><th>Original strategy</th><th>Suggested variant</th></tr></thead><tbody>{run.comparison.variant.annual.map((row, index) => <tr key={row.year}><th>{row.year}</th><td>{pct(run.comparison!.baseline.annual[index].returns.Strategy)}</td><td>{pct(row.returns.Strategy)}</td></tr>)}</tbody></table></div></div>}
         {config.sections.includes("annual") && <div className="bt-report-block"><h3>Annual returns</h3><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Year</th>{run.result.series.map((item) => <th key={item.ticker}>{item.ticker}</th>)}</tr></thead><tbody>{run.result.annual.map((row) => <tr key={row.year}><th>{row.year}</th>{run.result.series.map((item) => <td key={item.ticker} className={row.returns[item.ticker] < 0 ? "bt-negative" : ""}>{pct(row.returns[item.ticker])}</td>)}</tr>)}</tbody></table></div></div>}
         {config.sections.includes("drawdown") && <div className="bt-report-block"><h3>Maximum drawdown · full period</h3><div className="bt-table-scroll"><table className="bt-table"><thead><tr><th>Series</th><th>Peak-to-trough</th><th>Peak date</th><th>Trough date</th></tr></thead><tbody>{run.result.drawdowns.map((item) => <tr key={item.ticker}><th>{item.ticker}</th><td className="bt-negative">{pct(item.percent)}</td><td>{item.peakDate}</td><td>{item.troughDate}</td></tr>)}</tbody></table></div></div>}
-        {config.sections.includes("growth") && <div className="bt-report-block"><h3>Growth of {money(isPlannedRun(run) ? run.plan.settings.startingCapital : run.input.startingCapital)}</h3><p className="muted">Portfolio lines are normalized for comparison. Hover for the strategy balance and every asset&apos;s actual close; drag across the chart to zoom.</p><GrowthChart key={run.id + config.range + config.startDate + config.endDate} run={run} config={config} onRange={(startDate, endDate) => setReport({ ...config, range: "custom", startDate, endDate })} /></div>}
+        {config.sections.includes("growth") && <div className="bt-report-block"><div className="bt-chart-heading"><div><h3>Growth of {money(isPlannedRun(run) ? run.plan.settings.startingCapital : run.input.startingCapital)}</h3><p className="muted">Portfolio lines are normalized for comparison. Hover for values or drag across the chart to zoom.</p></div><div className="bt-chart-zoom" aria-label="Chart zoom controls" role="group"><button className="secondary-button" type="button" disabled={Boolean(busy) || !zoomAvailability.canZoomOut} onClick={() => void setReport(zoomChartRange(run.result.dates, config, "out"))}>− Zoom out</button><button className="secondary-button" type="button" disabled={Boolean(busy) || !zoomAvailability.canZoomIn} onClick={() => void setReport(zoomChartRange(run.result.dates, config, "in"))}>+ Zoom in</button><button className="secondary-button" type="button" disabled={Boolean(busy) || config.range === "full"} onClick={() => void setReport({ ...config, range: "full", startDate: undefined, endDate: undefined })}>Reset</button></div></div><GrowthChart key={run.id + config.range + config.startDate + config.endDate} run={run} config={config} onRange={(startDate, endDate) => void setReport({ ...config, range: "custom", startDate, endDate })} /></div>}
         <div className="bt-report-block"><h3>Calculation assumptions</h3>{!isPlannedRun(run) && activeIndicatorSettings(run.input.strategy).length > 0 && <p>{activeIndicatorSettings(run.input.strategy).join(" · ")}</p>}<p>{isPlannedRun(run) ? `Cash ${run.plan.settings.cashRate}% · short borrow ${run.plan.settings.borrowRate}% annual · slippage ${run.plan.settings.slippage}% · fee ${money(run.plan.settings.fee)} per leg.` : `Cash ${run.input.cashRate}% annual · slippage ${run.input.slippage}% · fee ${money(run.input.fee)} per leg.`}</p>{run.result.warnings.slice(0, 2).map((warning) => <p className="muted" key={warning}>{warning}</p>)}{(isPlannedRun(run) ? run.input.interpretationUsage : run.interpretationUsage) && <p className="muted">Rule interpretation: {(isPlannedRun(run) ? run.input.interpretationUsage : run.interpretationUsage)?.actualModel}</p>}</div>
         {latestCommentary && <div className="bt-report-block" data-sentry-mask><h3>AI analysis · {backtestModels.find((item) => item.id === latestCommentary.model)?.label}</h3><p className="muted">Actual model: {latestCommentary.usage.actualModel} · {latestCommentary.usage.inputTokens ?? "?"} input tokens · {latestCommentary.usage.outputTokens ?? "?"} output tokens · {latestCommentary.usage.costUsd === null ? "cost unavailable" : money(latestCommentary.usage.costUsd)}</p><p>{latestCommentary.summary}</p>{latestCommentary.riskNotes.length > 0 && <ul>{latestCommentary.riskNotes.map((note) => <li key={note}>{note}</li>)}</ul>}{isPlannedRun(run) && run.commentaries.at(-1)?.suggestions.map((item, index) => <div className="bt-suggestion" key={`${item.title}-${index}`}><h4>{item.title} <small>Untested hypothesis</small></h4><p>{item.reason}</p><p>{item.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · ")}</p><button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => submitRun(item.plan, run.id, `${run.input.prompt}\nSuggested variation: ${item.title}. ${item.reason}`)}>Test suggestion</button></div>)}</div>}
         {isPlannedRun(run) && <div className="bt-report-block bt-chat" data-sentry-mask><h3>Ask about this run</h3><p className="muted">The AI can discuss stored metrics and rules but cannot change this result.</p>{(run.resultConversation ?? []).map((turn) => <div key={turn.id} className={`bt-chat-turn bt-chat-${turn.role}`}><strong>{turn.role === "user" ? "You" : "AI"}</strong><p>{turn.content}</p></div>)}<div className="bt-chat-compose"><textarea value={resultChatInput} onChange={(event) => setResultChatInput(event.target.value)} rows={2} maxLength={2000} placeholder="Ask about drawdown, returns, rules, or where the analysis is uncertain" /><button type="button" className="secondary-button" disabled={Boolean(busy) || !resultChatInput.trim()} onClick={sendResultChat}>Send</button></div></div>}

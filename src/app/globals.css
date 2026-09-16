@@ -3447,6 +3447,7 @@ h1 {
 .bt-panel input[type="file"] { width: 100%; padding: .6rem; }
 .bt-panel textarea { width: 100%; min-height: 7rem; margin-top: .45rem; padding: .85rem; border: 1px solid var(--border-bright); border-radius: .7rem; background: #08110d; color: var(--text); font: inherit; resize: vertical; }
 .bt-grid, .bt-upload-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); align-items: end; gap: .9rem; }
+.bt-new-strategy { display: grid; grid-template-columns: minmax(14rem, 1fr) auto auto; align-items: end; gap: .6rem; margin: .85rem 0; padding: .8rem; border: 1px solid var(--border); border-radius: .7rem; background: var(--surface-soft); }
 .bt-upload-form { grid-template-columns: minmax(7rem, .6fr) minmax(9rem, .7fr) minmax(15rem, 1.6fr) minmax(17rem, 1.4fr) auto; }
 .bt-panel .bt-checkbox { display: inline-flex; align-items: center; gap: .45rem; font-size: .82rem; font-weight: 500; }
 .bt-checkbox input { width: 1rem; height: 1rem; }
@@ -3516,6 +3517,10 @@ h1 {
 .bt-report-block { margin-top: 1.4rem; padding-top: 1.35rem; border-top: 1px solid var(--border); }
 .bt-report-block p { margin: .65rem 0; }
 .bt-report-block summary { cursor: pointer; font-weight: 720; }
+.bt-chart-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: .75rem; }
+.bt-chart-heading h3, .bt-chart-heading p { margin-top: 0; }
+.bt-chart-zoom { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .45rem; }
+.bt-chart-zoom .secondary-button { padding: .48rem .7rem; font-size: .76rem; white-space: nowrap; }
 .bt-chart-wrap { position: relative; border: 1px solid var(--border); border-radius: .8rem; background: #07110d; overflow: hidden; }
 .bt-chart { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: none; user-select: none; }
 .bt-chart-legend { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1.3rem; padding: .8rem 1rem; border-bottom: 1px solid var(--border); font-size: .79rem; }
@@ -3541,7 +3546,7 @@ h1 {
 .bt-chat-compose .secondary-button { flex: none; }
 @media (max-width: 1050px) { .bt-report-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 850px) { .bt-upload-form { grid-template-columns: 1fr 1fr; } .bt-section-head { display: block; } .bt-section-head p { margin-top: .3rem; } }
-@media (max-width: 550px) { .bt-upload-form, .bt-report-controls { grid-template-columns: 1fr; } .bt-panel { padding: 1rem; } .bt-report-settings-description { display: none; } .bt-report-ai-row, .bt-chat-compose { flex-direction: column; } .bt-report-ai-row .secondary-button, .bt-chat-compose .secondary-button { align-self: stretch; } .bt-chat-turn { max-width: 100%; } .bt-saved-run-dialog > div { align-items: stretch; flex-direction: column-reverse; } }
+@media (max-width: 550px) { .bt-upload-form, .bt-report-controls, .bt-new-strategy { grid-template-columns: 1fr; } .bt-panel { padding: 1rem; } .bt-report-settings-description { display: none; } .bt-report-ai-row, .bt-chat-compose, .bt-chart-heading { flex-direction: column; } .bt-report-ai-row .secondary-button, .bt-chat-compose .secondary-button { align-self: stretch; } .bt-chart-zoom { justify-content: flex-start; } .bt-chat-turn { max-width: 100%; } .bt-saved-run-dialog > div { align-items: stretch; flex-direction: column-reverse; } }
 
 /* Isolated Swing Trade workspace */
 .swing-shell { width: min(94vw, 90rem); }
@@ -3551,6 +3556,19 @@ h1 {
 .swing-upload { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: .7rem; margin: 1rem 0; }
 .swing-upload label { display: grid; gap: .4rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
 .swing-upload input[type="file"] { padding: .55rem; }
+.swing-watchlist-picker { display: grid; gap: .8rem; margin: 1rem 0; padding: .9rem; border: 1px solid var(--border-bright); border-radius: .75rem; background: var(--surface-soft); }
+.swing-picker-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.swing-picker-head > div { display: grid; gap: .2rem; }
+.swing-picker-head span { color: var(--muted); font-size: .78rem; }
+.swing-picker-head label { min-width: min(16rem, 100%); }
+.swing-picker-actions, .swing-picker-footer { display: flex; flex-wrap: wrap; gap: .55rem; }
+.swing-picker-footer { justify-content: flex-end; }
+.swing-picker-list { display: grid; max-height: 24rem; overflow: auto; border: 1px solid var(--border); border-radius: .6rem; background: #08110d; }
+.swing-picker-list label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .7rem; padding: .6rem .7rem; border-bottom: 1px solid var(--border); color: var(--text); cursor: pointer; }
+.swing-picker-list label:last-child { border-bottom: 0; }
+.swing-picker-list input { width: 1rem; height: 1rem; min-height: 0; }
+.swing-picker-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swing-picker-list strong { color: var(--muted); font-size: .75rem; }
 .swing-symbol-list { max-height: 15rem; margin: 1rem 0; padding: 0; overflow: auto; list-style: none; border-block: 1px solid var(--border); }
 .swing-symbol-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .8rem; }
 .swing-symbol-list li span { color: var(--muted); }
@@ -3594,4 +3612,4 @@ h1 {
 .swing-evidence-list { display: grid; gap: .65rem; padding-left: 1.2rem; }
 .swing-blueprint hr { margin: 1.4rem 0; border: 0; border-top: 1px solid var(--border); }
 @media (max-width: 900px) { .swing-control-grid, .swing-macro, .audit-grid { grid-template-columns: 1fr; } .swing-anchor-grid { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 600px) { .swing-upload, .swing-anchor-grid { grid-template-columns: 1fr; } .swing-progress { grid-template-columns: 1fr; } .swing-progress progress { grid-column: 1; } }
+@media (max-width: 600px) { .swing-upload, .swing-anchor-grid { grid-template-columns: 1fr; } .swing-progress { grid-template-columns: 1fr; } .swing-progress progress { grid-column: 1; } .swing-picker-head { align-items: stretch; flex-direction: column; } .swing-picker-head label { min-width: 0; } .swing-picker-list label { grid-template-columns: auto minmax(0, 1fr); } .swing-picker-list strong { grid-column: 2; } }
