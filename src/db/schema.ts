@@ -26,6 +26,7 @@ import {
 import type { WatchlistEntry } from "@/settings/types";
 import type { FourPhaseReport, IndicatorReadings } from "@/analysis/types";
 import type { ManualScanTimeframe } from "@/analysis/types";
+import type { SwingCandidateResult, SwingChartInput, SwingMacroResult } from "@/swing/types";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -94,6 +95,11 @@ export const outcomeResultEnum = pgEnum("outcome_result", [
   "stale",
   "missing_data",
 ]);
+export const swingRunStatusEnum = pgEnum("swing_run_status", ["scheduled", "running", "completed", "partial", "failed", "missed"]);
+export const swingRunModeEnum = pgEnum("swing_run_mode", ["automatic", "manual"]);
+export const swingArtifactRoleEnum = pgEnum("swing_artifact_role", ["macro", "candidate"]);
+export const swingCandidateStatusEnum = pgEnum("swing_candidate_status", ["pending", "completed", "failed"]);
+export const swingDirectionEnum = pgEnum("swing_direction", ["LONG", "SHORT", "NO_TRADE"]);
 
 const modelAllowlistSql = sql.raw(
   MODEL_IDS.map((modelId) => `'${modelId.replaceAll("'", "''")}'`).join(", "),
@@ -585,6 +591,185 @@ export const schedulerHeartbeats = pgTable(
   },
   (table) => [index("scheduler_heartbeats_date_idx").on(table.marketDate, table.observedAt)],
 );
+
+export const swingWatchlistVersions = pgTable("swing_watchlist_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  versionNumber: integer("version_number").notNull().unique(),
+  sourceFilename: text("source_filename").notNull(),
+  sourceType: text("source_type").notNull(),
+  entryCount: integer("entry_count").notNull(),
+  contentHash: text("content_hash").notNull(),
+  createdAt: timestamps.createdAt,
+}, (table) => [index("swing_watchlist_versions_created_idx").on(table.createdAt)]);
+
+export const swingWatchlistEntries = pgTable("swing_watchlist_entries", {
+  versionId: uuid("version_id").references(() => swingWatchlistVersions.id, { onDelete: "cascade" }).notNull(),
+  position: integer("position").notNull(),
+  stockName: text("stock_name").notNull(),
+  symbol: text("symbol").notNull(),
+  exchange: text("exchange").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.versionId, table.position] }),
+  uniqueIndex("swing_watchlist_version_symbol_unique").on(table.versionId, table.symbol),
+]);
+
+export const swingPromptRevisions = pgTable("swing_prompt_revisions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  revisionNumber: integer("revision_number").notNull().unique(),
+  instructions: text("instructions").notNull(),
+  instructionsHash: text("instructions_hash").notNull(),
+  templateVersion: text("template_version").notNull(),
+  createdAt: timestamps.createdAt,
+}, (table) => [index("swing_prompt_revisions_created_idx").on(table.createdAt)]);
+
+export const activeSwingPromptRevision = pgTable("active_swing_prompt_revision", {
+  id: integer("id").primaryKey().default(1),
+  activeRevisionId: uuid("active_revision_id").references(() => swingPromptRevisions.id).notNull(),
+  updatedAt: timestamps.updatedAt,
+}, (table) => [check("active_swing_prompt_revision_singleton", sql`${table.id} = 1`)]);
+
+export const swingSettings = pgTable("swing_settings", {
+  id: integer("id").primaryKey().default(1),
+  automaticEnabled: boolean("automatic_enabled").default(false).notNull(),
+  activeWatchlistVersionId: uuid("active_watchlist_version_id").references(() => swingWatchlistVersions.id, { onDelete: "set null" }),
+  ...timestamps,
+}, (table) => [check("swing_settings_singleton", sql`${table.id} = 1`)]);
+
+export const swingRuns = pgTable("swing_runs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  mode: swingRunModeEnum("mode").notNull(),
+  status: swingRunStatusEnum("status").default("scheduled").notNull(),
+  sessionDate: text("session_date").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  requestId: uuid("request_id"),
+  watchlistVersionId: uuid("watchlist_version_id").references(() => swingWatchlistVersions.id).notNull(),
+  promptRevisionId: uuid("prompt_revision_id").references(() => swingPromptRevisions.id).notNull(),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
+  leaseToken: uuid("lease_token"),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  stage: text("stage").default("queued").notNull(),
+  completedCandidates: integer("completed_candidates").default(0).notNull(),
+  failedCandidates: integer("failed_candidates").default(0).notNull(),
+  totalCandidates: integer("total_candidates").default(0).notNull(),
+  macroResult: jsonb("macro_result").$type<SwingMacroResult>(),
+  providerCalls: integer("provider_calls").default(0).notNull(),
+  costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("swing_runs_one_active_unique").on(sql`(1)`).where(sql`${table.status} in ('scheduled', 'running')`),
+  index("swing_runs_session_mode_idx").on(table.sessionDate, table.mode),
+  index("swing_runs_created_idx").on(table.createdAt),
+]);
+
+export const swingChartArtifacts = pgTable("swing_chart_artifacts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  runId: uuid("run_id").references(() => swingRuns.id, { onDelete: "cascade" }).notNull(),
+  role: swingArtifactRoleEnum("role").notNull(),
+  symbol: text("symbol").notNull(),
+  rendererVersion: text("renderer_version").notNull(),
+  inputHash: text("input_hash").notNull(),
+  imageHash: text("image_hash").notNull(),
+  mimeType: text("mime_type").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  byteLength: integer("byte_length").notNull(),
+  storageReference: text("storage_reference").notNull(),
+  frozenInput: jsonb("frozen_input").$type<SwingChartInput>().notNull(),
+  providerInput: jsonb("provider_input").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamps.createdAt,
+}, (table) => [
+  uniqueIndex("swing_chart_artifacts_run_role_symbol_unique").on(table.runId, table.role, table.symbol),
+  index("swing_chart_artifacts_hash_idx").on(table.imageHash),
+]);
+
+export const swingCandidates = pgTable("swing_candidates", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  runId: uuid("run_id").references(() => swingRuns.id, { onDelete: "cascade" }).notNull(),
+  chartArtifactId: uuid("chart_artifact_id").references(() => swingChartArtifacts.id, { onDelete: "set null" }),
+  watchlistPosition: integer("watchlist_position").notNull(),
+  stockName: text("stock_name").notNull(),
+  symbol: text("symbol").notNull(),
+  exchange: text("exchange").notNull(),
+  status: swingCandidateStatusEnum("status").default("pending").notNull(),
+  direction: swingDirectionEnum("direction"),
+  originalDirection: swingDirectionEnum("original_direction"),
+  observedPrice: numeric("observed_price", { precision: 20, scale: 8 }),
+  entryZoneLow: numeric("entry_zone_low", { precision: 20, scale: 8 }),
+  entryZoneHigh: numeric("entry_zone_high", { precision: 20, scale: 8 }),
+  stopLoss: numeric("stop_loss", { precision: 20, scale: 8 }),
+  profitTarget1: numeric("profit_target_1", { precision: 20, scale: 8 }),
+  profitTarget2: numeric("profit_target_2", { precision: 20, scale: 8 }),
+  conviction: text("conviction"),
+  visualQuality: text("visual_quality"),
+  riskReward: numeric("risk_reward", { precision: 12, scale: 2 }),
+  proximityPercent: numeric("proximity_percent", { precision: 12, scale: 2 }),
+  rejectionReason: text("rejection_reason"),
+  result: jsonb("result").$type<SwingCandidateResult>(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamps.createdAt,
+}, (table) => [
+  uniqueIndex("swing_candidates_run_symbol_unique").on(table.runId, table.symbol),
+  index("swing_candidates_run_order_idx").on(table.runId, table.watchlistPosition),
+]);
+
+export const swingModelRuns = pgTable("swing_model_runs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  runId: uuid("run_id").references(() => swingRuns.id, { onDelete: "cascade" }).notNull(),
+  candidateId: uuid("candidate_id").references(() => swingCandidates.id, { onDelete: "cascade" }),
+  phase: text("phase").notNull(),
+  requestedModel: text("requested_model").notNull(),
+  actualModel: text("actual_model"),
+  actualProvider: text("actual_provider"),
+  promptRevisionId: uuid("prompt_revision_id").references(() => swingPromptRevisions.id).notNull(),
+  templateVersion: text("template_version").notNull(),
+  promptSnapshot: text("prompt_snapshot").notNull(),
+  promptHash: text("prompt_hash").notNull(),
+  inputHash: text("input_hash").notNull(),
+  imageHashes: jsonb("image_hashes").$type<string[]>().notNull(),
+  requestSettings: jsonb("request_settings").$type<Record<string, unknown>>().notNull(),
+  status: text("status").default("pending").notNull(),
+  queueWaitMs: integer("queue_wait_ms").default(0).notNull(),
+  latencyMs: integer("latency_ms"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
+  rawResponse: jsonb("raw_response").$type<unknown>(),
+  failureKind: text("failure_kind"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamps.createdAt,
+}, (table) => [
+  uniqueIndex("swing_model_runs_run_phase_candidate_unique").on(table.runId, table.phase, table.candidateId),
+  index("swing_model_runs_run_idx").on(table.runId, table.createdAt),
+]);
+
+export const swingModelAttempts = pgTable("swing_model_attempts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  modelRunId: uuid("model_run_id").references(() => swingModelRuns.id, { onDelete: "cascade" }).notNull(),
+  attemptNumber: integer("attempt_number").notNull(),
+  status: text("status").notNull(),
+  failureKind: text("failure_kind"),
+  queueWaitMs: integer("queue_wait_ms").default(0).notNull(),
+  latencyMs: integer("latency_ms").notNull(),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
+  responseId: text("response_id"),
+  actualModel: text("actual_model"),
+  actualProvider: text("actual_provider"),
+  requestSettings: jsonb("request_settings").$type<Record<string, unknown>>().notNull(),
+  rawResponse: jsonb("raw_response").$type<unknown>(),
+  promptSnapshot: text("prompt_snapshot").notNull(),
+  promptHash: text("prompt_hash").notNull(),
+  createdAt: timestamps.createdAt,
+}, (table) => [
+  uniqueIndex("swing_model_attempts_run_number_unique").on(table.modelRunId, table.attemptNumber),
+]);
 
 export type AppSettingsRow = typeof appSettings.$inferSelect;
 export type NewAppSettingsRow = typeof appSettings.$inferInsert;

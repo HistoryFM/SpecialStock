@@ -1,6 +1,6 @@
 # SpecialStock
 
-SpecialStock is a private, single-user visual technical-analysis workspace for a small US-stock watchlist, with a separate historical Backtesting tab. In stock scans, Chart-Img renders a frozen TradingView chart, and only `google/gemini-2.5-pro` judges that image and fills the decision brief.
+SpecialStock is a private, single-user visual technical-analysis workspace for intraday scans, isolated daily Swing Trade analysis, and historical Backtesting. Chart-Img renders frozen TradingView charts, and only `google/gemini-2.5-pro` judges scan and Swing images.
 
 The scan pipeline does **not** calculate technical indicators for Gemini or send OHLC arrays or numeric indicator snapshots to Gemini. Backtesting calculates indicators locally from uploaded daily CSVs and simulates historical trades. The application does not place trades or provide autonomous execution.
 
@@ -22,8 +22,23 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Per-stock, Eastern-date History review of high-conviction bullish and bearish analyses, including manual results marked review-only.
 - Last valid analysis remains visible if a newer scan fails.
 - Authenticated Backtesting tab with versioned local CSV imports, confirmed multi-asset AI-interpreted plans, deterministic simulations, saved customizable reports, and manually tested AI suggestions.
+- An isolated authenticated Swing Trade workspace with an independent versioned 1–20-stock watchlist, daily macro-first visual analysis, ranked 3–21-day candidates, automatic and manual run history, verified chart/model audit, and a dedicated immutable prompt history.
 
 Automatic scanning requires an authenticated dashboard tab to remain open. It is intentionally not a background cloud service.
+
+Automatic Swing analysis similarly requires the local server and an authenticated SpecialStock tab to remain open. It runs once at 3:50:10 PM Eastern on normal sessions, or ten minutes and ten seconds before a calendar-provided early close. Swing automatic mode defaults off and never affects manual Swing runs.
+
+## Swing Trade contract
+
+Swing Trade is isolated from intraday scans and Backtesting. It never creates scan alerts, theses, evaluations, outcomes, or orders, and it never fetches structured OHLCV for analysis or calculates technical indicators locally.
+
+Each run snapshots the active Swing watchlist and prompt revision. It captures and hash-verifies daily SPY, QQQ, GLD, and TLT PNGs concurrently, sends those four exact images in one Gemini macro request, and fails before stock analysis if any macro artifact or anchor is unusable. Candidate charts are then captured with a five-request limit and analyzed independently from their exact verified PNG plus the locked macro JSON. Candidate failures do not cancel successful siblings.
+
+Swing charts use an 18-calendar-month daily range, regular US session, America/New_York timezone, dark candlesticks, a 1600×1920 PNG, and an 860-pixel main pane. The price pane contains EMA 8, EMA 20, SMA 50, SMA 200, and Bollinger Bands 20/2. Separate panes show Volume, RSI 14, MACD 12/26/9, CCI 14, and CMF 21. The official Chart-Img v2 contracts do not expose a Volume moving-average input, an RSI 50 midline override, or a CCI zero-line override; no undocumented provider fields are sent. The exact request body is locked by unit tests. Every 3:50 PM far-right daily candle is labeled open and provisional.
+
+Gemini receives no browsing, tools, news, fundamentals, current broker quote, other timeframe, OHLC array, or locally calculated indicator snapshot. Exact values may be used only when visually legible. Unreadable execution evidence produces `NO_TRADE`; an unreadable exact volume ratio prevents HIGH conviction. Strict JSON is validated before display, then rendered as a detailed blueprint with the visible pattern, polarity zones, moving-average geometry, separate Volume/MACD/RSI/CCI/CMF observations, three-candle physics, a daily-chart trigger, and visible-evidence rationales for every directional level. `NO_TRADE` results show conditions to watch without publishing hypothetical executable levels. The server—not Gemini—calculates conservative risk-to-reward and entry proximity, downgrades directional results below 1.5 R:R, and sorts actionable candidates by proximity, conviction, R:R, visual quality, then watchlist order.
+
+The Swing Prompt Studio stores immutable revisions independently from scan prompts. Editable methodology cannot change the sole-image evidence rule, Gemini model, runtime metadata, JSON schema, retry/timeout rules, image verification, or persistence side effects. Every macro and stock model attempt retains the exact rendered prompt and hash, image hashes, settings, usage, cost, response, latency, and failure classification for authenticated audit.
 
 ## Analysis contract
 
@@ -85,6 +100,7 @@ The model is locked to `google/gemini-2.5-pro` through OpenRouter. Automatic com
 | Chart provider | Chart-Img v2 advanced TradingView chart endpoint |
 | Scan analysis provider | OpenRouter using only `google/gemini-2.5-pro` |
 | Backtesting interpretation/commentary | Separate OpenRouter allowlist: Gemini 2.5 Pro, GPT-5.6 Sol High, Claude Opus 5 High |
+| Swing analysis | Isolated daily Chart-Img profile and `google/gemini-2.5-pro` macro/candidate requests |
 | Chart storage | Content-addressed local PNG files with SHA-256 verification |
 | Calendar/outcomes | Alpaca when configured; never used for chart indicators or Gemini numeric context |
 | Scheduling | Authenticated browser leader, concurrent due-slot batch (up to 20), database idempotency and per-symbol–interval exclusion |
@@ -104,6 +120,7 @@ Sentry receives 100% tracing, structured logs, and replay coverage for the local
 - Full Settings edits record local add/remove/symbol/exchange/Auto intent, client validation or submission, and the server's added, removed, reordered, exchange-changed, and Auto-changed symbols. Optimistic-concurrency failures include the expected and observed versions.
 - Scan and `gen_ai.chat` spans remain correlated beneath the batch trace, including provider attempts, retries, tokens, cost, revision IDs, and prompt hashes. Customized prompts, chat text, and model response bodies are excluded from Sentry.
 - Backtesting traces link browser actions to CSV import, strategy interpretation, the confirmed deterministic run, optional AI analysis, and report customization. AI calls have `gen_ai.chat` spans with model, phase, reported usage, and cost; unavailable usage remains unknown. Strategy prompts, imported prices, and AI responses stay out of Sentry, and Backtesting inputs and results are masked from Replay.
+- Swing traces and logs use the `swing.` namespace for watchlist versions, prompt revisions, scheduler dispatch, run stages, provider attempts, retries, integrity checks, progress, and final outcomes. Uploaded contents, full symbol lists, charts, prompts, instructions, and candidate narratives are excluded from telemetry and masked or blocked in Replay.
 
 Useful log searches begin with `scheduler.`, `scan.batch.`, `scan.manual_batch.`, `prompt.revision.`, `chat.`, `settings.auto.`, `settings.watchlist.`, or `backtesting.` and should be filtered to the relevant release and time window. A healthy 20-stock batch reports `specialstock.scan.batch_peak_in_flight:20`, a small `specialstock.scan.batch_launch_spread_ms`, and overlapping batch-item/scan spans.
 
@@ -180,6 +197,7 @@ All configuration is server-only unless explicitly stated otherwise. Never renam
 | `CHART_IMG_WIDTH` | Yes | Locked to 1600 for the approved layout |
 | `CHART_IMG_HEIGHT` | Yes | Locked to 1920 for the approved layout |
 | `CHART_ARTIFACT_DIR` | Yes | Local chart storage; defaults to `.data/chart-artifacts` |
+| `SWING_CHART_ARTIFACT_DIR` | Yes | Isolated Swing PNG storage; defaults to `.data/swing-chart-artifacts` |
 | `OPENROUTER_API_URL` | No | Provider endpoint override used by tests |
 | `ALPACA_API_KEY` | No | Optional calendar/outcome credential |
 | `ALPACA_API_SECRET` | No | Must be configured together with the Alpaca key |
@@ -235,6 +253,14 @@ The scheduler:
 
 Keep the dashboard open, the laptop awake, and the internet connection active.
 
+### Swing Trade
+
+Open **Swing Trade** after signing in. Import a separate CSV or XLSX watchlist with case-insensitive `Stock Name`, `Symbol`, and `Exchange` headers. It accepts 1–20 ordered US symbols from NASDAQ, NYSE, or AMEX and normalizes `NYSE American` to AMEX. Import validation is atomic: an invalid row leaves the active version unchanged. XLSX workbooks must contain exactly one populated worksheet. Previous immutable versions can be restored.
+
+Automatic Swing analysis is off by default. **Run now** remains available regardless of that toggle. The page reports macro capture, macro analysis, stock capture, and stock analysis progress; keeps automatic and manual history separate; and shows the macro regime, ranked actionable candidates, NO_TRADE results, and per-symbol failures. Opening a candidate displays the exact recomputed-hash-verified PNG, frozen Chart-Img metadata and input hash, prompt revision/hash and snapshot, locked macro context, validated JSON, rendered blueprint, inference settings, attempts, latency, usage, and cost.
+
+Provider calls use paid Chart-Img/OpenRouter capacity and are never used by routine tests. The configured daily amount remains informational and does not block Swing runs. All prices and levels are visual interpretations of a frozen chart, not broker quotes or execution instructions. Swing output never adds current-event or announcement claims, citations, fundamentals, analyst targets, options-chain selection, position sizing, or follow-up solicitations because those inputs are outside the verified chart evidence.
+
 The seeded universe is AAPL, MSFT, AMZN, GOOGL, META, TSLA, NVDA, AMD, AVGO, BE,
 MU, SKHY, SNDK, NOW, CRM, SPCX, ORCL, GLD, SLV, and USO. The default daily provider
 spend target is $12. It is informational and never stops scans. The routine
@@ -252,6 +278,7 @@ Local state is stored in:
 - `.env.local`: credentials, Auth.js secret, and password hash.
 - `.data/specialstock/`: embedded database.
 - `.data/chart-artifacts/`: exact PNGs used for analyses.
+- `.data/swing-chart-artifacts/`: exact daily PNGs used for Swing macro and candidate analyses.
 - `.data/backtesting/`: imported price versions and saved backtests, including AI usage and commentary.
 
 Complete scan graphs in completed, failed, or skipped state are permanently removed after seven rolling days. This cascades through their analyses, chat conversations/turns, reviews, theses, outcomes, notifications, model runs, and chart-artifact records; orphaned manual comparison groups are removed with the same cleanup. Shared content-addressed PNGs are retained while any retained chart record still references them, and spend ledgers/reservations remain available for accurate cost reporting. Prompt revisions are retained indefinitely, with one persistent active pointer for each prompt phase.
@@ -305,6 +332,7 @@ The end-to-end suite uses local mock providers. It verifies that the exact store
 - `src/settings/`: exchange-aware watchlist and per-stock automatic state.
 - `src/market-data/`: Alpaca/demo calendar and outcome provider support; no indicator calculation.
 - `src/backtesting/`: CSV validation, local indicator/trade engine, isolated AI transport, and versioned local storage.
+- `src/swing/`: Swing watchlists, prompt revisions, daily Chart-Img contract, verified artifacts, macro/candidate Gemini transport, deterministic ranking, scheduling, persistence, and run audit.
 - `src/app/`: authenticated Next.js UI and API routes.
 - `src/db/` and `drizzle/`: current schema and migrations.
 - `tests/e2e/` and `scripts/run-e2e-server.mjs`: fully mocked browser flow.
@@ -330,6 +358,8 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 - Automatic scans stop when the dashboard is closed, the laptop sleeps, or connectivity is lost.
 - Reloading or revisiting the dashboard can produce another idempotent server request for the current scheduled slot; existing completed/running work is reused, so provider operations and analysis records are not duplicated.
 - Regular US market sessions only; automatic scans run from 9:35 through 3:55 Eastern and extended hours are out of scope.
+- Automatic Swing runs are browser-driven and can be missed when no authenticated tab is open during the ten-minute slot. The last completed history remains stored when a newer run fails.
+- Chart-Img v2 currently documents no Volume moving-average input, RSI 50 midline override, or CCI zero-line override; Swing uses only documented provider fields and treats visually unreadable exact volume ratios conservatively.
 - The watchlist supports at most 20 stocks and remains single-user.
 - Dashboard history intentionally shows only the rolling last 24 hours; permanent scan-graph retention is seven rolling days.
 - This tool provides visual technical-analysis assistance, not investment advice, order execution, or guarantees of outcome.

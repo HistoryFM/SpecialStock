@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { logoutAction } from "@/app/(protected)/actions";
 import { NotificationBridge } from "@/app/(protected)/notification-bridge";
+import { SwingScheduler } from "@/app/(protected)/swing-scheduler";
 import { requireAuthorizedUser } from "@/auth/require-user";
 
 export default async function ProtectedLayout({
@@ -24,6 +25,7 @@ export default async function ProtectedLayout({
           <Link href="/alerts">Alerts</Link>
           <Link href="/evaluation">Evaluation</Link>
           <Link href="/backtesting">Backtesting</Link>
+          <Link href="/swing-trade">Swing Trade</Link>
           <Link href="/settings">Settings</Link>
         </nav>
         <form action={logoutAction}>
@@ -33,6 +35,7 @@ export default async function ProtectedLayout({
         </form>
       </header>
       <NotificationBridge />
+      <SwingScheduler />
       {children}
     </div>
   );

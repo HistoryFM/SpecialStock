@@ -3517,3 +3517,56 @@ h1 {
 @media (max-width: 1050px) { .bt-report-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 850px) { .bt-upload-form { grid-template-columns: 1fr 1fr; } .bt-section-head { display: block; } .bt-section-head p { margin-top: .3rem; } }
 @media (max-width: 550px) { .bt-upload-form, .bt-report-controls { grid-template-columns: 1fr; } .bt-panel { padding: 1rem; } .bt-report-settings-description { display: none; } .bt-report-ai-row { flex-direction: column; } .bt-report-ai-row .secondary-button { align-self: stretch; } }
+
+/* Isolated Swing Trade workspace */
+.swing-shell { width: min(94vw, 90rem); }
+.swing-stack { display: grid; gap: 1.1rem; min-width: 0; }
+.swing-stack > *, .swing-control-grid > * { min-width: 0; }
+.swing-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.1rem; }
+.swing-upload { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: .7rem; margin: 1rem 0; }
+.swing-upload label { display: grid; gap: .4rem; color: var(--muted); font-size: .8rem; font-weight: 650; }
+.swing-upload input[type="file"] { padding: .55rem; }
+.swing-symbol-list { max-height: 15rem; margin: 1rem 0; padding: 0; overflow: auto; list-style: none; border-block: 1px solid var(--border); }
+.swing-symbol-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .55rem 0; border-bottom: 1px solid var(--border); font-size: .8rem; }
+.swing-symbol-list li span { color: var(--muted); }
+.swing-history-list { display: grid; gap: .5rem; margin-top: .8rem; }
+.swing-history-list > div, .swing-history-list > button { display: flex; min-height: 2.8rem; align-items: center; justify-content: space-between; gap: 1rem; padding: .6rem .75rem; border: 1px solid var(--border); border-radius: .6rem; background: #09130f; color: var(--text); font: inherit; text-align: left; }
+.swing-history-list > button { display: grid; cursor: pointer; }
+.swing-history-list > button.active { border-color: var(--accent); }
+.swing-history-list small { color: var(--muted); }
+.swing-auto { display: inline-flex; align-items: center; gap: .7rem; margin: 1rem 0; font-weight: 700; }
+.swing-auto input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
+.swing-results h3 { margin-top: 2rem; }
+.swing-progress { display: grid; grid-template-columns: 1fr auto; gap: .45rem 1rem; margin: 1.2rem 0; color: var(--muted); font-size: .8rem; }
+.swing-progress strong { color: var(--text); text-transform: capitalize; }
+.swing-progress progress { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.swing-macro { display: grid; grid-template-columns: minmax(16rem, .7fr) 2fr; gap: 1rem; padding: 1rem; border: 1px solid var(--border); border-radius: .8rem; background: #09130f; }
+.swing-macro h3 { margin: 0 0 .5rem; }
+.swing-macro p { color: var(--muted); line-height: 1.55; }
+.swing-anchor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.swing-anchor-grid article { padding: .8rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); }
+.swing-anchor-grid article p { margin: .45rem 0; font-size: .78rem; }
+.swing-anchor-grid small { color: var(--accent); }
+.swing-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: .7rem; }
+.swing-table-wrap table { width: 100%; border-collapse: collapse; font-size: .77rem; }
+.swing-table-wrap th, .swing-table-wrap td { padding: .7rem .6rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.swing-table-wrap th { color: var(--muted); }
+.swing-table-wrap td small { display: block; margin-top: .25rem; color: var(--muted); }
+.swing-card-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .65rem; }
+.swing-card-list > * { display: grid; gap: .4rem; padding: .85rem; border: 1px solid var(--border); border-radius: .65rem; background: #09130f; }
+.swing-card-list span { color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.swing-prompt textarea { width: 100%; min-height: 31rem; padding: .9rem; border: 1px solid var(--border-bright); border-radius: .7rem; background: #08110d; color: var(--text); font: inherit; line-height: 1.5; resize: vertical; }
+.swing-prompt .prompt-effective-preview pre { height: 36rem; }
+.swing-detail { display: grid; gap: 1rem; }
+.swing-detail .page-heading { margin-block: 1rem; }
+.swing-chart { display: block; width: min(100%, 50rem); height: auto; margin: 0 auto 1.3rem; border: 1px solid var(--border); border-radius: .7rem; }
+.audit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin: 0; }
+.audit-grid div { min-width: 0; padding: .8rem; border: 1px solid var(--border); border-radius: .6rem; }
+.audit-grid dt { color: var(--muted); font-size: .7rem; font-weight: 750; text-transform: uppercase; }
+.audit-grid dd { margin: .4rem 0 0; overflow-wrap: anywhere; font-size: .78rem; line-height: 1.5; }
+.audit-grid pre, .swing-detail details pre { max-height: 30rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.swing-blueprint p, .swing-blueprint li { line-height: 1.65; }
+.swing-evidence-list { display: grid; gap: .65rem; padding-left: 1.2rem; }
+.swing-blueprint hr { margin: 1.4rem 0; border: 0; border-top: 1px solid var(--border); }
+@media (max-width: 900px) { .swing-control-grid, .swing-macro, .audit-grid { grid-template-columns: 1fr; } .swing-anchor-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .swing-upload, .swing-anchor-grid { grid-template-columns: 1fr; } .swing-progress { grid-template-columns: 1fr; } .swing-progress progress { grid-column: 1; } }
