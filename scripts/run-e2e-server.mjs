@@ -85,6 +85,8 @@ const mockServer = createServer(async (request, response) => {
     const backtestSystem = requestBody.messages?.[0]?.content;
     const backtestPhase = requestBody.response_format?.type === "json_object" && typeof backtestSystem === "string"
       ? backtestSystem.includes("You interpret historical daily-close portfolio strategies") ? "backtest_strategy"
+        : backtestSystem.includes("You help turn a historical portfolio strategy") ? "backtest_strategy_chat"
+          : backtestSystem.includes("Discuss one completed deterministic price-return backtest") ? "backtest_result_chat"
         : backtestSystem.includes("Choose only supported report controls") ? "backtest_report"
           : backtestSystem.includes("A suggested plan") ? "backtest_analysis" : null : null;
     if (backtestPhase) {
@@ -96,11 +98,13 @@ const mockServer = createServer(async (request, response) => {
         return;
       }
       const atom = (relation) => ({ kind: "price_sma", ticker: "TQQQ", period: 50, bandPct: 0, relation });
-      const plan = { version: 2, settings: { startingCapital: 1000, cashRate: 2.5, borrowRate: 0, slippage: 0, fee: 0, startDate: "first_january" },
+      const plan = { version: backtestPhase === "backtest_strategy_chat" ? 3 : 2, settings: { startingCapital: 1000, cashRate: 2.5, borrowRate: 0, slippage: 0, fee: 0, timeframe: backtestSystem.includes("selected data timeframe is weekly") ? "weekly" : "daily", startDate: "first_january" },
         states: [{ id: "long", label: "Long TQQQ", allocations: [{ ticker: "TQQQ", side: "long", percent: 100 }] }],
         transitions: [{ from: "cash", to: "long", when: { any: [[atom("crosses_above")]] } }, { from: "long", to: "cash", when: { any: [[atom("crosses_below")]] } }], stops: [], assumptions: ["No 200-day SMA filter."] };
       const variant = { ...plan, transitions: [{ ...plan.transitions[0], when: { any: [[atom("crosses_above"), { kind: "rsi", ticker: "TQQQ", period: 14, threshold: 30, relation: "below" }]] } }, plan.transitions[1]] };
       const content = backtestPhase === "backtest_strategy" ? { clarification: "", plan }
+        : backtestPhase === "backtest_strategy_chat" ? { reply: "The strategy is complete and ready for review.", plan }
+          : backtestPhase === "backtest_result_chat" ? { answer: "The saved maximum drawdown is the main measured risk in this run." }
         : backtestPhase === "backtest_report" ? { visibleSeries: ["Strategy", "QQQ"], sections: ["drawdown", "growth", "trades"], closeTickers: ["TQQQ", "SPY", "QQQ"], range: "last_year" }
           : { summary: "The strategy is sensitive to whipsaws and should be judged against the price-return benchmarks.", riskNotes: ["Maximum drawdown is measured over the full period."],
             suggestions: [{ title: "Add RSI filter", reason: "Test whether requiring RSI below 30 changes drawdown.", plan: variant }] };

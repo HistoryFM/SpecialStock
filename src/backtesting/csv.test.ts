@@ -31,4 +31,9 @@ describe("price CSV import", () => {
     expect(parsed.warnings.join(" ")).toMatch(/missing optional/);
     expect(() => parsePriceCsv("Date,Close/Last\n01/03/2022,N/A\n01/04/2022,101")).toThrow(/Invalid CSV price/);
   });
+
+  it("accepts regular weekly spacing without daily-gap warnings", () => {
+    const parsed = parsePriceCsv("Date,Close\n01/07/2022,100\n01/14/2022,101\n01/21/2022,102", "weekly");
+    expect(parsed.warnings.join(" ")).not.toMatch(/Long weekday gap|Irregular weekly spacing/);
+  });
 });

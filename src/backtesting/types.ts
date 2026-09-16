@@ -7,6 +7,8 @@ export const backtestModels = [
 ] as const;
 export const modelSchema = z.enum(["google/gemini-2.5-pro", "openai/gpt-5.6-sol", "anthropic/claude-opus-5"]);
 export type BacktestModel = z.infer<typeof modelSchema>;
+export const timeframeSchema = z.enum(["daily", "weekly"]);
+export type BacktestTimeframe = z.infer<typeof timeframeSchema>;
 
 export const predicateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("price_sma"), period: z.union([z.literal(50), z.literal(200)]), relation: z.enum(["above", "below", "crosses_above", "crosses_below"]) }).strict(),
@@ -39,23 +41,27 @@ export const runInputSchema = z.object({
   fee: z.number().min(0).max(1e6),
   prompt: z.string().min(3).max(4000),
   model: modelSchema,
+  timeframe: timeframeSchema.default("daily"),
   strategy: strategySchema,
   parentRunId: z.string().uuid().optional(),
 }).strict().refine((value) => value.mode !== "inverse" || Boolean(value.inverseTicker), "Inverse ticker is required.");
-export type RunInput = z.infer<typeof runInputSchema>;
+export type RunInput = Omit<z.infer<typeof runInputSchema>, "timeframe"> & { timeframe?: BacktestTimeframe };
 
 export type PriceRow = { date: string; close: number; open: number | null; high: number | null; low: number | null; volume: number | null };
-export type PriceFile = { id: string; ticker: string; name: string; uploadedAt: string; firstDate: string; lastDate: string; rows: number; splitAdjustedConfirmed: boolean; warnings: string[] };
+export type PriceFile = { id: string; ticker: string; name: string; uploadedAt: string; firstDate: string; lastDate: string; rows: number; timeframe: BacktestTimeframe; splitAdjustedConfirmed: boolean; warnings: string[] };
 export type Trade = { date: string; action: "buy" | "sell"; ticker: string; equityAfter: number; fee: number; slippagePercent: number;
   intent?: "buy_long" | "sell_long" | "open_short" | "cover_short"; reason?: string; closePrices?: Record<string, number> };
 export type Series = { ticker: string; values: number[] };
 export type Drawdown = { ticker: string; percent: number; peakDate: string; troughDate: string };
 export type AnnualRow = { year: string; returns: Record<string, number> };
-export type RunResult = { startDate: string; endDate: string; dates: string[]; series: Series[]; annual: AnnualRow[]; drawdowns: Drawdown[]; trades: Trade[]; fileIds: Record<string, string>; warnings: string[] };
+export type RunResult = { startDate: string; endDate: string; dates: string[]; series: Series[]; closeSeries?: Series[]; annual: AnnualRow[]; drawdowns: Drawdown[]; trades: Trade[]; fileIds: Record<string, string>; warnings: string[] };
 export type ModelUsage = { model: BacktestModel; actualModel: string; requestedReasoning: { effort: "high" } | { max_tokens: number }; maxOutputTokens: number; responseFormat: "json_object"; requireParameters: true; inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; costUsd: number | null; at: string };
 export type Suggestion = { title: string; reason: string; strategy: Strategy };
 export type Commentary = { model: BacktestModel; summary: string; riskNotes: string[]; suggestions: Suggestion[]; usage: ModelUsage };
-export type SavedRun = { id: string; createdAt: string; input: RunInput; result: RunResult; interpretationUsage?: ModelUsage; commentaries: Commentary[];
+export const conversationTurnSchema = z.object({ id: z.string().uuid(), role: z.enum(["user", "assistant"]), content: z.string().trim().min(1).max(6000), at: z.iso.datetime(), usage: z.unknown().optional() }).strict();
+export type ConversationTurn = { id: string; role: "user" | "assistant"; content: string; at: string; usage?: ModelUsage };
+export type SavedRun = { id: string; createdAt: string; name?: string; input: RunInput; result: RunResult; interpretationUsage?: ModelUsage; commentaries: Commentary[];
+  setupConversation?: ConversationTurn[]; resultConversation?: ConversationTurn[];
   comparison?: { baselineRunId: string; startDate: string; endDate: string; baseline: { annual: AnnualRow[]; drawdowns: Drawdown[]; finalBalance: number }; variant: { annual: AnnualRow[]; drawdowns: Drawdown[]; finalBalance: number } } };
 
 export function describePredicate(predicate: Predicate): string {

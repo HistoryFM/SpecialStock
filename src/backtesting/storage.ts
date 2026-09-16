@@ -1,12 +1,12 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parsePriceCsv } from "./csv";
-import { describePredicate, type PriceFile, type PriceRow } from "./types";
+import { describePredicate, type BacktestTimeframe, type PriceFile, type PriceRow } from "./types";
 import { describeAllocations, isPlannedRun, type AnyRun } from "./plan";
 
 const e2eDatabase = resolve(process.env.LOCAL_DATABASE_PATH ?? ".data/e2e");
@@ -26,19 +26,21 @@ async function listJson(directory: string): Promise<string[]> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
 }
 
-export async function importPriceFile(input: { ticker: string; name: string; content: string; splitAdjustedConfirmed: boolean }): Promise<PriceFile> {
+const normalizeFile = (file: Omit<PriceFile, "timeframe"> & { timeframe?: BacktestTimeframe }): PriceFile => ({ ...file, timeframe: file.timeframe ?? "daily" });
+
+export async function importPriceFile(input: { ticker: string; name: string; content: string; timeframe: BacktestTimeframe; splitAdjustedConfirmed: boolean }): Promise<PriceFile> {
   if (!input.splitAdjustedConfirmed) throw new Error("Confirm that the historical close prices are split-adjusted.");
   if (Buffer.byteLength(input.content) > 10_000_000) throw new Error("CSV exceeds the 10 MB import limit.");
-  const { rows, warnings } = parsePriceCsv(input.content);
-  const id = createHash("sha256").update(input.ticker).update("\0").update(input.content).digest("hex");
+  const { rows, warnings } = parsePriceCsv(input.content, input.timeframe);
+  const id = createHash("sha256").update(input.ticker).update("\0").update(input.timeframe).update("\0").update(input.content).digest("hex");
   const metadata: PriceFile = {
     id, ticker: input.ticker, name: input.name.slice(0, 180), uploadedAt: new Date().toISOString(),
-    firstDate: rows[0].date, lastDate: rows.at(-1)!.date, rows: rows.length,
+    firstDate: rows[0].date, lastDate: rows.at(-1)!.date, rows: rows.length, timeframe: input.timeframe,
     splitAdjustedConfirmed: true, warnings,
   };
   await mkdir(filesDir, { recursive: true });
   const path = join(filesDir, `${id}.json`);
-  try { return (JSON.parse(await readFile(path, "utf8")) as { metadata: PriceFile }).metadata; }
+  try { return normalizeFile((JSON.parse(await readFile(path, "utf8")) as { metadata: PriceFile }).metadata); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   await atomicJson(path, { metadata, rows });
   return metadata;
@@ -46,13 +48,13 @@ export async function importPriceFile(input: { ticker: string; name: string; con
 
 export async function listPriceFiles(): Promise<PriceFile[]> {
   const names = await listJson(filesDir);
-  const files = await Promise.all(names.map(async (name) => (JSON.parse(await readFile(join(filesDir, name), "utf8")) as { metadata: PriceFile }).metadata));
+  const files = await Promise.all(names.map(async (name) => normalizeFile((JSON.parse(await readFile(join(filesDir, name), "utf8")) as { metadata: PriceFile }).metadata)));
   return files.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
 }
 
-export async function loadLatestPriceFiles(tickers: string[]): Promise<Record<string, { id: string; rows: PriceRow[] }>> {
+export async function loadLatestPriceFiles(tickers: string[], timeframe: BacktestTimeframe = "daily"): Promise<Record<string, { id: string; rows: PriceRow[] }>> {
   const latest = new Map<string, PriceFile>();
-  for (const file of await listPriceFiles()) if (tickers.includes(file.ticker) && !latest.has(file.ticker)) latest.set(file.ticker, file);
+  for (const file of await listPriceFiles()) if (file.timeframe === timeframe && tickers.includes(file.ticker) && !latest.has(file.ticker)) latest.set(file.ticker, file);
   const output: Record<string, { id: string; rows: PriceRow[] }> = {};
   for (const [ticker, file] of latest) {
     const parsed = JSON.parse(await readFile(join(filesDir, `${file.id}.json`), "utf8")) as { rows: PriceRow[] };
@@ -72,15 +74,23 @@ export async function loadPriceFilesById(ids: Record<string, string>): Promise<R
   return output;
 }
 
-export async function listRunSummaries(): Promise<Array<{ id: string; createdAt: string; longTicker: string; mode: string; model: string; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number }>> {
+export async function listRunSummaries(): Promise<Array<{ id: string; name: string; createdAt: string; longTicker: string; mode: string; model: string; timeframe: BacktestTimeframe; startDate: string; endDate: string; entryRule: string; exitRule: string; engineVersion: number; finalValue: number; maxDrawdown: number }>> {
   const names = await listJson(runsDir);
   const runs = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(runsDir, name), "utf8")) as AnyRun));
-  return runs.map((run) => isPlannedRun(run)
-    ? { id: run.id, createdAt: run.createdAt, longTicker: run.plan.states.flatMap((state) => state.allocations.map((item) => item.ticker))[0] ?? "CASH", mode: "multi-asset", model: run.input.model,
+  return runs.map((run) => {
+    const strategy = run.result.series.find((item) => item.ticker === "Strategy") ?? run.result.series[0];
+    const drawdown = run.result.drawdowns.find((item) => item.ticker === "Strategy") ?? run.result.drawdowns[0];
+    const timeframe = isPlannedRun(run) ? run.plan.settings.timeframe ?? "daily" : run.input.timeframe ?? "daily";
+    const primary = isPlannedRun(run) ? run.plan.states.flatMap((state) => state.allocations.map((item) => item.ticker))[0] ?? "CASH" : run.input.longTicker;
+    const common = { id: run.id, name: run.name ?? `${primary} ${timeframe === "weekly" ? "weekly" : "daily"} strategy`, createdAt: run.createdAt, timeframe,
+      finalValue: strategy.values.at(-1) ?? 0, maxDrawdown: drawdown?.percent ?? 0 };
+    return isPlannedRun(run)
+    ? { ...common, longTicker: primary, mode: "multi-asset", model: run.input.model,
       startDate: run.result.startDate, endDate: run.result.endDate, entryRule: run.plan.transitions.map((item) => `${item.from} → ${item.to}`).join(" · "),
-      exitRule: run.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · "), engineVersion: 2 }
-    : { id: run.id, createdAt: run.createdAt, longTicker: run.input.longTicker, mode: run.input.mode, model: run.input.model, startDate: run.result.startDate, endDate: run.result.endDate,
-      entryRule: run.input.strategy.entry.map(describePredicate).join(" AND "), exitRule: run.input.strategy.exit.map(describePredicate).join(" AND "), engineVersion: 1 }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      exitRule: run.plan.states.map((state) => `${state.label}: ${describeAllocations(state.allocations)}`).join(" · "), engineVersion: run.engineVersion }
+    : { ...common, longTicker: run.input.longTicker, mode: run.input.mode, model: run.input.model, startDate: run.result.startDate, endDate: run.result.endDate,
+      entryRule: run.input.strategy.entry.map(describePredicate).join(" AND "), exitRule: run.input.strategy.exit.map(describePredicate).join(" AND "), engineVersion: 1 };
+  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function saveRun(run: AnyRun): Promise<void> {
@@ -92,4 +102,18 @@ export async function getRun(id: string): Promise<AnyRun | null> {
   if (!/^[0-9a-f-]{36}$/.test(id)) return null;
   try { return JSON.parse(await readFile(join(runsDir, `${id}.json`), "utf8")) as AnyRun; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+}
+
+export async function renameRun(id: string, name: string): Promise<AnyRun | null> {
+  const run = await getRun(id);
+  if (!run) return null;
+  run.name = name;
+  await saveRun(run);
+  return run;
+}
+
+export async function deleteRun(id: string): Promise<boolean> {
+  if (!/^[0-9a-f-]{36}$/.test(id)) return false;
+  try { await unlink(join(runsDir, `${id}.json`)); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }

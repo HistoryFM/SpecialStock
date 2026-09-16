@@ -5,7 +5,7 @@ import * as Sentry from "@sentry/nextjs";
 import { z } from "zod";
 
 import { getServerEnv } from "@/config/env";
-import { modelSchema, strategySchema, type BacktestModel, type Commentary, type ModelUsage, type RunResult, type Strategy } from "./types";
+import { modelSchema, strategySchema, type BacktestModel, type BacktestTimeframe, type Commentary, type ConversationTurn, type ModelUsage, type RunResult, type Strategy } from "./types";
 import { reportConfigSchema, requiredTickers, strategyPlanSchema, type PlannedCommentary, type ReportConfig, type StrategyPlan } from "./plan";
 
 const interpretationSchema = z.object({ clarification: z.string(), strategy: strategySchema.nullable() }).strict();
@@ -17,6 +17,9 @@ const commentarySchema = z.object({
 const planInterpretationSchema = z.object({ clarification: z.string(), plan: strategyPlanSchema.nullable() }).strict();
 const planSuggestionSchema = z.object({ title: z.string().min(1).max(120), reason: z.string().min(1).max(600), plan: strategyPlanSchema }).strict();
 const planCommentarySchema = z.object({ summary: z.string().min(1).max(3000), riskNotes: z.array(z.string().max(500)).max(6), suggestions: z.array(z.unknown()).max(3) }).strict();
+const planChatSchema = z.object({ reply: z.string().min(1).max(3000), plan: strategyPlanSchema.nullable() }).strict();
+const resultChatSchema = z.object({ answer: z.string().min(1).max(4000) }).strict();
+type AiMessage = { role: "system" | "user" | "assistant"; content: string };
 
 function canonicalizeNumericFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeNumericFields);
@@ -31,7 +34,7 @@ function canonicalizeNumericFields(value: unknown): unknown {
 
 type BacktestAiPhase = "interpret" | "analysis" | "report";
 
-async function callModel<T>(phase: BacktestAiPhase, model: BacktestModel, messages: { role: "system" | "user"; content: string }[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
+async function callModel<T>(phase: BacktestAiPhase | "chat", model: BacktestModel, messages: AiMessage[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
   const promptHash = createHash("sha256").update(JSON.stringify(messages)).digest("hex");
   const promptBytes = messages.reduce((total, message) => total + Buffer.byteLength(message.content), 0);
   const attributes: Record<string, string | number | boolean> = {
@@ -77,7 +80,7 @@ async function callModel<T>(phase: BacktestAiPhase, model: BacktestModel, messag
   });
 }
 
-async function requestModel<T>(model: BacktestModel, messages: { role: "system" | "user"; content: string }[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
+async function requestModel<T>(model: BacktestModel, messages: AiMessage[], validator: z.ZodType<T>): Promise<{ value: T; usage: ModelUsage }> {
   const key = getServerEnv().OPENROUTER_API_KEY;
   if (!key) throw new Error("Configure the existing OpenRouter key to use AI in Backtesting.");
   const reasoning = model === "google/gemini-2.5-pro" ? { max_tokens: 2_048, exclude: true } : { effort: "high", exclude: true };
@@ -173,11 +176,33 @@ export async function interpretPlan(prompt: string, selectedModel: string, avail
   return answer;
 }
 
+export async function continuePlanConversation(input: { model: BacktestModel; timeframe: BacktestTimeframe; availableTickers: string[]; turns: ConversationTurn[] }) {
+  const unit = input.timeframe === "weekly" ? "weekly bars and weekly closes" : "daily bars and daily closes";
+  const system = `You help turn a historical portfolio strategy into a validated plan. The selected data timeframe is ${input.timeframe}; all indicators operate on ${unit}. If the user's units conflict with that timeframe, ask a specific clarification. Available ${input.timeframe} CSV tickers: ${input.availableTickers.join(", ")}. SPY and QQQ are required. Return JSON with exactly reply and plan. reply is a concise helpful response or one specific question. plan is null until the rules are complete. A complete plan uses version 3 and settings keys startingCapital, cashRate, borrowRate, slippage, fee, timeframe (exactly "${input.timeframe}"), and startDate. The implicit starting state is cash. States contain allocations with gross exposure no more than 100%. Transitions use when.any as OR-of-AND groups. Supported atoms are price_sma (period 50 or 200 and bandPct), rsi, and macd; supported relations are above, below, at_or_above, at_or_below, crosses_above, crosses_below. Stops may be fixedPct or trailingPct. Never invent missing rules, assets, performance, or execution advice. Never add a 200-period SMA unless requested. JSON only.`;
+  const messages: AiMessage[] = [{ role: "system", content: system }, ...input.turns.slice(-16).map((turn) => ({ role: turn.role, content: turn.content }))];
+  const answer = await callModel("chat", input.model, messages, planChatSchema);
+  if (answer.value.plan) {
+    answer.value.plan = strategyPlanSchema.parse({ ...answer.value.plan, version: 3, settings: { ...answer.value.plan.settings, timeframe: input.timeframe } });
+    if (requiredTickers(answer.value.plan).some((ticker) => !input.availableTickers.includes(ticker))) answer.value = { reply: "That plan needs an asset without an uploaded CSV. Import the missing ticker for this timeframe, then tell me to continue.", plan: null };
+  }
+  return answer;
+}
+
+export async function chatAboutPlannedRun(input: { model: BacktestModel; prompt: string; plan: StrategyPlan; result: RunResult; turns: ConversationTurn[] }) {
+  const context = { prompt: input.prompt, plan: input.plan, startDate: input.result.startDate, endDate: input.result.endDate,
+    annualReturns: input.result.annual, drawdowns: input.result.drawdowns, tradeCount: input.result.trades.length,
+    finalBalances: Object.fromEntries(input.result.series.map((item) => [item.ticker, item.values.at(-1)])),
+    sampleTrades: [...input.result.trades.slice(0, 20), ...input.result.trades.slice(-30)] };
+  const system = `Discuss one completed deterministic price-return backtest using only the supplied calculated context. Be explicit when a requested detail is not present. Do not claim untested improvement, invent prices, alter the stored run, or provide trade-execution instructions. Return JSON with exactly answer. Context: ${JSON.stringify(context)}`;
+  const messages: AiMessage[] = [{ role: "system", content: system }, ...input.turns.slice(-12).map((turn) => ({ role: turn.role, content: turn.content }))];
+  return callModel("chat", input.model, messages, resultChatSchema);
+}
+
 export async function analyzePlannedRun(input: { model: BacktestModel; prompt: string; plan: StrategyPlan; result: RunResult }): Promise<PlannedCommentary> {
   const context = { prompt: input.prompt, plan: input.plan, startDate: input.result.startDate, endDate: input.result.endDate,
     annualReturns: input.result.annual, drawdowns: input.result.drawdowns, tradeCount: input.result.trades.length,
     finalBalances: Object.fromEntries(input.result.series.map((item) => [item.ticker, item.values.at(-1)])) };
-  const system = `Return JSON keys summary, riskNotes (up to six strings), suggestions (up to three objects with title, reason, plan). Analyze only supplied calculated price-return metrics. Each suggestion is an untested hypothesis. A suggested plan must use the same version 2 structure, settings, and uploaded assets as the supplied plan, with explicit states and transitions. Only suggest supported SMA 50/200, RSI, MACD, percentage bands, allocations, or position stops. Do not invent measured results, executable code, or execution advice. JSON only.`;
+  const system = `Return JSON keys summary, riskNotes (up to six strings), suggestions (up to three objects with title, reason, plan). Analyze only supplied calculated price-return metrics. Each suggestion is an untested hypothesis. A suggested plan must use the same version 3 structure, settings, timeframe, and uploaded assets as the supplied plan, with explicit states and transitions. Only suggest supported SMA 50/200, RSI, MACD, percentage bands, allocations, or position stops. Do not invent measured results, executable code, or execution advice. JSON only.`;
   const { value, usage } = await callModel("analysis", input.model, [{ role: "system", content: system }, { role: "user", content: JSON.stringify(context) }], planCommentarySchema);
   const allowedTickers = new Set(Object.keys(input.result.fileIds));
   const suggestions = value.suggestions.flatMap((item) => { const parsed = planSuggestionSchema.safeParse(item);
@@ -192,6 +217,6 @@ export async function analyzePlannedRun(input: { model: BacktestModel; prompt: s
 }
 
 export async function customizeReport(input: { model: BacktestModel; prompt: string; current: ReportConfig; series: string[]; tickers: string[] }) {
-  const system = `Choose only supported report controls; no code or HTML. Return JSON with exactly visibleSeries (subset of ${JSON.stringify(input.series)}), sections (nonempty ordered subset of annual,drawdown,growth,trades), closeTickers (subset of ${JSON.stringify(input.tickers)}), range (full,last_year,last_two_years). Preserve existing selections unless asked to change them. Current settings: ${JSON.stringify(input.current)}. JSON only.`;
+  const system = `Choose only supported report controls; no code or HTML. Return JSON with visibleSeries (subset of ${JSON.stringify(input.series)}), sections (nonempty ordered subset of annual,drawdown,growth,trades), closeTickers (use all of ${JSON.stringify(input.tickers)}), and range (full,last_month,last_quarter,last_year,last_two_years). Preserve existing selections unless asked to change them. Current settings: ${JSON.stringify(input.current)}. Do not choose custom because exact dates are controlled manually. JSON only.`;
   return callModel("report", input.model, [{ role: "system", content: system }, { role: "user", content: input.prompt }], reportConfigSchema);
 }

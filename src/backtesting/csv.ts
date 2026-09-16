@@ -1,4 +1,4 @@
-import type { PriceRow } from "./types";
+import type { BacktestTimeframe, PriceRow } from "./types";
 
 function fields(line: string): string[] {
   const output: string[] = [];
@@ -42,9 +42,9 @@ function skippedWeekdays(start: string, end: string): number {
   return count;
 }
 
-export function parsePriceCsv(content: string): { rows: PriceRow[]; warnings: string[] } {
+export function parsePriceCsv(content: string, timeframe: BacktestTimeframe = "daily"): { rows: PriceRow[]; warnings: string[] } {
   const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length < 3) throw new Error("CSV needs a header and at least two daily rows.");
+  if (lines.length < 3) throw new Error("CSV needs a header and at least two price rows.");
   const header = fields(lines[0]).map((field) => field.toLowerCase());
   const column = (names: string[], required: boolean) => {
     const index = header.findIndex((field) => names.includes(field));
@@ -78,7 +78,8 @@ export function parsePriceCsv(content: string): { rows: PriceRow[]; warnings: st
   const optionalMissing = rows.filter((row) => (openIndex >= 0 && row.open === null) || (highIndex >= 0 && row.high === null) || (lowIndex >= 0 && row.low === null) || (volumeIndex >= 0 && row.volume === null)).length;
   if (optionalMissing) warnings.push(`${optionalMissing} row(s) have missing optional OHLC or volume values.`);
   if (rows.some((row) => { const day = new Date(`${row.date}T00:00:00Z`).getUTCDay(); return day === 0 || day === 6; })) warnings.push("Weekend dates found; confirm that each row represents an actual trading session.");
-  if (rows.some((row, index) => index > 0 && skippedWeekdays(rows[index - 1].date, row.date) >= 2)) warnings.push("Long weekday gap found; check whether market closures or missing sessions explain it.");
+  if (timeframe === "daily" && rows.some((row, index) => index > 0 && skippedWeekdays(rows[index - 1].date, row.date) >= 2)) warnings.push("Long weekday gap found; check whether market closures or missing sessions explain it.");
+  if (timeframe === "weekly" && rows.some((row, index) => index > 0 && ((Date.parse(row.date) - Date.parse(rows[index - 1].date)) / 86400000 < 4 || (Date.parse(row.date) - Date.parse(rows[index - 1].date)) / 86400000 > 10))) warnings.push("Irregular weekly spacing found; confirm that each row represents one weekly bar.");
   if (rows.some((row, index) => index > 0 && (row.close / rows[index - 1].close > 1.8 || row.close / rows[index - 1].close < 0.55))) warnings.push("Large price jump detected; verify split adjustment before relying on results.");
   return { rows, warnings };
 }

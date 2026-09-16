@@ -25,6 +25,19 @@ describe("confirmed multi-asset plans", () => {
     expect(result.series[0].values[2]).toBe(600);
     expect(result.series[0].values[3]).toBeCloseTo(600 + 300 * (10 / 90) + 300 * (Math.pow(1.02, 1 / 365) - 1) - 300 * .01 / 365);
     expect(result.trades[2].closePrices).toMatchObject({ QQQ: 90, TQQQ: 60, SPY: 102 });
+    expect(result.closeSeries?.find((item) => item.ticker === "TQQQ")?.values).toEqual([100, 120, 60, 70]);
+  });
+
+  it("treats weekly inputs as weekly bars without resampling", () => {
+    const weeklyDates = Array.from({ length: 60 }, (_, index) => new Date(Date.UTC(2020, 11, 4 + index * 7)).toISOString().slice(0, 10));
+    const weeklyFile = (ticker: string, jump = false) => ({ id: `${ticker}-weekly`, rows: weeklyDates.map((date, index): PriceRow => ({ date, close: jump && index >= 55 ? 120 : 100, open: null, high: null, low: null, volume: null })) });
+    const weeklyPlan = strategyPlanSchema.parse({ ...plan, version: 3, settings: { ...plan.settings, timeframe: "weekly", startDate: weeklyDates[55] },
+      states: [{ id: "long", label: "Long TQQQ", allocations: [{ ticker: "TQQQ", side: "long", percent: 100 }] }],
+      transitions: [{ from: "cash", to: "long", when: { any: [[{ ...above, ticker: "TQQQ" }]] } }, { from: "long", to: "cash", when: { any: [[{ ...below, ticker: "TQQQ" }]] } }] });
+    const result = runPlannedBacktest(weeklyPlan, { TQQQ: weeklyFile("TQQQ", true), QQQ: weeklyFile("QQQ"), SPY: weeklyFile("SPY") });
+    expect(result.startDate).toBe(weeklyDates[55]);
+    expect(Date.parse(result.dates[1]) - Date.parse(result.dates[0])).toBe(7 * 86400000);
+    expect(result.trades[0]).toMatchObject({ date: weeklyDates[55], ticker: "TQQQ" });
   });
 
   it("uses percent bands, ordered phases, and partial allocations without daily rebalancing", () => {

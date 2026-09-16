@@ -35,8 +35,9 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(page.getByRole("combobox", { name: "AI model" }).getByRole("option", { name: "Gemini 2.5 Pro" })).toBeAttached();
   await expect(page.getByRole("combobox", { name: "AI model" }).getByRole("option", { name: "GPT-5.6 Sol · High" })).toBeAttached();
   await expect(page.getByRole("combobox", { name: "AI model" }).getByRole("option", { name: "Claude Opus 5 · High" })).toBeAttached();
-  await page.getByRole("button", { name: "Interpret rules with AI" }).click();
-  await expect(page.getByRole("heading", { name: "Review exact strategy plan · version 2" })).toBeVisible();
+  await page.getByRole("button", { name: "Start strategy conversation" }).click();
+  await expect(page.getByText("The strategy is complete and ready for review.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review exact strategy plan · version 3 · daily" })).toBeVisible();
   await expect(page.getByText("TQQQ close crosses above 50-day SMA").first()).toBeVisible();
   await expect(page.getByText("No 200-day SMA filter.")).toBeVisible();
   await expect(page.getByLabel("Cash interest (% annual)")).toHaveValue("2.5");
@@ -45,7 +46,7 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(report).toBeVisible();
   await expect(report.locator(".bt-report-rules")).toContainText("cash → long: TQQQ close crosses above 50-day SMA");
   await expect(report.locator(".bt-report-rules")).not.toContainText("200-day SMA");
-  await expect(page.locator(".bt-saved-run").first()).toContainText("v2");
+  await expect(page.locator(".bt-saved-run").first()).toContainText("v3");
   await expect(report.getByRole("heading", { name: "Annual returns" })).toBeVisible();
   await expect(report.getByRole("heading", { name: "Maximum drawdown · full period" })).toBeVisible();
   await expect(report.locator(".bt-report-block").filter({ hasText: "Annual returns" }).getByRole("columnheader", { name: "TQQQ" })).toBeVisible();
@@ -55,7 +56,9 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(report.locator(".bt-chart text").filter({ hasText: "2022" }).first()).toBeVisible();
   await expect(report.getByRole("columnheader", { name: "Traded close" })).toBeVisible();
   await expect(report.getByRole("columnheader", { name: "SPY close" })).toBeVisible();
-  await expect(report.getByRole("columnheader", { name: "QQQ close" })).toBeVisible();
+  await expect(report.getByRole("columnheader", { name: "QQQ close", exact: true })).toBeVisible();
+  await expect(report.getByRole("columnheader", { name: "TQQQ close", exact: true })).toBeVisible();
+  await expect(report.getByLabel("Chart legend")).toContainText("TQQQ close");
 
   await expect(report.locator(".bt-report-settings")).not.toHaveAttribute("open", "");
   await report.locator(".bt-report-settings > summary").click();
@@ -65,6 +68,16 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await report.locator(".bt-report-settings").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy();
   await page.setViewportSize({ width: 1280, height: 800 });
+  await report.locator(".bt-chart").scrollIntoViewIfNeeded();
+  const chartBox = await report.locator(".bt-chart").boundingBox();
+  if (!chartBox) throw new Error("Chart did not render.");
+  const chart = report.locator(".bt-chart");
+  await chart.dispatchEvent("mousedown", { clientX: chartBox.x + chartBox.width * .25, clientY: chartBox.y + chartBox.height * .5, button: 0 });
+  await chart.dispatchEvent("mousemove", { clientX: chartBox.x + chartBox.width * .75, clientY: chartBox.y + chartBox.height * .5, buttons: 1 });
+  await chart.dispatchEvent("mouseup", { clientX: chartBox.x + chartBox.width * .75, clientY: chartBox.y + chartBox.height * .5, button: 0 });
+  await expect(report.getByRole("combobox", { name: "Date range" })).toHaveValue("custom");
+  await expect(report.getByLabel("Chart start date")).toBeVisible();
+  await expect(report.locator(".bt-trade-scroll thead th").first()).toHaveCSS("position", "sticky");
   await report.getByLabel("Customize report with AI").fill("Show Strategy and QQQ for the last year, and add TQQQ close.");
   await report.getByRole("button", { name: "Apply AI report choices" }).click();
   await expect(report.getByRole("combobox", { name: "Date range" })).toHaveValue("last_year");
@@ -79,6 +92,19 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   await expect(report.getByRole("heading", { name: "Suggested change vs original · same dates" })).toBeVisible();
   await expect(report.getByText("Original max drawdown")).toBeVisible();
 
+  await report.getByPlaceholder("Ask about drawdown, returns, rules, or where the analysis is uncertain").fill("What is the main measured risk?");
+  await report.getByRole("button", { name: "Send" }).last().click();
+  await expect(report.getByText("The saved maximum drawdown is the main measured risk in this run.")).toBeVisible();
+
+  const savedCard = page.locator(".bt-saved-run").first();
+  await expect(savedCard).toContainText("Final strategy value:");
+  await expect(savedCard).toContainText("Max drawdown:");
+  await savedCard.getByRole("button", { name: "Reuse strategy" }).click();
+  await expect(page.getByText("Saved strategy loaded as a new draft. The original run is unchanged.")).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept("Reusable momentum run"));
+  await savedCard.getByRole("button", { name: "Rename" }).click();
+  await expect(page.locator(".bt-saved-run").filter({ hasText: "Reusable momentum run" })).toBeVisible();
+
   const legacy = { longTicker: "TQQQ", comparisons: [], mode: "cash", startingCapital: 1000, cashRate: 0, slippage: 0, fee: 0,
     prompt: "Legacy 200-day crossover", model: "google/gemini-2.5-pro",
     strategy: { entry: [{ kind: "price_sma", period: 200, relation: "crosses_above" }], exit: [{ kind: "price_sma", period: 200, relation: "crosses_below" }],
@@ -86,6 +112,10 @@ test("imports prices, tests a model-interpreted strategy, and measures a suggest
   const created = await page.request.post("/api/backtesting/runs", { data: { input: legacy } });
   expect(created.ok()).toBeTruthy();
   await page.reload();
-  await page.locator(".bt-saved-run").filter({ hasText: "v1" }).click();
+  const legacyCard = page.locator(".bt-saved-run").filter({ hasText: "v1" });
+  await legacyCard.locator(".bt-saved-run-open").click();
   await expect(page.getByRole("region", { name: "Backtest report" }).locator(".bt-report-rules")).toContainText("200-day SMA");
+  page.once("dialog", (dialog) => dialog.accept());
+  await legacyCard.getByRole("button", { name: "Delete" }).click();
+  await expect(page.locator(".bt-saved-run").filter({ hasText: "v1" })).toHaveCount(0);
 });

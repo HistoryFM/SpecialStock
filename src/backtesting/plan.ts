@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { tickerSchema, type BacktestModel, type ModelUsage, type RunResult, type SavedRun } from "./types";
+import { tickerSchema, timeframeSchema, type BacktestModel, type ConversationTurn, type ModelUsage, type RunResult, type SavedRun } from "./types";
 
 const relation = z.enum(["above", "below", "at_or_above", "at_or_below", "crosses_above", "crosses_below"]);
 export const conditionAtomSchema = z.discriminatedUnion("kind", [
@@ -18,10 +18,11 @@ export const settingsSchema = z.object({
   startingCapital: z.number().positive().max(1e9).default(1000), cashRate: z.number().min(0).max(100).default(0),
   borrowRate: z.number().min(0).max(100).default(0), slippage: z.number().min(0).max(20).default(0),
   fee: z.number().min(0).max(1e6).default(0),
+  timeframe: timeframeSchema.default("daily"),
   startDate: z.union([z.literal("first_january"), z.iso.date()]).default("first_january"),
 }).strict();
 export const strategyPlanSchema = z.object({
-  version: z.literal(2), settings: settingsSchema.default(() => settingsSchema.parse({})),
+  version: z.union([z.literal(2), z.literal(3)]), settings: settingsSchema.default(() => settingsSchema.parse({})),
   states: z.array(z.object({ id: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), label: z.string().trim().min(1).max(120), allocations: z.array(allocationSchema).max(20) }).strict()).min(1).max(16),
   transitions: z.array(z.object({ from: z.string(), to: z.string(), when: conditionSchema }).strict()).min(1).max(32),
   stops: z.array(z.object({ ticker: tickerSchema, fixedPct: z.number().gt(0).lt(100).optional(), trailingPct: z.number().gt(0).lt(100).optional() }).strict().refine((stop) => stop.fixedPct !== undefined || stop.trailingPct !== undefined)).max(20).default([]),
@@ -38,26 +39,26 @@ export const strategyPlanSchema = z.object({
   if (new Set(plan.stops.map((stop) => stop.ticker)).size !== plan.stops.length) ctx.addIssue({ code: "custom", message: "Duplicate asset stop." });
 });
 export type StrategyPlan = z.infer<typeof strategyPlanSchema>;
-export const reportConfigSchema = z.object({ visibleSeries: z.array(z.string().min(1).max(20)).max(22), sections: z.array(z.enum(["annual", "drawdown", "growth", "trades"])).min(1).max(4), closeTickers: z.array(tickerSchema).max(20), range: z.enum(["full", "last_year", "last_two_years"]) }).strict();
+export const reportConfigSchema = z.object({ visibleSeries: z.array(z.string().min(1).max(20)).max(42), sections: z.array(z.enum(["annual", "drawdown", "growth", "trades"])).min(1).max(4), closeTickers: z.array(tickerSchema).max(40), range: z.enum(["full", "last_month", "last_quarter", "last_year", "last_two_years", "custom"]), startDate: z.iso.date().optional(), endDate: z.iso.date().optional() }).strict().refine((value) => value.range !== "custom" || Boolean(value.startDate && value.endDate && value.startDate <= value.endDate), "Custom chart range requires valid start and end dates.");
 export type ReportConfig = z.infer<typeof reportConfigSchema>;
 export type PlannedCommentary = { model: BacktestModel; summary: string; riskNotes: string[]; suggestions: { title: string; reason: string; plan: StrategyPlan }[]; usage: ModelUsage };
-export type PlannedInput = { plan: StrategyPlan; prompt: string; model: BacktestModel; parentRunId?: string; interpretationUsage?: ModelUsage };
-export type PlannedRun = Omit<SavedRun, "input" | "commentaries"> & { engineVersion: 2; input: PlannedInput; plan: StrategyPlan; reportConfig: ReportConfig; reportUsage: ModelUsage[]; commentaries: PlannedCommentary[] };
+export type PlannedInput = { plan: StrategyPlan; prompt: string; model: BacktestModel; parentRunId?: string; interpretationUsage?: ModelUsage; setupConversation?: ConversationTurn[] };
+export type PlannedRun = Omit<SavedRun, "input" | "commentaries"> & { engineVersion: 2 | 3; input: PlannedInput; plan: StrategyPlan; reportConfig: ReportConfig; reportUsage: ModelUsage[]; commentaries: PlannedCommentary[] };
 export type AnyRun = SavedRun | PlannedRun;
-export function isPlannedRun(run: AnyRun): run is PlannedRun { return "engineVersion" in run && run.engineVersion === 2 && "plan" in run; }
+export function isPlannedRun(run: AnyRun): run is PlannedRun { return "engineVersion" in run && (run.engineVersion === 2 || run.engineVersion === 3) && "plan" in run; }
 export function requiredTickers(plan: StrategyPlan): string[] {
   return [...new Set(["SPY", "QQQ", ...plan.states.flatMap((state) => state.allocations.map((allocation) => allocation.ticker)),
     ...plan.transitions.flatMap((transition) => transition.when.any.flatMap((group) => group.map((atom) => atom.ticker))), ...plan.stops.map((stop) => stop.ticker)])];
 }
 export function defaultReportConfig(result: RunResult): ReportConfig {
-  return { visibleSeries: result.series.map((item) => item.ticker), sections: ["annual", "drawdown", "growth", "trades"], closeTickers: ["SPY", "QQQ"], range: "full" };
+  return { visibleSeries: result.series.map((item) => item.ticker), sections: ["annual", "drawdown", "growth", "trades"], closeTickers: Object.keys(result.fileIds), range: "full" };
 }
-export function describeAtom(atom: ConditionAtom): string {
+export function describeAtom(atom: ConditionAtom, timeframe: "daily" | "weekly" = "daily"): string {
   const verb = { above: "is above", below: "is below", at_or_above: "is at or above", at_or_below: "is at or below", crosses_above: "crosses above", crosses_below: "crosses below" }[atom.relation];
-  const target = atom.kind === "price_sma" ? `${atom.period}-day SMA${atom.bandPct ? ` × (1 ${atom.bandPct < 0 ? "−" : "+"} ${Math.abs(atom.bandPct)}%)` : ""}` : atom.kind === "rsi" ? String(atom.threshold) : "MACD signal";
+  const target = atom.kind === "price_sma" ? `${atom.period}-${timeframe === "weekly" ? "week" : "day"} SMA${atom.bandPct ? ` × (1 ${atom.bandPct < 0 ? "−" : "+"} ${Math.abs(atom.bandPct)}%)` : ""}` : atom.kind === "rsi" ? String(atom.threshold) : "MACD signal";
   return `${atom.ticker} ${atom.kind === "price_sma" ? "close" : atom.kind === "rsi" ? `RSI(${atom.period})` : "MACD line"} ${verb} ${target}`;
 }
-export function describeCondition(condition: Condition): string { return condition.any.map((group) => group.map(describeAtom).join(" AND ")).join(" OR "); }
+export function describeCondition(condition: Condition, timeframe: "daily" | "weekly" = "daily"): string { return condition.any.map((group) => group.map((atom) => describeAtom(atom, timeframe)).join(" AND ")).join(" OR "); }
 export function describeAllocations(allocations: Allocation[]): string {
   return [...allocations.map((item) => `${item.percent}% ${item.side} ${item.ticker}`), `${Math.max(0, 100 - allocations.reduce((sum, item) => sum + item.percent, 0))}% cash`].join(" · ");
 }

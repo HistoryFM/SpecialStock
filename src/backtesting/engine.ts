@@ -154,6 +154,7 @@ export function runBacktest(input: RunInput, files: Record<string, { id: string;
   });
   return {
     startDate: dates[0], endDate: dates.at(-1)!, dates, series, annual,
+    closeSeries: tickers.map((ticker) => ({ ticker, values: dates.map((date) => available[ticker].get(date)!) })),
     drawdowns: series.map((item) => percentDrawdown(item, dates, input.startingCapital)), trades,
     fileIds: Object.fromEntries(tickers.map((ticker) => [ticker, files[ticker].id])),
     warnings: ["Price returns only; dividends are not included.", "Same-close signals and fills are an idealized assumption.", `Entry: ${input.strategy.entry.map(describePredicate).join(" AND ")}`, `Exit: ${input.strategy.exit.map(describePredicate).join(" AND ")}`],

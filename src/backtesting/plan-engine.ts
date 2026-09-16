@@ -185,6 +185,7 @@ export function runPlannedBacktest(plan: StrategyPlan, files: Files, period?: { 
       returns: Object.fromEntries(series.map((item) => [item.ticker, (item.values[last] / (prior < 0 ? plan.settings.startingCapital : item.values[prior]) - 1) * 100])) };
   });
   return { startDate: dates[0], endDate: dates.at(-1)!, dates, series, annual,
+    closeSeries: tickers.map((ticker) => ({ ticker, values: dates.map((date) => close(ticker, date)) })),
     drawdowns: series.map((item) => drawdown(item, dates, plan.settings.startingCapital)), trades,
     fileIds: Object.fromEntries(tickers.map((ticker) => [ticker, files[ticker].id])),
     warnings: ["Price returns only; dividends are not included.", "Same-close signals, stops, and fills are idealized.",

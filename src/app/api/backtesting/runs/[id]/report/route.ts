@@ -21,7 +21,7 @@ function allowed(config: ReportConfig, series: string[], tickers: string[]) {
 async function change(request: Request, context: { params: Promise<{ id: string }> }, ai: boolean) {
   if (!isAuthorizedSession(await auth())) return Response.json({ error: "Unauthorized" }, { status: 401, headers });
   const run = await getRun((await context.params).id);
-  if (!run || !isPlannedRun(run)) return Response.json({ error: "Version 2 run not found." }, { status: 404, headers });
+  if (!run || !isPlannedRun(run)) return Response.json({ error: "Planned run not found." }, { status: 404, headers });
   try {
     const body = await request.json();
     const series = run.result.series.map((item) => item.ticker), tickers = Object.keys(run.result.fileIds);

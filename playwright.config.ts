@@ -26,7 +26,7 @@ export default defineConfig({
       ...process.env,
       AUTH_SECRET: "test-only-auth-secret-that-is-at-least-32-characters",
       APP_PASSWORD_HASH:
-        "\\$2b\\$12\\$RWywSVu0sRx1bTjTK7FDBeVXNyyJAC/q3gDqpvKGxQsvIgsNE5fw.",
+        "$2b$12$RWywSVu0sRx1bTjTK7FDBeVXNyyJAC/q3gDqpvKGxQsvIgsNE5fw.",
       LOCAL_DATABASE_PATH: ".data/e2e",
       CHART_IMG_API_KEY: "e2e-chart-img-key",
       OPENROUTER_API_KEY: "e2e-openrouter-key",
