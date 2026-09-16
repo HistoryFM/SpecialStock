@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/config/env", () => ({ getServerEnv: () => ({ OPENROUTER_API_KEY: "mock-key", OPENROUTER_API_URL: "https://provider.example.test" }) }));
 
-import { analyzeRun, interpretPlan, interpretStrategy } from "./ai";
+import { analyzeRun, chatAboutPlannedRun, continuePlanConversation, interpretPlan, interpretStrategy } from "./ai";
 import type { RunResult, Strategy } from "./types";
 
 const response = (model: string, content: unknown) => Response.json({ model, choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 100, completion_tokens: 200, completion_tokens_details: { reasoning_tokens: 50 }, cost: 0.01 } });
@@ -36,6 +36,39 @@ describe("backtesting AI boundary", () => {
     expect(parsed.value.strategy?.entry).toEqual([{ kind: "price_sma", period: 50, relation: "crosses_above" }]);
     expect(parsed.usage.reasoningTokens).toBe(50);
     expect(parsed.usage.costUsd).toBe(0.01);
+  });
+
+  it("canonicalizes common JSON-mode plan shapes without weakening plan validation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response("openai/gpt-5.6-sol", {
+      reply: "The strategy is ready for review.",
+      plan: {
+        version: "3",
+        settings: { startingCapital: "1000", cashRate: "2.5", borrowRate: "0", slippage: "0", fee: "0", timeframe: "weekly", startDate: "2024-01-05" },
+        states: { id: "long_tqqq", label: "Long TQQQ", allocations: { ticker: "TQQQ", side: "long", percent: "100" } },
+        transitions: [
+          { from: "cash", to: "long_tqqq", when: { any: [[{ kind: "price_sma", ticker: "TQQQ", period: "50", bandPct: "0", relation: "crosses_above" }]] } },
+          { from: "long_tqqq", to: "cash", when: { any: [[{ kind: "price_sma", ticker: "TQQQ", period: "50", bandPct: "0", relation: "crosses_below" }]] } },
+        ],
+        stops: [], assumptions: "All requested settings are explicit.",
+      },
+    })));
+    const parsed = await continuePlanConversation({ model: "openai/gpt-5.6-sol", timeframe: "weekly", availableTickers: ["TQQQ", "SPY", "QQQ"],
+      turns: [{ id: "11111111-1111-4111-8111-111111111111", role: "user", content: "Use the explicit weekly crossover plan.", at: "2026-01-01T00:00:00.000Z" }] });
+    expect(parsed.value.plan).toMatchObject({ version: 3, settings: { timeframe: "weekly", cashRate: 2.5 },
+      states: [{ label: "Long TQQQ", allocations: [{ percent: 100 }] }] });
+  });
+
+  it("renders a structured result-chat answer as readable text", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response("google/gemini-2.5-pro", { answer: { maximum_drawdown: "-27.45%", period: "2024-03-29 to 2024-06-21" } })));
+    const plan = { version: 3 as const, settings: { startingCapital: 1000, cashRate: 2.5, borrowRate: 0, slippage: 0, fee: 0, timeframe: "weekly" as const, startDate: "2024-01-05" },
+      states: [{ id: "long_tqqq", label: "Long TQQQ", allocations: [{ ticker: "TQQQ", side: "long" as const, percent: 100 }] }],
+      transitions: [{ from: "cash", to: "long_tqqq", when: { any: [[{ kind: "price_sma" as const, ticker: "TQQQ", period: 50 as const, bandPct: 0, relation: "crosses_above" as const }]] } }], stops: [], assumptions: [] };
+    const result: RunResult = { startDate: "2024-01-05", endDate: "2024-07-12", dates: ["2024-01-05", "2024-07-12"], series: [{ ticker: "Strategy", values: [1000, 1044.79] }],
+      annual: [], drawdowns: [{ ticker: "Strategy", percent: -27.45, peakDate: "2024-03-29", troughDate: "2024-06-21" }], trades: [], fileIds: {}, warnings: [] };
+    const parsed = await chatAboutPlannedRun({ model: "google/gemini-2.5-pro", prompt: "Weekly crossover", plan, result,
+      turns: [{ id: "11111111-1111-4111-8111-111111111111", role: "user", content: "What was the drawdown?", at: "2026-01-01T00:00:00.000Z" }] });
+    expect(parsed.value.answer).toContain("maximum drawdown: -27.45%");
+    expect(parsed.value.answer).toContain("period: 2024-03-29 to 2024-06-21");
   });
 
   it("rejects incomplete model rules and a different model response", async () => {

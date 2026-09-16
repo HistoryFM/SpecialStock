@@ -21,13 +21,32 @@ const planChatSchema = z.object({ reply: z.string().min(1).max(3000), plan: stra
 const resultChatSchema = z.object({ answer: z.string().min(1).max(4000) }).strict();
 type AiMessage = { role: "system" | "user" | "assistant"; content: string };
 
+function canonicalText(value: unknown): unknown {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map((item) => canonicalText(item)).filter((item): item is string => typeof item === "string").join("\n");
+  if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => {
+    const text = canonicalText(item);
+    return `${key.replaceAll("_", " ")}: ${typeof text === "string" ? text : JSON.stringify(item)}`;
+  }).join("\n");
+  return value;
+}
+
 function canonicalizeNumericFields(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeNumericFields);
   if (!value || typeof value !== "object") return value;
-  const numeric = new Set(["period", "threshold", "rsiPeriod", "rsiOversold", "rsiOverbought", "macdFast", "macdSlow", "macdSignal"]);
+  const numeric = new Set([
+    "version", "startingCapital", "cashRate", "borrowRate", "slippage", "fee",
+    "percent", "period", "threshold", "bandPct", "fast", "slow", "signal",
+    "fixedPct", "trailingPct", "rsiPeriod", "rsiOversold", "rsiOverbought",
+    "macdFast", "macdSlow", "macdSignal",
+  ]);
+  const arrays = new Set(["states", "allocations", "transitions", "stops", "assumptions"]);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
     key === "clarification" && item === null ? "" :
+    (key === "reply" || key === "answer") && typeof item !== "string" ? canonicalText(item) :
     (key === "entry" || key === "exit") && item && typeof item === "object" && !Array.isArray(item) ? [canonicalizeNumericFields(item)] :
+    arrays.has(key) && item !== null && item !== undefined && !Array.isArray(item) ? [canonicalizeNumericFields(item)] :
     key === "period" && typeof item === "string" && /^(50|200)(?:[ -]?day)?$/i.test(item.trim()) ? Number(item.trim().match(/^(50|200)/)![1]) :
     numeric.has(key) && typeof item === "string" && /^\d+(?:\.\d+)?$/.test(item.trim()) ? Number(item) : canonicalizeNumericFields(item)]));
 }
@@ -178,7 +197,7 @@ export async function interpretPlan(prompt: string, selectedModel: string, avail
 
 export async function continuePlanConversation(input: { model: BacktestModel; timeframe: BacktestTimeframe; availableTickers: string[]; turns: ConversationTurn[] }) {
   const unit = input.timeframe === "weekly" ? "weekly bars and weekly closes" : "daily bars and daily closes";
-  const system = `You help turn a historical portfolio strategy into a validated plan. The selected data timeframe is ${input.timeframe}; all indicators operate on ${unit}. If the user's units conflict with that timeframe, ask a specific clarification. Available ${input.timeframe} CSV tickers: ${input.availableTickers.join(", ")}. SPY and QQQ are required. Return JSON with exactly reply and plan. reply is a concise helpful response or one specific question. plan is null until the rules are complete. A complete plan uses version 3 and settings keys startingCapital, cashRate, borrowRate, slippage, fee, timeframe (exactly "${input.timeframe}"), and startDate. The implicit starting state is cash. States contain allocations with gross exposure no more than 100%. Transitions use when.any as OR-of-AND groups. Supported atoms are price_sma (period 50 or 200 and bandPct), rsi, and macd; supported relations are above, below, at_or_above, at_or_below, crosses_above, crosses_below. Stops may be fixedPct or trailingPct. Never invent missing rules, assets, performance, or execution advice. Never add a 200-period SMA unless requested. JSON only.`;
+  const system = `You help turn a historical portfolio strategy into a validated plan. The selected data timeframe is ${input.timeframe}; all indicators operate on ${unit}. If the user's units conflict with that timeframe, ask a specific clarification. Available ${input.timeframe} CSV tickers: ${input.availableTickers.join(", ")}. SPY and QQQ are required. Return JSON with exactly reply and plan. reply is a concise helpful response or one specific question. plan is null until the rules are complete. A complete plan uses version 3 and settings keys startingCapital, cashRate, borrowRate, slippage, fee, timeframe (exactly "${input.timeframe}"), and startDate. Every numeric field must be a JSON number, not a quoted string. states, allocations, transitions, condition any-groups, stops, and assumptions must always be JSON arrays, even when they contain one item. Do not add keys beyond the example shape. Complete example: {"reply":"The strategy is ready for review.","plan":{"version":3,"settings":{"startingCapital":1000,"cashRate":2.5,"borrowRate":0,"slippage":0,"fee":0,"timeframe":"${input.timeframe}","startDate":"first_january"},"states":[{"id":"long_tqqq","label":"Long TQQQ","allocations":[{"ticker":"TQQQ","side":"long","percent":100}]}],"transitions":[{"from":"cash","to":"long_tqqq","when":{"any":[[{"kind":"price_sma","ticker":"TQQQ","period":50,"bandPct":0,"relation":"crosses_above"}]]}},{"from":"long_tqqq","to":"cash","when":{"any":[[{"kind":"price_sma","ticker":"TQQQ","period":50,"bandPct":0,"relation":"crosses_below"}]]}}],"stops":[],"assumptions":[]}}. Adapt the example to the conversation; do not copy rules the user did not request. The implicit starting state is cash and must not appear in states. State ids use lowercase letters, digits, and underscores; labels are plain strings. States contain allocations with gross exposure no more than 100%. Transitions use when.any as OR-of-AND groups. Supported atoms are price_sma (period 50 or 200 and bandPct), rsi, and macd; supported relations are above, below, at_or_above, at_or_below, crosses_above, crosses_below. Stops may be fixedPct or trailingPct. Never invent missing rules, assets, performance, or execution advice. Never add a 200-period SMA unless requested. JSON only.`;
   const messages: AiMessage[] = [{ role: "system", content: system }, ...input.turns.slice(-16).map((turn) => ({ role: turn.role, content: turn.content }))];
   const answer = await callModel("chat", input.model, messages, planChatSchema);
   if (answer.value.plan) {
@@ -193,7 +212,7 @@ export async function chatAboutPlannedRun(input: { model: BacktestModel; prompt:
     annualReturns: input.result.annual, drawdowns: input.result.drawdowns, tradeCount: input.result.trades.length,
     finalBalances: Object.fromEntries(input.result.series.map((item) => [item.ticker, item.values.at(-1)])),
     sampleTrades: [...input.result.trades.slice(0, 20), ...input.result.trades.slice(-30)] };
-  const system = `Discuss one completed deterministic price-return backtest using only the supplied calculated context. Be explicit when a requested detail is not present. Do not claim untested improvement, invent prices, alter the stored run, or provide trade-execution instructions. Return JSON with exactly answer. Context: ${JSON.stringify(context)}`;
+  const system = `Discuss one completed deterministic price-return backtest using only the supplied calculated context. Be explicit when a requested detail is not present. Do not claim untested improvement, invent prices, alter the stored run, or provide trade-execution instructions. Return one JSON object with exactly one key, answer, whose value is a plain string. Example: {"answer":"The strategy's measured maximum drawdown was 12.3% from 2024-01-05 to 2024-02-02."}. Do not return an object or array inside answer. Context: ${JSON.stringify(context)}`;
   const messages: AiMessage[] = [{ role: "system", content: system }, ...input.turns.slice(-12).map((turn) => ({ role: turn.role, content: turn.content }))];
   return callModel("chat", input.model, messages, resultChatSchema);
 }
