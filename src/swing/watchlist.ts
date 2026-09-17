@@ -2,7 +2,7 @@ import "server-only";
 
 import ExcelJS from "exceljs";
 
-import { SWING_WATCHLIST_MAX_ENTRIES, swingWatchlistCandidateSchema, swingWatchlistEntrySchema, type SwingWatchlistCandidate, type SwingWatchlistEntry } from "@/swing/types";
+import { SWING_MARKET_CONFIG, SWING_WATCHLIST_MAX_ENTRIES, swingWatchlistCandidateSchema, swingWatchlistEntrySchema, type SwingMarket, type SwingWatchlistCandidate, type SwingWatchlistEntry } from "@/swing/types";
 
 export const SWING_WATCHLIST_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -32,10 +32,13 @@ function csvFields(line: string): string[] {
 
 function normalizeExchange(value: string): string {
   const normalized = value.trim().toUpperCase().replaceAll(/\s+/g, " ");
-  return normalized === "NYSE AMERICAN" ? "AMEX" : normalized;
+  if (normalized === "NYSE AMERICAN") return "AMEX";
+  if (["NATIONAL STOCK EXCHANGE", "NATIONAL STOCK EXCHANGE OF INDIA"].includes(normalized)) return "NSE";
+  if (["BOMBAY STOCK EXCHANGE", "BSE LIMITED"].includes(normalized)) return "BSE";
+  return normalized;
 }
 
-export function validateSwingWatchlistSourceRows(rows: Array<Record<string, unknown>>): SwingWatchlistCandidate[] {
+export function validateSwingWatchlistSourceRows(rows: Array<Record<string, unknown>>, market: SwingMarket = "US"): SwingWatchlistCandidate[] {
   const issues: string[] = [];
   if (rows.length < 1) issues.push("The watchlist must contain at least one data row.");
   const seen = new Set<string>();
@@ -44,10 +47,15 @@ export function validateSwingWatchlistSourceRows(rows: Array<Record<string, unkn
       stockName: String(row["stock name"] ?? "").trim(),
       symbol: String(row.symbol ?? "").trim(),
       exchange: normalizeExchange(String(row.exchange ?? "")),
+      industry: String(row.industry ?? "").trim(),
     };
     const parsed = swingWatchlistCandidateSchema.safeParse(candidate);
     if (!parsed.success) {
       issues.push(...parsed.error.issues.map((issue) => `Row ${position + 2}: ${String(issue.path.at(-1) ?? "value")} ${issue.message}.`));
+      return [];
+    }
+    if (!(SWING_MARKET_CONFIG[market].exchanges as readonly string[]).includes(parsed.data.exchange)) {
+      issues.push(`Row ${position + 2}: exchange ${parsed.data.exchange} is not valid for ${market}.`);
       return [];
     }
     if (seen.has(parsed.data.symbol)) issues.push(`Row ${position + 2}: duplicate symbol ${parsed.data.symbol}.`);
@@ -74,11 +82,11 @@ export function selectSwingWatchlistEntries(candidates: SwingWatchlistCandidate[
   return entries;
 }
 
-export function validateSwingWatchlistRows(rows: Array<Record<string, unknown>>): SwingWatchlistEntry[] {
-  return selectSwingWatchlistEntries(validateSwingWatchlistSourceRows(rows));
+export function validateSwingWatchlistRows(rows: Array<Record<string, unknown>>, market: SwingMarket = "US"): SwingWatchlistEntry[] {
+  return selectSwingWatchlistEntries(validateSwingWatchlistSourceRows(rows, market));
 }
 
-export function parseSwingWatchlistCsvSource(content: string): SwingWatchlistCandidate[] {
+export function parseSwingWatchlistCsvSource(content: string, market: SwingMarket = "US"): SwingWatchlistCandidate[] {
   const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) throw new SwingWatchlistValidationError(["CSV needs a header and at least one data row."]);
   const header = csvFields(lines[0]).map((value) => value.trim().toLowerCase());
@@ -91,14 +99,14 @@ export function parseSwingWatchlistCsvSource(content: string): SwingWatchlistCan
     if (values.length !== header.length) throw new SwingWatchlistValidationError([`Row ${index + 2}: wrong number of columns.`]);
     return Object.fromEntries(header.map((name, column) => [name, values[column]]));
   });
-  return validateSwingWatchlistSourceRows(rows);
+  return validateSwingWatchlistSourceRows(rows, market);
 }
 
-export function parseSwingWatchlistCsv(content: string): SwingWatchlistEntry[] {
-  return selectSwingWatchlistEntries(parseSwingWatchlistCsvSource(content));
+export function parseSwingWatchlistCsv(content: string, market: SwingMarket = "US"): SwingWatchlistEntry[] {
+  return selectSwingWatchlistEntries(parseSwingWatchlistCsvSource(content, market));
 }
 
-export async function parseSwingWatchlistXlsxSource(content: Buffer): Promise<SwingWatchlistCandidate[]> {
+export async function parseSwingWatchlistXlsxSource(content: Buffer, market: SwingMarket = "US"): Promise<SwingWatchlistCandidate[]> {
   const workbook = new ExcelJS.Workbook();
   try { await workbook.xlsx.load(Uint8Array.from(content).buffer); }
   catch { throw new SwingWatchlistValidationError(["XLSX could not be read as a valid Excel workbook."]); }
@@ -130,9 +138,9 @@ export async function parseSwingWatchlistXlsxSource(content: Buffer): Promise<Sw
     if (values.length > header.length) throw new SwingWatchlistValidationError([`Row ${index + 2}: contains data outside the declared headers.`]);
     return Object.fromEntries(header.map((name, column) => [name, values[column] ?? ""]));
   });
-  return validateSwingWatchlistSourceRows(records);
+  return validateSwingWatchlistSourceRows(records, market);
 }
 
-export async function parseSwingWatchlistXlsx(content: Buffer): Promise<SwingWatchlistEntry[]> {
-  return selectSwingWatchlistEntries(await parseSwingWatchlistXlsxSource(content));
+export async function parseSwingWatchlistXlsx(content: Buffer, market: SwingMarket = "US"): Promise<SwingWatchlistEntry[]> {
+  return selectSwingWatchlistEntries(await parseSwingWatchlistXlsxSource(content, market));
 }

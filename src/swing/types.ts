@@ -1,17 +1,43 @@
 import { z } from "zod";
 
 export const SWING_MODEL_ID = "google/gemini-2.5-pro" as const;
-export const SWING_TEMPLATE_VERSION = "swing-daily-v2" as const;
-export const SWING_MACRO_SYMBOLS = ["SPY", "QQQ", "GLD", "TLT"] as const;
-export const SWING_EXCHANGES = ["NASDAQ", "NYSE", "AMEX"] as const;
+export const SWING_TEMPLATE_VERSION = "swing-daily-v3" as const;
+export const SWING_MARKETS = ["US", "INDIA"] as const;
+export type SwingMarket = (typeof SWING_MARKETS)[number];
+export const SWING_EXCHANGES = ["NASDAQ", "NYSE", "AMEX", "NSE", "BSE"] as const;
+export type SwingExchange = (typeof SWING_EXCHANGES)[number];
 export const SWING_WATCHLIST_MAX_ENTRIES = 100;
+
+export const SWING_MARKET_CONFIG = {
+  US: {
+    timezone: "America/New_York",
+    exchanges: ["NASDAQ", "NYSE", "AMEX"],
+    macro: [
+      { key: "SPY", symbol: "SPY", exchange: "AMEX" },
+      { key: "QQQ", symbol: "QQQ", exchange: "NASDAQ" },
+      { key: "GLD", symbol: "GLD", exchange: "AMEX" },
+      { key: "TLT", symbol: "TLT", exchange: "NASDAQ" },
+    ],
+  },
+  INDIA: {
+    timezone: "Asia/Kolkata",
+    exchanges: ["NSE", "BSE"],
+    macro: [
+      { key: "NIFTY50", symbol: "NIFTY", exchange: "NSE" },
+      { key: "BANKNIFTY", symbol: "BANKNIFTY", exchange: "NSE" },
+      { key: "INDIAVIX", symbol: "INDIAVIX", exchange: "NSE" },
+      { key: "USDINR", symbol: "USDINR", exchange: "FX_IDC" },
+    ],
+  },
+} as const;
 
 export const swingWatchlistCandidateSchema = z.object({
   stockName: z.string().trim().min(1).max(120),
   symbol: z.string().trim().transform((value) => value.toUpperCase()).pipe(
-    z.string().min(1).max(10).regex(/^[A-Z][A-Z0-9.-]*$/, "Use a valid US stock symbol"),
+    z.string().min(1).max(24).regex(/^[A-Z0-9][A-Z0-9&.-]*$/, "Use a valid stock symbol"),
   ),
   exchange: z.enum(SWING_EXCHANGES),
+  industry: z.string().trim().max(160).default(""),
 });
 
 export const swingWatchlistEntrySchema = swingWatchlistCandidateSchema.extend({
@@ -33,12 +59,7 @@ export const swingMacroResultSchema = z.object({
   short_bias: z.enum(["SUPPORTIVE", "NEUTRAL", "HOSTILE"]),
   high_beta_long_forbidden: z.boolean(),
   summary: z.string().trim().min(1).max(3_000),
-  anchors: z.object({
-    SPY: anchorSchema,
-    QQQ: anchorSchema,
-    GLD: anchorSchema,
-    TLT: anchorSchema,
-  }).strict(),
+  anchors: z.record(z.string(), anchorSchema).refine((anchors) => Object.keys(anchors).length === 4, "Macro analysis requires exactly four anchors."),
 }).strict();
 
 export type SwingMacroResult = z.infer<typeof swingMacroResultSchema>;
@@ -123,14 +144,15 @@ export const swingCandidateResultSchema = z.object({
 export type SwingCandidateResult = z.infer<typeof swingCandidateResultSchema>;
 
 export type SwingChartInput = {
-  version: "swing-chart-img-input-v1";
+  version: "swing-chart-img-input-v2";
+  market: SwingMarket;
   role: "macro" | "candidate";
   symbol: string;
   chartSymbol: string;
   capturedAt: string;
   interval: "1D";
   session: "regular";
-  timezone: "America/New_York";
+  timezone: "America/New_York" | "Asia/Kolkata";
   barStatus: "open";
   range: { from: string; to: string };
   width: 1600;
@@ -155,6 +177,7 @@ export type SwingAttempt = {
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  reasoningTokens: number | null;
   costUsd: number | null;
   responseId: string | null;
   actualModel: string | null;

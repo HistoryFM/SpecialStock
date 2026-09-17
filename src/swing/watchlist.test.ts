@@ -7,16 +7,16 @@ import { parseSwingWatchlistCsv, parseSwingWatchlistCsvSource, parseSwingWatchli
 describe("Swing watchlist CSV", () => {
   it("normalizes headers, tickers, exchange aliases, and preserves order", () => {
     expect(parseSwingWatchlistCsv("Stock Name,SYMBOL,Exchange\nApple,aapl,NASDAQ\nGold,gld,NYSE American\nBerkshire,brk.b,NYSE")).toEqual([
-      { stockName: "Apple", symbol: "AAPL", exchange: "NASDAQ", position: 0 },
-      { stockName: "Gold", symbol: "GLD", exchange: "AMEX", position: 1 },
-      { stockName: "Berkshire", symbol: "BRK.B", exchange: "NYSE", position: 2 },
+      { stockName: "Apple", symbol: "AAPL", exchange: "NASDAQ", industry: "", position: 0 },
+      { stockName: "Gold", symbol: "GLD", exchange: "AMEX", industry: "", position: 1 },
+      { stockName: "Berkshire", symbol: "BRK.B", exchange: "NYSE", industry: "", position: 2 },
     ]);
   });
 
   it.each([
     ["missing header", "Stock Name,Symbol\nApple,AAPL", "Missing required header"],
     ["duplicate", "Stock Name,Symbol,Exchange\nApple,AAPL,NASDAQ\nApple 2,aapl,NYSE", "duplicate symbol AAPL"],
-    ["invalid symbol", "Stock Name,Symbol,Exchange\nBad,$AAPL,NASDAQ", "valid US stock symbol"],
+    ["invalid symbol", "Stock Name,Symbol,Exchange\nBad,$AAPL,NASDAQ", "valid stock symbol"],
     ["unsupported exchange", "Stock Name,Symbol,Exchange\nApple,AAPL,LSE", "Invalid option"],
     ["blank", "Stock Name,Symbol,Exchange\n,AAPL,NASDAQ", "Too small"],
   ])("rejects %s atomically", (_label, input, issue) => {
@@ -40,9 +40,9 @@ describe("Swing watchlist CSV", () => {
     expect(candidates).toHaveLength(72);
     const entries = selectSwingWatchlistEntries(candidates, ["S20", "S2", "S7"]);
     expect(entries).toEqual([
-      { stockName: "Stock 2", symbol: "S2", exchange: "NASDAQ", position: 0 },
-      { stockName: "Stock 7", symbol: "S7", exchange: "NYSE", position: 1 },
-      { stockName: "Stock 20", symbol: "S20", exchange: "NASDAQ", position: 2 },
+      { stockName: "Stock 2", symbol: "S2", exchange: "NASDAQ", industry: "", position: 0 },
+      { stockName: "Stock 7", symbol: "S7", exchange: "NYSE", industry: "", position: 1 },
+      { stockName: "Stock 20", symbol: "S20", exchange: "NASDAQ", industry: "", position: 2 },
     ]);
   });
 
@@ -71,8 +71,8 @@ describe("Swing watchlist CSV", () => {
     sheet.addRow(["Gold", "gld", "NYSE American"]);
     const bytes = await workbook.xlsx.writeBuffer();
     await expect(parseSwingWatchlistXlsx(Buffer.from(bytes))).resolves.toEqual([
-      { stockName: "Apple", symbol: "AAPL", exchange: "NASDAQ", position: 0 },
-      { stockName: "Gold", symbol: "GLD", exchange: "AMEX", position: 1 },
+      { stockName: "Apple", symbol: "AAPL", exchange: "NASDAQ", industry: "", position: 0 },
+      { stockName: "Gold", symbol: "GLD", exchange: "AMEX", industry: "", position: 1 },
     ]);
   });
 
@@ -84,7 +84,15 @@ describe("Swing watchlist CSV", () => {
     const bytes = await workbook.xlsx.writeBuffer();
     const candidates = await parseSwingWatchlistXlsxSource(Buffer.from(bytes));
     expect(candidates).toHaveLength(72);
-    expect(candidates[20]).toEqual({ stockName: "Stock 21", symbol: "S21", exchange: "NYSE" });
+    expect(candidates[20]).toEqual({ stockName: "Stock 21", symbol: "S21", exchange: "NYSE", industry: "" });
+  });
+
+  it("supports India aliases, numeric BSE symbols, and optional industry", () => {
+    expect(parseSwingWatchlistCsv("Stock Name,Symbol,Exchange,Industry\nReliance,reliance,NSE,Energy\nExample,500325,Bombay Stock Exchange,Industrials", "INDIA")).toEqual([
+      { stockName: "Reliance", symbol: "RELIANCE", exchange: "NSE", industry: "Energy", position: 0 },
+      { stockName: "Example", symbol: "500325", exchange: "BSE", industry: "Industrials", position: 1 },
+    ]);
+    expect(() => parseSwingWatchlistCsv("Stock Name,Symbol,Exchange\nApple,AAPL,NASDAQ", "INDIA")).toThrow("not valid for INDIA");
   });
 
   it("rejects ambiguous or empty XLSX workbooks", async () => {

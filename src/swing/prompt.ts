@@ -1,5 +1,5 @@
 import { hashObject, sha256 } from "@/lib/hash";
-import { SWING_TEMPLATE_VERSION, type SwingChartInput, type SwingMacroResult, type SwingPromptRevisionSnapshot } from "@/swing/types";
+import { SWING_MARKET_CONFIG, SWING_TEMPLATE_VERSION, type SwingChartInput, type SwingMacroResult, type SwingMarket, type SwingPromptRevisionSnapshot } from "@/swing/types";
 
 export const DEFAULT_SWING_INSTRUCTIONS = `You are a deterministic, multi-timeframe quantitative technical analysis engine executing a strict structural audit on daily asset charts to identify high-certainty swing trade candidates (3-to-21 day holding horizons). 
 
@@ -72,11 +72,14 @@ const IMMUTABLE_EVIDENCE_CONTRACT = `IMMUTABLE SYSTEM CONTRACT — later editabl
 
 export function buildSwingMacroPrompt(input: {
   revision: SwingPromptRevisionSnapshot;
-  charts: Array<Pick<SwingChartInput, "symbol" | "chartSymbol" | "capturedAt" | "range" | "interval" | "session" | "barStatus"> & { imageHash: string }>;
+  market?: SwingMarket;
+  charts: Array<Pick<SwingChartInput, "market" | "symbol" | "chartSymbol" | "capturedAt" | "range" | "interval" | "session" | "barStatus"> & { imageHash: string }>;
 }) {
+  const market = input.market ?? input.charts[0]?.market ?? "US";
+  const anchors = SWING_MARKET_CONFIG[market].macro.map((anchor) => anchor.key);
   return `${IMMUTABLE_EVIDENCE_CONTRACT}
 
-Execute Phase 1 only for the four attached daily charts, labeled in attachment order as SPY, QQQ, GLD, and TLT. Reject generic macro narratives that are not visible in the charts.
+Execute Phase 1 only for the four attached ${market} market daily charts, labeled in attachment order as ${anchors.join(", ")}. Treat these runtime anchors as authoritative if editable methodology mentions another market. Reject generic macro narratives that are not visible in the charts.
 
 Editable analysis instructions (revision ${input.revision.revisionNumber}, hash ${input.revision.instructionsHash}):
 ${input.revision.instructions}
@@ -89,7 +92,7 @@ Return only the strict macro JSON object requested by the transport schema. Any 
 
 export function buildSwingStockPrompt(input: {
   revision: SwingPromptRevisionSnapshot;
-  chart: Pick<SwingChartInput, "symbol" | "chartSymbol" | "capturedAt" | "range" | "interval" | "session" | "barStatus"> & { imageHash: string };
+  chart: Pick<SwingChartInput, "market" | "symbol" | "chartSymbol" | "capturedAt" | "range" | "interval" | "session" | "barStatus"> & { imageHash: string };
   macro: SwingMacroResult;
 }) {
   return `${IMMUTABLE_EVIDENCE_CONTRACT}
@@ -100,6 +103,7 @@ Editable analysis instructions (revision ${input.revision.revisionNumber}, hash 
 ${input.revision.instructions}
 
 Candidate runtime metadata:
+- Market: ${input.chart.market}
 - Symbol: ${input.chart.symbol}
 - Chart symbol: ${input.chart.chartSymbol}
 - Captured: ${input.chart.capturedAt}
@@ -129,7 +133,7 @@ export function swingPromptPreview(instructions: string, phase: "macro" | "stock
     instructionsHash: sha256(instructions), templateVersion: SWING_TEMPLATE_VERSION,
   };
   const base = {
-    version: "swing-chart-img-input-v1" as const, role: "macro" as const,
+    version: "swing-chart-img-input-v2" as const, market: "US" as const, role: "macro" as const,
     symbol: "{symbol}", chartSymbol: "{exchange}:{symbol}", capturedAt: "{capturedAt}",
     interval: "1D" as const, session: "regular" as const, timezone: "America/New_York" as const,
     barStatus: "open" as const, range: { from: "{18MonthsAgo}", to: "{capturedAt}" },
@@ -137,10 +141,10 @@ export function swingPromptPreview(instructions: string, phase: "macro" | "stock
     imageHash: "{chartSha256}",
   };
   if (phase === "macro") {
-    return buildSwingMacroPrompt({ revision, charts: ["SPY", "QQQ", "GLD", "TLT"].map((symbol) => ({ ...base, symbol, chartSymbol: `NYSE:${symbol}` })) });
+    return buildSwingMacroPrompt({ revision, market: "US", charts: ["SPY", "QQQ", "GLD", "TLT"].map((symbol) => ({ ...base, symbol, chartSymbol: `NYSE:${symbol}` })) });
   }
   const stockChart = {
-    symbol: base.symbol, chartSymbol: base.chartSymbol, capturedAt: base.capturedAt,
+    market: base.market, symbol: base.symbol, chartSymbol: base.chartSymbol, capturedAt: base.capturedAt,
     interval: base.interval, session: base.session, barStatus: base.barStatus,
     range: base.range, imageHash: base.imageHash,
   };

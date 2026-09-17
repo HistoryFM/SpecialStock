@@ -7,20 +7,24 @@ import { getServerEnv } from "@/config/env";
 import { sha256 } from "@/lib/hash";
 import {
   SWING_MODEL_ID,
+  SWING_MARKET_CONFIG,
   swingCandidateResultSchema,
   swingMacroResultSchema,
   type SwingAttempt,
   type SwingCandidateResult,
   type SwingMacroResult,
+  type SwingMarket,
 } from "@/swing/types";
+
+export const SWING_OPENROUTER_TIMEOUT_MS = 150_000;
 
 const responseSchema = z.object({
   id: z.string().optional(), model: z.string().optional(), provider: z.string().optional(),
   choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }), finish_reason: z.string().nullable().optional() })).min(1),
-  usage: z.object({ prompt_tokens: z.number().optional(), completion_tokens: z.number().optional(), cost: z.number().optional() }).optional(),
+  usage: z.object({ prompt_tokens: z.number().optional(), completion_tokens: z.number().optional(), completion_tokens_details: z.object({ reasoning_tokens: z.number().nullable().optional() }).optional(), cost: z.number().optional() }).optional(),
 });
 
-const macroJsonSchema = {
+function macroJsonSchema(market: SwingMarket) { const keys = SWING_MARKET_CONFIG[market].macro.map((anchor) => anchor.key); return {
   type: "object", additionalProperties: false,
   required: ["regime", "long_bias", "short_bias", "high_beta_long_forbidden", "summary", "anchors"],
   properties: {
@@ -28,9 +32,9 @@ const macroJsonSchema = {
     long_bias: { type: "string", enum: ["SUPPORTIVE", "NEUTRAL", "HOSTILE"] },
     short_bias: { type: "string", enum: ["SUPPORTIVE", "NEUTRAL", "HOSTILE"] },
     high_beta_long_forbidden: { type: "boolean" }, summary: { type: "string" },
-    anchors: { type: "object", additionalProperties: false, required: ["SPY", "QQQ", "GLD", "TLT"], properties: Object.fromEntries(["SPY", "QQQ", "GLD", "TLT"].map((symbol) => [symbol, { type: "object", additionalProperties: false, required: ["stance", "observation", "visual_quality"], properties: { stance: { type: "string", enum: ["BULLISH", "BEARISH", "NEUTRAL", "UNREADABLE"] }, observation: { type: "string" }, visual_quality: { type: "string", enum: ["CLEAR", "PARTIAL", "UNREADABLE"] } } }])) },
+    anchors: { type: "object", additionalProperties: false, required: keys, properties: Object.fromEntries(keys.map((symbol) => [symbol, { type: "object", additionalProperties: false, required: ["stance", "observation", "visual_quality"], properties: { stance: { type: "string", enum: ["BULLISH", "BEARISH", "NEUTRAL", "UNREADABLE"] }, observation: { type: "string" }, visual_quality: { type: "string", enum: ["CLEAR", "PARTIAL", "UNREADABLE"] } } }])) },
   },
-};
+}; }
 
 const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
 const stockJsonSchema = {
@@ -57,15 +61,20 @@ export class SwingModelError extends Error {
   constructor(message: string, readonly failureKind: string, readonly attempts: SwingAttempt[]) { super(message); this.name = "SwingModelError"; }
 }
 
-function validateMacro(value: unknown): SwingMacroResult {
+function validateMacro(value: unknown, market: SwingMarket): SwingMacroResult {
   const parsed = swingMacroResultSchema.parse(value);
-  if (Object.values(parsed.anchors).some((anchor) => anchor.stance === "UNREADABLE" || anchor.visual_quality === "UNREADABLE")) throw new Error("Macro result contains an unreadable anchor.");
-  const ruleTriggered = parsed.anchors.SPY.stance === "BEARISH" && parsed.anchors.QQQ.stance === "BEARISH" && parsed.anchors.TLT.stance === "BEARISH";
-  if (ruleTriggered && !parsed.high_beta_long_forbidden) throw new Error("Macro result contradicts the locked high-beta regime rule.");
+  const keys = SWING_MARKET_CONFIG[market].macro.map((anchor) => anchor.key);
+  if (Object.keys(parsed.anchors).length !== keys.length || keys.some((key) => !parsed.anchors[key])) throw new z.ZodError([{ code: "custom", path: ["anchors"], message: "Macro result does not contain the required market anchors.", input: parsed.anchors }]);
+  if (Object.values(parsed.anchors).some((anchor) => anchor.stance === "UNREADABLE" || anchor.visual_quality === "UNREADABLE")) throw new z.ZodError([{ code: "custom", path: ["anchors"], message: "Macro result contains an unreadable anchor.", input: parsed.anchors }]);
+  const ruleTriggered = market === "US"
+    ? parsed.anchors.SPY?.stance === "BEARISH" && parsed.anchors.QQQ?.stance === "BEARISH" && parsed.anchors.TLT?.stance === "BEARISH"
+    : parsed.anchors.NIFTY50?.stance === "BEARISH" && parsed.anchors.BANKNIFTY?.stance === "BEARISH" && parsed.anchors.INDIAVIX?.stance === "BULLISH";
+  if (ruleTriggered && !parsed.high_beta_long_forbidden) throw new z.ZodError([{ code: "custom", path: ["high_beta_long_forbidden"], message: "Macro result contradicts the locked high-beta regime rule.", input: parsed.high_beta_long_forbidden }]);
   return parsed;
 }
 
 function classify(error: unknown, response: Response | null) {
+  if (error instanceof Error && error.name === "AbortError") return "canceled";
   if (error instanceof Error && /timeout/i.test(error.name)) return "timeout";
   if (response && !response.ok) return response.status >= 500 || [408, 409, 429].includes(response.status) ? "http_transient" : "http_terminal";
   if (error instanceof SyntaxError) return "malformed_json";
@@ -75,27 +84,29 @@ function classify(error: unknown, response: Response | null) {
 
 function safeMessage(kind: string) {
   if (kind === "timeout") return "OpenRouter Swing analysis timed out.";
+  if (kind === "canceled") return "Swing analysis was canceled.";
   if (kind === "http_terminal") return "OpenRouter rejected the Swing analysis request.";
   if (kind === "http_transient") return "OpenRouter was temporarily unavailable for Swing analysis.";
   return "OpenRouter returned an invalid Swing analysis response.";
 }
 
 export class SwingOpenRouterProvider {
-  async analyzeMacro(input: { prompt: string; images: Buffer[] }) {
+  async analyzeMacro(input: { prompt: string; images: Buffer[]; market?: SwingMarket; signal?: AbortSignal }) {
+    const market = input.market ?? "US";
     return Sentry.startSpan({ name: "Analyze Swing macro", op: "specialstock.swing.model", attributes: { "specialstock.swing.phase": "macro", "specialstock.swing.image_count": input.images.length } }, () =>
-      this.analyze<SwingMacroResult>({ phase: "macro", prompt: input.prompt, images: input.images, schema: macroJsonSchema, validate: validateMacro, maxTokens: 3500 }));
+      this.analyze<SwingMacroResult>({ phase: "macro", prompt: input.prompt, images: input.images, schema: macroJsonSchema(market), validate: (value) => validateMacro(value, market), maxTokens: 6500, signal: input.signal }));
   }
 
-  async analyzeCandidate(input: { prompt: string; image: Buffer; symbol: string }) {
+  async analyzeCandidate(input: { prompt: string; image: Buffer; symbol: string; signal?: AbortSignal }) {
     return Sentry.startSpan({ name: "Analyze Swing candidate", op: "specialstock.swing.model", attributes: { "specialstock.swing.phase": "stock", "specialstock.swing.image_count": 1 } }, () =>
       this.analyze<SwingCandidateResult>({ phase: "stock", prompt: input.prompt, images: [input.image], schema: stockJsonSchema, validate: (value) => {
         const parsed = swingCandidateResultSchema.parse(value);
         if (parsed.symbol !== input.symbol) throw new Error("Swing response symbol does not match the candidate.");
         return parsed;
-      }, maxTokens: 4500 }));
+      }, maxTokens: 6500, signal: input.signal }));
   }
 
-  private async analyze<T>(input: { phase: "macro" | "stock"; prompt: string; images: Buffer[]; schema: Record<string, unknown>; validate(value: unknown): T; maxTokens: number }) {
+  private async analyze<T>(input: { phase: "macro" | "stock"; prompt: string; images: Buffer[]; schema: Record<string, unknown>; validate(value: unknown): T; maxTokens: number; signal?: AbortSignal }) {
     const env = getServerEnv();
     if (!env.OPENROUTER_API_KEY) throw new SwingModelError("OPENROUTER_API_KEY is not configured.", "not_configured", []);
     const attempts: SwingAttempt[] = [];
@@ -108,7 +119,7 @@ export class SwingOpenRouterProvider {
       let raw: z.infer<typeof responseSchema> | null = null;
       try {
         response = await fetch(env.OPENROUTER_API_URL, {
-          method: "POST", cache: "no-store", signal: AbortSignal.timeout(90_000),
+          method: "POST", cache: "no-store", signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(SWING_OPENROUTER_TIMEOUT_MS)]) : AbortSignal.timeout(SWING_OPENROUTER_TIMEOUT_MS),
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENROUTER_API_KEY}` },
           body: JSON.stringify({
             model: SWING_MODEL_ID, temperature: 0.1, max_tokens: input.maxTokens, stream: false,
@@ -126,6 +137,7 @@ export class SwingOpenRouterProvider {
             attemptNumber: index + 1, status: "failed", failureKind: "token_limit", queueWaitMs: 0,
             latencyMs: Math.round(performance.now() - started), inputTokens: raw.usage?.prompt_tokens ?? null,
             outputTokens: raw.usage?.completion_tokens ?? null, costUsd: raw.usage?.cost ?? null,
+            reasoningTokens: raw.usage?.completion_tokens_details?.reasoning_tokens ?? null,
             responseId: raw.id ?? null, actualModel: raw.model ?? null, actualProvider: raw.provider ?? null,
             requestSettings, rawResponse: raw, promptSnapshot: prompt, promptHash,
           });
@@ -135,6 +147,7 @@ export class SwingOpenRouterProvider {
         const attempt: SwingAttempt = {
           attemptNumber: index + 1, status: "valid", failureKind: null, queueWaitMs: 0, latencyMs: Math.round(performance.now() - started),
           inputTokens: raw.usage?.prompt_tokens ?? null, outputTokens: raw.usage?.completion_tokens ?? null, costUsd: raw.usage?.cost ?? null,
+          reasoningTokens: raw.usage?.completion_tokens_details?.reasoning_tokens ?? null,
           responseId: raw.id ?? null, actualModel: raw.model ?? null, actualProvider: raw.provider ?? null,
           requestSettings, rawResponse: raw, promptSnapshot: prompt, promptHash,
         };
@@ -146,6 +159,7 @@ export class SwingOpenRouterProvider {
         attempts.push({
           attemptNumber: index + 1, status: "failed", failureKind, queueWaitMs: 0, latencyMs: Math.round(performance.now() - started),
           inputTokens: raw?.usage?.prompt_tokens ?? null, outputTokens: raw?.usage?.completion_tokens ?? null, costUsd: raw?.usage?.cost ?? null,
+          reasoningTokens: raw?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
           responseId: raw?.id ?? null, actualModel: raw?.model ?? null, actualProvider: raw?.provider ?? null,
           requestSettings, rawResponse: raw, promptSnapshot: prompt, promptHash,
         });

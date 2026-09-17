@@ -6,7 +6,7 @@ import sharp from "sharp";
 
 import { getServerEnv } from "@/config/env";
 import { hashObject, sha256 } from "@/lib/hash";
-import type { SwingChartInput } from "@/swing/types";
+import { SWING_MARKET_CONFIG, type SwingChartInput, type SwingMarket } from "@/swing/types";
 
 export const SWING_STUDIES = [
   "EMA 8", "EMA 20", "SMA 50", "SMA 200", "Bollinger Bands 20/2",
@@ -20,7 +20,7 @@ export class SwingChartError extends Error {
   }
 }
 
-export function swingChartRequestBody(input: { chartSymbol: string; from: string; to: string }) {
+export function swingChartRequestBody(input: { chartSymbol: string; from: string; to: string; timezone?: SwingChartInput["timezone"] }) {
   const line = (name: string, length: number, color: string) => ({
     name, forceOverlay: true,
     input: { length, source: "close", offset: 0, smoothingLine: "SMA", smoothingLength: length },
@@ -35,7 +35,7 @@ export function swingChartRequestBody(input: { chartSymbol: string; from: string
     theme: "dark",
     scale: "regular",
     session: "regular",
-    timezone: "America/New_York",
+    timezone: input.timezone ?? "America/New_York",
     format: "png",
     range: { from: input.from, to: input.to },
     override: {
@@ -97,22 +97,25 @@ function providerError(status: number, providerCalls: number) {
 }
 
 export class SwingChartImgProvider {
-  async capture(input: { role: "macro" | "candidate"; symbol: string; exchange: string; capturedAt: Date }) {
+  async capture(input: { market?: SwingMarket; role: "macro" | "candidate"; symbol: string; exchange: string; capturedAt: Date; signal?: AbortSignal }) {
     const env = getServerEnv();
     if (!env.CHART_IMG_API_KEY) throw new SwingChartError("CHART_IMG_API_KEY is not configured.", "not_configured");
     const apiKey = env.CHART_IMG_API_KEY;
+    const market = input.market ?? "US";
+    const timezone = SWING_MARKET_CONFIG[market].timezone;
     const to = input.capturedAt.toISOString();
-    const from = Temporal.Instant.fromEpochMilliseconds(input.capturedAt.getTime()).toZonedDateTimeISO("America/New_York").subtract({ months: 18 }).toInstant().toString();
+    const from = Temporal.Instant.fromEpochMilliseconds(input.capturedAt.getTime()).toZonedDateTimeISO(timezone).subtract({ months: 18 }).toInstant().toString();
     const chartSymbol = `${input.exchange}:${input.symbol}`;
     const base = {
-      version: "swing-chart-img-input-v1" as const,
+      version: "swing-chart-img-input-v2" as const,
+      market,
       role: input.role,
       symbol: input.symbol,
       chartSymbol,
       capturedAt: to,
       interval: "1D" as const,
       session: "regular" as const,
-      timezone: "America/New_York" as const,
+      timezone,
       barStatus: "open" as const,
       range: { from, to },
       width: 1600 as const,
@@ -120,7 +123,7 @@ export class SwingChartImgProvider {
       studies: [...SWING_STUDIES],
     };
     const frozen: SwingChartInput = { ...base, inputHash: hashObject(base) };
-    const body = swingChartRequestBody({ chartSymbol, from, to });
+    const body = swingChartRequestBody({ chartSymbol, from, to, timezone });
     let response: Response | null = null;
     let providerCalls = 0;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -128,7 +131,7 @@ export class SwingChartImgProvider {
         providerCalls += 1;
         response = await Sentry.startSpan({ name: "Capture Swing chart", op: "specialstock.swing.chart.capture", attributes: { "specialstock.swing.role": input.role, "specialstock.swing.attempt": attempt + 1 } }, async (span) => {
           const result = await fetch(env.CHART_IMG_API_URL, {
-            method: "POST", cache: "no-store", signal: AbortSignal.timeout(30_000),
+            method: "POST", cache: "no-store", signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
             headers: { "Content-Type": "application/json", "x-api-key": apiKey },
             body: JSON.stringify(body),
           });
@@ -139,6 +142,7 @@ export class SwingChartImgProvider {
         if (response.ok || response.status < 500 || attempt === 1) break;
         Sentry.logger.info("swing.chart.retry", { "specialstock.swing.role": input.role, "specialstock.swing.failure_kind": "http_transient", "specialstock.swing.attempt": attempt + 1 });
       } catch (error) {
+        if (input.signal?.aborted) throw new SwingChartError("Swing analysis was canceled.", "transient", providerCalls);
         if (attempt === 0) Sentry.logger.info("swing.chart.retry", { "specialstock.swing.role": input.role, "specialstock.swing.failure_kind": "network", "specialstock.swing.attempt": attempt + 1 });
         if (attempt === 1) throw new SwingChartError(error instanceof Error && error.name === "TimeoutError" ? "Chart-Img Swing capture timed out." : "Chart-Img could not be reached.", error instanceof Error && error.name === "TimeoutError" ? "timeout" : "transient", providerCalls);
       }

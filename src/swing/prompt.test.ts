@@ -22,6 +22,7 @@ const macro: SwingMacroResult = {
 
 const chart = (symbol: string) => ({
   symbol, chartSymbol: `NASDAQ:${symbol}`, capturedAt: "2026-09-15T19:50:10.000Z",
+  market: "US" as const,
   range: { from: "2025-03-15T19:50:10.000Z", to: "2026-09-15T19:50:10.000Z" },
   interval: "1D" as const, session: "regular" as const, barStatus: "open" as const,
   imageHash: `${symbol.toLowerCase()}-sha256`,

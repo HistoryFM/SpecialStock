@@ -34,4 +34,10 @@ describe("dedicated Swing Chart-Img profile", () => {
     expect(intraday.studies.map((study) => study.name)).toEqual(["VWAP", "Keltner Channels", "Volume", "Average Directional Index", "Relative Strength Index", "MACD", "Commodity Channel Index", "Chaikin Money Flow"]);
     expect(intraday.override.mainPaneHeight).toBe(560);
   });
+
+  it("uses the locked India timezone without changing the chart layout", () => {
+    const body = swingChartRequestBody({ chartSymbol: "NSE:RELIANCE", from: "2025-03-15T19:50:10.000Z", to: "2026-09-15T19:50:10.000Z", timezone: "Asia/Kolkata" });
+    expect(body).toMatchObject({ symbol: "NSE:RELIANCE", interval: "1D", session: "regular", timezone: "Asia/Kolkata", width: 1600, height: 1920 });
+    expect(body.studies).toHaveLength(10);
+  });
 });

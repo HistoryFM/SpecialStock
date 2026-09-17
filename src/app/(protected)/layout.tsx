@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 
 import { logoutAction } from "@/app/(protected)/actions";
 import { NotificationBridge } from "@/app/(protected)/notification-bridge";
-import { SwingScheduler } from "@/app/(protected)/swing-scheduler";
 import { requireAuthorizedUser } from "@/auth/require-user";
 
 export default async function ProtectedLayout({
@@ -35,7 +34,6 @@ export default async function ProtectedLayout({
         </form>
       </header>
       <NotificationBridge />
-      <SwingScheduler />
       {children}
     </div>
   );

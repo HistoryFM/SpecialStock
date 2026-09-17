@@ -95,10 +95,10 @@ export const outcomeResultEnum = pgEnum("outcome_result", [
   "stale",
   "missing_data",
 ]);
-export const swingRunStatusEnum = pgEnum("swing_run_status", ["scheduled", "running", "completed", "partial", "failed", "missed"]);
+export const swingRunStatusEnum = pgEnum("swing_run_status", ["scheduled", "running", "completed", "partial", "failed", "missed", "canceled"]);
 export const swingRunModeEnum = pgEnum("swing_run_mode", ["automatic", "manual"]);
 export const swingArtifactRoleEnum = pgEnum("swing_artifact_role", ["macro", "candidate"]);
-export const swingCandidateStatusEnum = pgEnum("swing_candidate_status", ["pending", "completed", "failed"]);
+export const swingCandidateStatusEnum = pgEnum("swing_candidate_status", ["pending", "completed", "failed", "canceled"]);
 export const swingDirectionEnum = pgEnum("swing_direction", ["LONG", "SHORT", "NO_TRADE"]);
 
 const modelAllowlistSql = sql.raw(
@@ -592,8 +592,22 @@ export const schedulerHeartbeats = pgTable(
   (table) => [index("scheduler_heartbeats_date_idx").on(table.marketDate, table.observedAt)],
 );
 
+export const swingLists = pgTable("swing_lists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  market: text("market").notNull(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),
+  parentListId: uuid("parent_list_id").references((): AnyPgColumn => swingLists.id, { onDelete: "set null" }),
+  sourceVersionId: uuid("source_version_id").references((): AnyPgColumn => swingWatchlistVersions.id, { onDelete: "set null" }),
+  createdAt: timestamps.createdAt,
+}, (table) => [
+  uniqueIndex("swing_lists_market_name_unique").on(table.market, sql`lower(${table.name})`),
+  index("swing_lists_market_created_idx").on(table.market, table.createdAt),
+]);
+
 export const swingWatchlistVersions = pgTable("swing_watchlist_versions", {
   id: uuid("id").defaultRandom().primaryKey(),
+  listId: uuid("list_id").references(() => swingLists.id, { onDelete: "cascade" }).notNull(),
   versionNumber: integer("version_number").notNull().unique(),
   sourceFilename: text("source_filename").notNull(),
   sourceType: text("source_type").notNull(),
@@ -608,6 +622,7 @@ export const swingWatchlistEntries = pgTable("swing_watchlist_entries", {
   stockName: text("stock_name").notNull(),
   symbol: text("symbol").notNull(),
   exchange: text("exchange").notNull(),
+  industry: text("industry").default("").notNull(),
 }, (table) => [
   primaryKey({ columns: [table.versionId, table.position] }),
   uniqueIndex("swing_watchlist_version_symbol_unique").on(table.versionId, table.symbol),
@@ -635,11 +650,20 @@ export const swingSettings = pgTable("swing_settings", {
   ...timestamps,
 }, (table) => [check("swing_settings_singleton", sql`${table.id} = 1`)]);
 
+export const swingMarketSettings = pgTable("swing_market_settings", {
+  market: text("market").primaryKey(),
+  automaticEnabled: boolean("automatic_enabled").default(false).notNull(),
+  activeWatchlistVersionId: uuid("active_watchlist_version_id").references(() => swingWatchlistVersions.id, { onDelete: "set null" }),
+  ...timestamps,
+});
+
 export const swingRuns = pgTable("swing_runs", {
   id: uuid("id").defaultRandom().primaryKey(),
   mode: swingRunModeEnum("mode").notNull(),
+  market: text("market").default("US").notNull(),
   status: swingRunStatusEnum("status").default("scheduled").notNull(),
   sessionDate: text("session_date").notNull(),
+  reportDate: text("report_date").notNull(),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   requestId: uuid("request_id"),
   watchlistVersionId: uuid("watchlist_version_id").references(() => swingWatchlistVersions.id).notNull(),
@@ -650,6 +674,7 @@ export const swingRuns = pgTable("swing_runs", {
   stage: text("stage").default("queued").notNull(),
   completedCandidates: integer("completed_candidates").default(0).notNull(),
   failedCandidates: integer("failed_candidates").default(0).notNull(),
+  canceledCandidates: integer("canceled_candidates").default(0).notNull(),
   totalCandidates: integer("total_candidates").default(0).notNull(),
   macroResult: jsonb("macro_result").$type<SwingMacroResult>(),
   providerCalls: integer("provider_calls").default(0).notNull(),
@@ -657,6 +682,10 @@ export const swingRuns = pgTable("swing_runs", {
   errorCode: text("error_code"),
   errorMessage: text("error_message"),
   startedAt: timestamp("started_at", { withTimezone: true }),
+  stockAnalysisStartedAt: timestamp("stock_analysis_started_at", { withTimezone: true }),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  cancelRequestedAt: timestamp("cancel_requested_at", { withTimezone: true }),
+  cancelReason: text("cancel_reason"),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   ...timestamps,
 }, (table) => [
@@ -694,6 +723,7 @@ export const swingCandidates = pgTable("swing_candidates", {
   stockName: text("stock_name").notNull(),
   symbol: text("symbol").notNull(),
   exchange: text("exchange").notNull(),
+  industry: text("industry").default("").notNull(),
   status: swingCandidateStatusEnum("status").default("pending").notNull(),
   direction: swingDirectionEnum("direction"),
   originalDirection: swingDirectionEnum("original_direction"),
@@ -738,6 +768,7 @@ export const swingModelRuns = pgTable("swing_model_runs", {
   latencyMs: integer("latency_ms"),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
+  reasoningTokens: integer("reasoning_tokens"),
   costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
   rawResponse: jsonb("raw_response").$type<unknown>(),
   failureKind: text("failure_kind"),
@@ -758,6 +789,7 @@ export const swingModelAttempts = pgTable("swing_model_attempts", {
   latencyMs: integer("latency_ms").notNull(),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
+  reasoningTokens: integer("reasoning_tokens"),
   costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
   responseId: text("response_id"),
   actualModel: text("actual_model"),

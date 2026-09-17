@@ -1,0 +1,2 @@
+ALTER TABLE "swing_lists" ADD CONSTRAINT "swing_lists_parent_list_id_swing_lists_id_fk" FOREIGN KEY ("parent_list_id") REFERENCES "public"."swing_lists"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "swing_lists" ADD CONSTRAINT "swing_lists_source_version_id_swing_watchlist_versions_id_fk" FOREIGN KEY ("source_version_id") REFERENCES "public"."swing_watchlist_versions"("id") ON DELETE set null ON UPDATE no action;

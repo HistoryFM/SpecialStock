@@ -57,6 +57,7 @@ function endProviderRequest(phase) {
 }
 
 const providerDelay = () => new Promise((resolve) => setTimeout(resolve, 400));
+const swingProviderDelay = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 const mockServer = createServer(async (request, response) => {
   const chunks = [];
@@ -68,7 +69,7 @@ const mockServer = createServer(async (request, response) => {
     else providerCalls.chart += 1;
     chartRequests.push({ symbol: requestBody.symbol, interval: requestBody.interval });
     beginProviderRequest("chart");
-    await providerDelay();
+    await (requestBody.interval === "1D" ? swingProviderDelay() : providerDelay());
     if (requestBody.symbol === "NASDAQ:AMZN") {
       response.writeHead(422, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Synthetic per-symbol chart failure." }));
@@ -121,7 +122,7 @@ const mockServer = createServer(async (request, response) => {
       const expectedImage = `data:image/png;base64,${chart.toString("base64")}`;
       const promptText = content.find((part) => part.type === "text")?.text ?? "";
       const macro = responseName === "swing_macro";
-      if (requestBody.model !== "google/gemini-2.5-pro" || images.length !== (macro ? 4 : 1) || images.some((image) => image.image_url?.url !== expectedImage) || requestBody.temperature !== 0.1 || requestBody.stream !== false) {
+      if (requestBody.model !== "google/gemini-2.5-pro" || images.length !== (macro ? 4 : 1) || images.some((image) => image.image_url?.url !== expectedImage) || requestBody.temperature !== 0.1 || requestBody.max_tokens !== 6500 || requestBody.stream !== false) {
         response.writeHead(422, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ error: "Swing model, images, or settings did not match." }));
         return;
@@ -129,7 +130,7 @@ const mockServer = createServer(async (request, response) => {
       if (macro) providerCalls.swingMacro += 1;
       else providerCalls.swingStock += 1;
       beginProviderRequest(macro ? "full" : "compact");
-      await providerDelay();
+      await swingProviderDelay();
       if (!macro && promptText.includes("Symbol: MSFT")) {
         const attempts = (swingStockAttempts.get("MSFT") ?? 0) + 1;
         swingStockAttempts.set("MSFT", attempts);
@@ -140,10 +141,12 @@ const mockServer = createServer(async (request, response) => {
           return;
         }
       }
+      const india = promptText.includes("four attached INDIA");
+      const macroSymbols = india ? ["NIFTY50", "BANKNIFTY", "INDIAVIX", "USDINR"] : ["SPY", "QQQ", "GLD", "TLT"];
       const macroResult = {
         regime: "BULLISH_ACCELERATION", long_bias: "SUPPORTIVE", short_bias: "NEUTRAL", high_beta_long_forbidden: false,
-        summary: "SPY and QQQ remain structurally constructive while GLD and TLT are neutral.",
-        anchors: Object.fromEntries(["SPY", "QQQ", "GLD", "TLT"].map((symbol) => [symbol, { stance: symbol === "SPY" || symbol === "QQQ" ? "BULLISH" : "NEUTRAL", observation: `${symbol} daily structure is visually legible.`, visual_quality: "CLEAR" }])),
+        summary: india ? "NIFTY 50 and NIFTY Bank remain structurally constructive while India VIX and USD/INR are neutral." : "SPY and QQQ remain structurally constructive while GLD and TLT are neutral.",
+        anchors: Object.fromEntries(macroSymbols.map((symbol) => [symbol, { stance: ["SPY", "QQQ", "NIFTY50", "BANKNIFTY"].includes(symbol) ? "BULLISH" : "NEUTRAL", observation: `${symbol} daily structure is visually legible.`, visual_quality: "CLEAR" }])),
       };
       const symbol = promptText.match(/- Symbol: ([A-Z0-9.-]+)/)?.[1] ?? "AAPL";
       const direction = symbol === "MSFT" ? "SHORT" : symbol === "NVDA" ? "NO_TRADE" : "LONG";
@@ -154,7 +157,7 @@ const mockServer = createServer(async (request, response) => {
         trigger_rule: "A daily candle must continue to hold the retested polarity floor.", entry_rationale: "The entry brackets the visible retest zone.", stop_rationale: "A daily body close below the polarity floor invalidates the setup.", target_1_rationale: "Target 1 is the next visible resistance shelf.", target_2_rationale: "Target 2 is the next visible historical extension.",
         risk_notes: ["The far-right daily candle is incomplete."], visual_quality: "CLEAR", unreadable_fields: [],
       } : direction === "SHORT" ? {
-        symbol, direction, observed_price: 101, entry_zone_low: 100, entry_zone_high: 102, stop_loss: 106, profit_target_1: 90, profit_target_2: 84,
+        symbol, direction, observed_price: 101, entry_zone_low: 100, entry_zone_high: 102, stop_loss: 106, profit_target_1: 95, profit_target_2: 90,
         conviction_level: "MEDIUM", macro_context: "Locked macro context permits selective shorts.", pattern_name: "Daily support breakdown and failed retest", polarity_analysis: "Former support is visibly acting as overhead resistance.", moving_average_analysis: "Price is visibly below the fast averages and intermediate structure.", structural_setup_and_polarity: "Visible daily support breakdown and failed retest.",
         core_indicators_and_volume: "MACD and CMF show visible selling pressure.", volume_ratio: 1.6, volume_analysis: "The visible 1.6x ratio confirms the breakdown.", macd_analysis: "MACD is below its signal with a negative histogram.", rsi_analysis: "RSI is below its midpoint but remains readable.", cci_analysis: "CCI shows negative momentum expansion.", cmf_analysis: "CMF shows visible selling pressure below zero without proving transactions.", three_candle_micro_audit: "Three candles show contracting rebound velocity; the open candle is provisional.",
         trigger_rule: "A daily retest must reject the broken support from below.", entry_rationale: "The entry brackets the visible failed-retest zone.", stop_rationale: "A daily body close above the broken shelf invalidates the short.", target_1_rationale: "Target 1 is the next visible support shelf.", target_2_rationale: "Target 2 is the lower visible historical extension.",
@@ -167,7 +170,7 @@ const mockServer = createServer(async (request, response) => {
         risk_notes: ["Execution levels are not sufficiently clear."], visual_quality: "PARTIAL", unreadable_fields: ["volume_ratio"],
       };
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ id: `e2e-${responseName}-${macro ? providerCalls.swingMacro : providerCalls.swingStock}`, model: "google/gemini-2.5-pro", provider: "e2e-google-mock", choices: [{ message: { content: JSON.stringify(macro ? macroResult : candidateResult) }, finish_reason: "stop" }], usage: { prompt_tokens: 1400, completion_tokens: 500, cost: 0.012 } }));
+      response.end(JSON.stringify({ id: `e2e-${responseName}-${macro ? providerCalls.swingMacro : providerCalls.swingStock}`, model: "google/gemini-2.5-pro", provider: "e2e-google-mock", choices: [{ message: { content: JSON.stringify(macro ? macroResult : candidateResult) }, finish_reason: "stop" }], usage: { prompt_tokens: 1400, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 300 }, cost: 0.012 } }));
       endProviderRequest(macro ? "full" : "compact");
       return;
     }

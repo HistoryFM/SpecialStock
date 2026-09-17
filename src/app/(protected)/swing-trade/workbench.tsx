@@ -1,29 +1,79 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { SWING_WATCHLIST_MAX_ENTRIES } from "@/swing/types";
+import { SWING_WATCHLIST_MAX_ENTRIES, type SwingMarket } from "@/swing/types";
 
+type SwingSection = "today" | "lists" | "history" | "advanced";
+type SortDirection = "none" | "asc" | "desc";
 type Revision = { id: string; revisionNumber: number; instructions: string; instructionsHash: string; templateVersion: string; createdAt: string; active: boolean };
-type Version = { id: string; versionNumber: number; sourceFilename: string; sourceType: string; entryCount: number; createdAt: string; active: boolean };
-type RunSummary = { id: string; mode: string; status: string; sessionDate: string; stage: string; completedCandidates: number; failedCandidates: number; totalCandidates: number; providerCalls: number; costUsd: number | null; createdAt: string; completedAt: string | null };
-type Candidate = { id: string; status: string; stockName: string; symbol: string; exchange: string; direction: "LONG" | "SHORT" | "NO_TRADE" | null; observedPrice: number | null; entryZoneLow: number | null; entryZoneHigh: number | null; stopLoss: number | null; profitTarget1: number | null; profitTarget2: number | null; conviction: string | null; riskReward: number | null; proximityPercent: number | null; visualQuality: string | null; errorMessage: string | null; rejectionReason: string | null; completedAt: string | null };
-type WatchlistCandidate = { stockName: string; symbol: string; exchange: string };
-type RunDetail = RunSummary & { macroResult: null | { regime: string; summary: string; anchors: Record<string, { stance: string; observation: string; visual_quality: string }> }; candidates: Candidate[]; actionableIds: string[]; errorMessage?: string | null };
-type Initial = {
-  configuration: { settings: { automaticEnabled: boolean; activeWatchlistVersionId: string | null }; entries: Array<{ stockName: string; symbol: string; exchange: string; position: number }>; versions: Version[] };
-  prompt: { activeRevisionId: string; defaultInstructions: string; revisions: Revision[] };
-  runs: RunSummary[]; latest: RunDetail | null;
-  availability: { chartImg: boolean; openRouter: boolean };
-  schedule: { nextEligibleAt: string | null; sessionDate: string; regularSession: boolean };
-};
+type Version = { id: string; listId: string; versionNumber: number; sourceFilename: string; sourceType: string; entryCount: number; createdAt: string; active: boolean };
+type SwingList = { id: string; name: string; kind: "master" | "sublist"; parentListId: string | null; latestVersionId: string | null; entryCount: number; createdAt: string; active: boolean };
+type Entry = { stockName: string; symbol: string; exchange: string; industry: string; position: number };
+type Configuration = { market: SwingMarket; settings: { automaticEnabled: boolean; activeWatchlistVersionId: string | null }; entries: Entry[]; lists: SwingList[]; versions: Version[] };
+type Usage = { inputTokens: number | null; outputTokens: number | null; reasoningTokens: number | null; totalTokens: number | null; costUsd: number | null; costComplete: boolean; modelRuns: number };
+type Timing = { elapsedMs: number; estimatedRemainingMs: number | null; concurrency: number };
+type MacroResult = null | { regime: string; long_bias: string; short_bias: string; high_beta_long_forbidden: boolean; summary: string; anchors: Record<string, { stance: string; observation: string; visual_quality: string }> };
+type RunSummary = { id: string; market: SwingMarket; mode: string; status: string; reportDate: string; sessionDate: string; stage: string; completedCandidates: number; failedCandidates: number; canceledCandidates: number; totalCandidates: number; providerCalls: number; costUsd: number | null; createdAt: string; completedAt: string | null; timing: Timing };
+type Candidate = { id: string; runId: string; status: string; watchlistPosition: number; stockName: string; symbol: string; exchange: string; industry: string; direction: "LONG" | "SHORT" | "NO_TRADE" | null; originalDirection: "LONG" | "SHORT" | "NO_TRADE" | null; observedPrice: number | null; entryZoneLow: number | null; entryZoneHigh: number | null; stopLoss: number | null; profitTarget1: number | null; profitTarget2: number | null; conviction: string | null; riskReward: number | null; proximityPercent: number | null; visualQuality: string | null; errorMessage: string | null; rejectionReason: string | null; completedAt: string | null; sourceRunId?: string };
+type WatchlistCandidate = Pick<Entry, "stockName" | "symbol" | "exchange" | "industry">;
+type RunDetail = RunSummary & { listName: string; macroResult: MacroResult; candidates: Candidate[]; actionableIds: string[]; errorMessage?: string | null; usage: Usage };
+type Batch = RunSummary & { listName: string; macroResult: MacroResult; usage: Usage };
+type DailyReport = { market: SwingMarket; reportDate: string; recommended: Candidate[]; directionalNoTrade: Candidate[]; undirectedNoTrade: Candidate[]; failures: Candidate[]; batches: Batch[] };
+type Initial = { configurations: Record<SwingMarket, Configuration>; prompt: { activeRevisionId: string; defaultInstructions: string; revisions: Revision[] }; runs: RunSummary[]; latest: RunDetail | null; availability: { chartImg: boolean; openRouter: boolean }; schedule: { nextEligibleAt: string | null; sessionDate: string; regularSession: boolean } };
 
-const money = (value: number | null) => value === null ? "—" : `$${value.toFixed(2)}`;
-const price = (value: number | null) => value === null ? "—" : `$${value.toFixed(2)}`;
+const TAB_KEY = "specialstock:swing-open-tabs";
+const terminal = new Set(["completed", "partial", "failed", "missed", "canceled"]);
+const sections: Array<{ id: SwingSection; label: string }> = [{ id: "today", label: "Today" }, { id: "lists", label: "Lists" }, { id: "history", label: "History" }, { id: "advanced", label: "Advanced" }];
+const number = (value: number | null) => value === null ? "—" : value.toLocaleString();
+const money = (value: number | null) => value === null ? "—" : `$${value.toFixed(4)}`;
+const price = (value: number | null) => value === null ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+const titleCase = (value: string) => value.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+const duration = (value: number | null) => { if (value === null) return "Waiting for enough results"; const seconds = Math.max(0, Math.round(value / 1000)); return seconds < 60 ? `${seconds} sec` : `${Math.floor(seconds / 60)} min ${seconds % 60} sec`; };
+const todayFor = (market: SwingMarket) => new Intl.DateTimeFormat("en-CA", { timeZone: market === "US" ? "America/New_York" : "Asia/Kolkata" }).format(new Date());
+const dateTime = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 
-export function SwingTradeWorkbench({ initial }: { initial: Initial }) {
-  const [configuration, setConfiguration] = useState(initial.configuration);
+function industrySort(rows: Candidate[], direction: SortDirection) {
+  if (direction === "none") return rows;
+  return rows.map((row, index) => ({ row, index })).toSorted((a, b) => {
+    if (!a.row.industry && b.row.industry) return 1;
+    if (a.row.industry && !b.row.industry) return -1;
+    const compared = a.row.industry.localeCompare(b.row.industry, undefined, { sensitivity: "base" });
+    return (direction === "asc" ? compared : -compared) || a.index - b.index;
+  }).map(({ row }) => row);
+}
+
+function DirectionBadge({ direction }: { direction: Candidate["direction"] }) {
+  const label = direction ?? "Pending";
+  return <span className={`swing-direction swing-direction-${label.toLowerCase().replace("_", "-")}`}>{label.replace("_", " ")}</span>;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return <span className={`swing-status swing-status-${status.toLowerCase()}`}>{titleCase(status)}</span>;
+}
+
+function ResultsTable({ rows, sort, onSort, directional = false }: { rows: Candidate[]; sort: SortDirection; onSort: () => void; directional?: boolean }) {
+  const sortLabel = sort === "asc" ? "Sort Industry descending" : sort === "desc" ? "Clear Industry sorting" : "Sort Industry ascending";
+  return <>
+    <div className="swing-table-wrap swing-results-table"><table><thead><tr><th>Rank / stock</th><th>Direction</th><th aria-sort={sort === "none" ? "none" : sort === "asc" ? "ascending" : "descending"}><button aria-label={sortLabel} className="swing-sort-button" onClick={onSort} type="button">Industry <span aria-hidden="true">{sort === "asc" ? "↑" : sort === "desc" ? "↓" : "↕"}</span></button></th><th className="numeric">Observed</th><th className="numeric">Entry zone</th><th className="numeric">Stop</th><th className="numeric">T1 / T2</th><th>Conviction</th><th className="numeric">R:R</th><th className="numeric">Proximity</th><th>Quality</th>{directional ? <th>Downgrade reason</th> : null}</tr></thead><tbody>{rows.map((candidate, index) => <tr key={candidate.id}><td className="swing-stock-cell"><Link href={`/swing-trade/candidates/${candidate.id}`}><strong><span className="swing-rank">#{index + 1}</span> {candidate.symbol}</strong><small>{candidate.stockName} · {candidate.exchange}</small></Link></td><td><DirectionBadge direction={candidate.originalDirection ?? candidate.direction} /></td><td>{candidate.industry || "—"}</td><td className="numeric">{price(candidate.observedPrice)}</td><td className="numeric">{price(candidate.entryZoneLow)}–{price(candidate.entryZoneHigh)}</td><td className="numeric">{price(candidate.stopLoss)}</td><td className="numeric">{price(candidate.profitTarget1)} / {price(candidate.profitTarget2)}</td><td>{candidate.conviction ?? "—"}</td><td className="numeric">{candidate.riskReward?.toFixed(2) ?? "—"}</td><td className="numeric">{candidate.proximityPercent === null ? "—" : `${candidate.proximityPercent.toFixed(2)}%`}</td><td>{candidate.visualQuality ?? "—"}</td>{directional ? <td className="swing-reason-cell">{candidate.rejectionReason ?? "Did not meet the required risk/reward or proximity rule."}</td> : null}</tr>)}</tbody></table></div>
+    <div className="swing-candidate-cards">{rows.map((candidate, index) => <article key={candidate.id}><header><Link href={`/swing-trade/candidates/${candidate.id}`}><strong>#{index + 1} {candidate.symbol}</strong><span>{candidate.stockName}</span></Link><DirectionBadge direction={candidate.originalDirection ?? candidate.direction} /></header><dl><div><dt>Industry</dt><dd>{candidate.industry || "—"}</dd></div><div><dt>Conviction</dt><dd>{candidate.conviction ?? "—"}</dd></div><div><dt>Observed</dt><dd>{price(candidate.observedPrice)}</dd></div><div><dt>Entry zone</dt><dd>{price(candidate.entryZoneLow)}–{price(candidate.entryZoneHigh)}</dd></div><div><dt>Stop</dt><dd>{price(candidate.stopLoss)}</dd></div><div><dt>Targets</dt><dd>{price(candidate.profitTarget1)} / {price(candidate.profitTarget2)}</dd></div><div><dt>R:R</dt><dd>{candidate.riskReward?.toFixed(2) ?? "—"}</dd></div><div><dt>Proximity</dt><dd>{candidate.proximityPercent === null ? "—" : `${candidate.proximityPercent.toFixed(2)}%`}</dd></div></dl>{directional ? <p>{candidate.rejectionReason ?? "Did not meet the required risk/reward or proximity rule."}</p> : null}</article>)}</div>
+  </>;
+}
+
+function Modal({ title, description, onClose, children, wide = false }: { title: string; description?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  useEffect(() => { const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; window.addEventListener("keydown", closeOnEscape); return () => window.removeEventListener("keydown", closeOnEscape); }, [onClose]);
+  return <div className="swing-modal-backdrop" role="presentation"><section aria-describedby={description ? "swing-modal-description" : undefined} aria-labelledby="swing-modal-title" aria-modal="true" className={`swing-modal${wide ? " wide" : ""}`} role="dialog"><header><div><h2 id="swing-modal-title">{title}</h2>{description ? <p className="muted" id="swing-modal-description">{description}</p> : null}</div><button aria-label="Close dialog" className="swing-icon-button" onClick={onClose} type="button">×</button></header>{children}</section></div>;
+}
+
+function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div className="swing-metric"><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+}
+
+export function SwingTradeWorkbench({ initial, initialMarket, initialSection }: { initial: Initial; initialMarket: SwingMarket; initialSection: SwingSection }) {
+  const [configurations, setConfigurations] = useState(initial.configurations);
+  const [market, setMarket] = useState<SwingMarket>(initialMarket);
+  const [section, setSection] = useState<SwingSection>(initialSection);
   const [prompt, setPrompt] = useState(initial.prompt);
   const active = prompt.revisions.find((revision) => revision.id === prompt.activeRevisionId)!;
   const [draft, setDraft] = useState(active.instructions);
@@ -31,202 +81,165 @@ export function SwingTradeWorkbench({ initial }: { initial: Initial }) {
   const [preview, setPreview] = useState("");
   const [runs, setRuns] = useState(initial.runs);
   const [selected, setSelected] = useState<RunDetail | null>(initial.latest);
+  const [runDetails, setRunDetails] = useState<Record<string, RunDetail>>(initial.latest ? { [initial.latest.id]: initial.latest } : {});
+  const [report, setReport] = useState<DailyReport | null>(null);
+  const [reportDate, setReportDate] = useState(todayFor(initialMarket));
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [sublistOpen, setSublistOpen] = useState(false);
+  const [versionListId, setVersionListId] = useState<string | null>(null);
   const [watchlistFile, setWatchlistFile] = useState<File | null>(null);
   const [watchlistCandidates, setWatchlistCandidates] = useState<WatchlistCandidate[]>([]);
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [candidateSearch, setCandidateSearch] = useState("");
+  const [importListName, setImportListName] = useState("");
+  const [importSublistName, setImportSublistName] = useState("");
   const [uploadKey, setUploadKey] = useState(0);
+  const [activeSelection, setActiveSelection] = useState<string[]>([]);
+  const [sublistSearch, setSublistSearch] = useState("");
+  const [savedSublistName, setSavedSublistName] = useState("");
+  const [recommendedSort, setRecommendedSort] = useState<SortDirection>("none");
+  const [noTradeSort, setNoTradeSort] = useState<SortDirection>("none");
+  const activeRunIdRef = useRef<string | null>(null);
+  const configuration = configurations[market];
+  const activeList = configuration.lists.find((list) => list.active) ?? null;
+  const activeListParent = activeList?.parentListId ? configuration.lists.find((list) => list.id === activeList.parentListId) ?? null : null;
+  const providersReady = initial.availability.chartImg && initial.availability.openRouter;
   const dirty = draft !== active.instructions;
-  const running = selected?.status === "running" || selected?.status === "scheduled";
-  const selectedId = selected?.id;
+  const activeRun = runs.find((run) => run.status === "running" || run.status === "scheduled");
+  const activeRunId = activeRun?.id ?? (selected && !terminal.has(selected.status) ? selected.id : null);
 
-  const ranked = useMemo(() => selected ? selected.actionableIds.flatMap((id) => {
-    const candidate = selected.candidates.find((item) => item.id === id);
-    return candidate ? [candidate] : [];
-  }) : [], [selected]);
-  const noTrade = selected?.candidates.filter((candidate) => candidate.status === "completed" && candidate.direction === "NO_TRADE") ?? [];
-  const failed = selected?.candidates.filter((candidate) => candidate.status === "failed") ?? [];
+  const currentReport = report?.market === market && report.reportDate === reportDate ? report : null;
+  const recommended = useMemo(() => industrySort(currentReport?.recommended ?? [], recommendedSort), [currentReport, recommendedSort]);
+  const directionalNoTrade = useMemo(() => industrySort(currentReport?.directionalNoTrade ?? [], noTradeSort), [currentReport, noTradeSort]);
+  const selectedBatch = useMemo(() => { if (!currentReport?.batches.length) return null; return currentReport.batches.find((batch) => batch.id === selected?.id) ?? currentReport.batches.at(-1) ?? null; }, [currentReport, selected?.id]);
+  const dailyUsage = useMemo(() => (currentReport?.batches ?? []).reduce((total, batch) => ({ input: total.input + (batch.usage.inputTokens ?? 0), output: total.output + (batch.usage.outputTokens ?? 0), reasoning: total.reasoning + (batch.usage.reasoningTokens ?? 0), cost: total.cost + (batch.usage.costUsd ?? 0), calls: total.calls + batch.providerCalls, incomplete: total.incomplete || !batch.usage.costComplete }), { input: 0, output: 0, reasoning: 0, cost: 0, calls: 0, incomplete: false }), [currentReport]);
+  const reportDates = useMemo(() => [...new Set(runs.filter((run) => run.market === market).map((run) => run.reportDate))].toSorted(), [market, runs]);
+  const previousDate = [...reportDates].reverse().find((date) => date < reportDate) ?? null;
+  const nextDate = reportDates.find((date) => date > reportDate) ?? null;
+  const historyGroups = useMemo(() => Object.entries(Object.groupBy(runs.filter((run) => run.market === market), (run) => run.reportDate)), [market, runs]);
+
+  function updateUrl(nextMarket: SwingMarket, nextSection: SwingSection, replace = false) { const url = new URL(window.location.href); url.searchParams.set("market", nextMarket); url.searchParams.set("section", nextSection); window.history[replace ? "replaceState" : "pushState"]({}, "", url); }
+  function chooseMarket(nextMarket: SwingMarket, updateHistory = true) { setMarket(nextMarket); setReportDate(todayFor(nextMarket)); setMessage(""); setImportOpen(false); setSublistOpen(false); setVersionListId(null); if (updateHistory) updateUrl(nextMarket, section); }
+  function chooseSection(nextSection: SwingSection, updateHistory = true) { setSection(nextSection); if (updateHistory) updateUrl(market, nextSection); }
 
   async function refreshState() {
     const response = await fetch("/api/swing/state", { cache: "no-store" });
-    if (!response.ok) return;
-    const state = await response.json() as { configuration: Initial["configuration"]; prompt: Initial["prompt"]; runs: RunSummary[] };
-    setConfiguration(state.configuration); setPrompt(state.prompt); setRuns(state.runs);
+    if (!response.ok) return null;
+    const state = await response.json() as { configurations: Initial["configurations"]; prompt: Initial["prompt"]; runs: RunSummary[] };
+    setConfigurations(state.configurations); setPrompt(state.prompt); setRuns(state.runs);
+    return state;
   }
+  async function fetchRun(id: string) { const response = await fetch(`/api/swing/runs/${id}`, { cache: "no-store" }); const payload = await response.json() as { run?: RunDetail; error?: string }; if (!response.ok || !payload.run) throw new Error(payload.error ?? "Swing run could not be loaded."); setRunDetails((current) => ({ ...current, [payload.run!.id]: payload.run! })); return payload.run; }
+  async function loadRun(id: string, navigate = true) { const run = await fetchRun(id); setSelected(run); if (navigate) { setMarket(run.market); setReportDate(run.reportDate); } return run; }
 
-  async function loadRun(id: string) {
-    const response = await fetch(`/api/swing/runs/${id}`, { cache: "no-store" });
-    const payload = await response.json() as { run?: RunDetail; error?: string };
-    if (!response.ok || !payload.run) throw new Error(payload.error ?? "Swing run could not be loaded.");
-    setSelected(payload.run);
-  }
-
+  useEffect(() => { updateUrl(initialMarket, initialSection, true); const onPopState = () => { const params = new URLSearchParams(window.location.search); const nextMarket = params.get("market") === "INDIA" ? "INDIA" : "US"; const requested = params.get("section"); const nextSection = sections.some((item) => item.id === requested) ? requested as SwingSection : "today"; setMarket(nextMarket); setSection(nextSection); setReportDate(todayFor(nextMarket)); }; window.addEventListener("popstate", onPopState); return () => window.removeEventListener("popstate", onPopState); }, [initialMarket, initialSection]);
+  useEffect(() => { activeRunIdRef.current = activeRunId; }, [activeRunId]);
+  useEffect(() => { const controller = new AbortController(); void fetch(`/api/swing/reports?market=${market}&date=${reportDate}`, { cache: "no-store", signal: controller.signal }).then(async (response) => response.ok ? await response.json() as { report: DailyReport } : null).then((payload) => { if (payload && !controller.signal.aborted) setReport(payload.report); }).catch(() => undefined); return () => controller.abort(); }, [market, reportDate, selected?.status, selected?.completedCandidates, selected?.failedCandidates, selected?.canceledCandidates]);
   useEffect(() => {
-    if (!running || !selectedId) return;
-    const interval = window.setInterval(() => void loadRun(selectedId).then(() => refreshState()), 1200);
-    return () => window.clearInterval(interval);
-  }, [running, selectedId]);
-
-  useEffect(() => {
-    const before = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
-    const click = (event: MouseEvent) => {
-      if (!dirty) return;
-      const anchor = (event.target as HTMLElement).closest("a");
-      if (anchor?.href && !window.confirm("Discard unsaved Swing prompt changes?")) event.preventDefault();
+    const refresh = async () => {
+      await refreshState();
+      const id = activeRunIdRef.current;
+      if (!id) return;
+      const response = await fetch(`/api/swing/runs/${id}`, { cache: "no-store" });
+      const payload = response.ok ? await response.json() as { run: RunDetail } : null;
+      if (!payload) return;
+      setRunDetails((current) => ({ ...current, [payload.run.id]: payload.run }));
+      setSelected(payload.run);
     };
-    window.addEventListener("beforeunload", before);
-    document.addEventListener("click", click, true);
-    return () => { window.removeEventListener("beforeunload", before); document.removeEventListener("click", click, true); };
-  }, [dirty]);
-
+    const interval = window.setInterval(() => void refresh(), activeRunId ? 1_500 : 10_000);
+    return () => window.clearInterval(interval);
+  }, [activeRunId]);
   useEffect(() => {
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      if (draft.trim().length < 100) { setPreview(""); return; }
-      const response = await fetch("/api/swing/prompts/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instructions: draft, phase }), signal: controller.signal });
-      const payload = await response.json() as { preview?: string };
-      if (response.ok && !controller.signal.aborted) setPreview(payload.preview ?? "");
-    }, 300);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [draft, phase]);
+    const tabId = crypto.randomUUID();
+    const writePresence = () => { let tabs: Record<string, number> = {}; try { tabs = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}") as Record<string, number>; } catch { /* replace corrupt state */ } const now = Date.now(); for (const [id, seen] of Object.entries(tabs)) if (now - seen > 25_000) delete tabs[id]; tabs[tabId] = now; localStorage.setItem(TAB_KEY, JSON.stringify(tabs)); };
+    const heartbeat = () => { writePresence(); const id = activeRunIdRef.current; if (id) void fetch(`/api/swing/runs/${id}/heartbeat`, { method: "POST", keepalive: true }); };
+    const close = () => { let tabs: Record<string, number> = {}; try { tabs = JSON.parse(localStorage.getItem(TAB_KEY) ?? "{}") as Record<string, number>; } catch { /* ignore corrupt state */ } delete tabs[tabId]; localStorage.setItem(TAB_KEY, JSON.stringify(tabs)); const anotherOpen = Object.values(tabs).some((seen) => Date.now() - seen <= 25_000); const id = activeRunIdRef.current; if (!anotherOpen && id) void fetch(`/api/swing/runs/${id}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "tab_closed" }), keepalive: true }); };
+    heartbeat(); const interval = window.setInterval(heartbeat, 10_000); window.addEventListener("pagehide", close); return () => { window.clearInterval(interval); window.removeEventListener("pagehide", close); window.setTimeout(close, 100); };
+  }, []);
+  useEffect(() => { const before = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); }; const click = (event: MouseEvent) => { if (!dirty) return; const anchor = (event.target as HTMLElement).closest("a"); if (anchor?.href && !window.confirm("Discard unsaved Swing prompt changes?")) event.preventDefault(); }; window.addEventListener("beforeunload", before); document.addEventListener("click", click, true); return () => { window.removeEventListener("beforeunload", before); document.removeEventListener("click", click, true); }; }, [dirty]);
+  useEffect(() => { if (section !== "advanced") return; const controller = new AbortController(); const timer = window.setTimeout(async () => { if (draft.trim().length < 100) { setPreview(""); return; } const response = await fetch("/api/swing/prompts/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instructions: draft, phase }), signal: controller.signal }); const payload = await response.json() as { preview?: string }; if (response.ok && !controller.signal.aborted) setPreview(payload.preview ?? ""); }, 300); return () => { window.clearTimeout(timer); controller.abort(); }; }, [draft, phase, section]);
+  useEffect(() => { if (section !== "history") return; const missing = runs.filter((run) => run.market === market && !runDetails[run.id]); if (!missing.length) return; let canceled = false; void Promise.all(missing.map((run) => fetch(`/api/swing/runs/${run.id}`, { cache: "no-store" }).then(async (response) => response.ok ? (await response.json() as { run: RunDetail }).run : null))).then((details) => { if (canceled) return; setRunDetails((current) => ({ ...current, ...Object.fromEntries(details.filter((detail): detail is RunDetail => Boolean(detail)).map((detail) => [detail.id, detail])) })); }).catch(() => undefined); return () => { canceled = true; }; }, [market, runDetails, runs, section]);
 
-  async function activateWatchlist(file: File, symbols: string[]) {
-    const form = new FormData(); form.set("file", file); form.set("selectedSymbols", JSON.stringify(symbols));
-    const response = await fetch("/api/swing/watchlists", { method: "POST", body: form });
-    const payload = await response.json() as { error?: string; issues?: string[] };
-    if (!response.ok) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "Watchlist import failed.");
-    await refreshState();
-    setWatchlistFile(null); setWatchlistCandidates([]); setSelectedSymbols([]); setCandidateSearch(""); setUploadKey((value) => value + 1);
-    setMessage("Swing watchlist imported and activated.");
+  function resetImport() { setWatchlistFile(null); setWatchlistCandidates([]); setSelectedSymbols([]); setCandidateSearch(""); setImportListName(""); setImportSublistName(""); setUploadKey((value) => value + 1); }
+  function closeImport() { resetImport(); setImportOpen(false); }
+  async function activateUpload(file: File, symbols: string[]) {
+    setPending(true); setMessage("");
+    try { const form = new FormData(); form.set("file", file); form.set("market", market); form.set("listName", importListName); form.set("selectedSymbols", JSON.stringify(symbols)); if (symbols.length !== watchlistCandidates.length || watchlistCandidates.length > SWING_WATCHLIST_MAX_ENTRIES) form.set("sublistName", importSublistName); const response = await fetch("/api/swing/watchlists", { method: "POST", body: form }); const payload = await response.json() as { error?: string; issues?: string[] }; if (!response.ok) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "List import failed."); await refreshState(); closeImport(); setMessage(`${market} list saved and activated.`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "List import failed."); } finally { setPending(false); }
   }
-
   async function importWatchlist(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setPending(true); setMessage("");
-    const form = new FormData(event.currentTarget);
-    try {
-      const file = form.get("file");
-      if (!(file instanceof File)) throw new Error("Choose a CSV or XLSX watchlist file.");
-      const response = await fetch("/api/swing/watchlists/preview", { method: "POST", body: form });
-      const payload = await response.json() as { candidates?: WatchlistCandidate[]; rowCount?: number; error?: string; issues?: string[] };
-      if (!response.ok || !payload.candidates) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "Watchlist preview failed.");
-      if (payload.candidates.length <= 20) await activateWatchlist(file, payload.candidates.map((candidate) => candidate.symbol));
-      else {
-        setWatchlistFile(file); setWatchlistCandidates(payload.candidates); setSelectedSymbols([]); setCandidateSearch("");
-        setMessage(`${payload.rowCount ?? payload.candidates.length} valid rows found. Choose 1–${SWING_WATCHLIST_MAX_ENTRIES} stocks to activate.`);
-      }
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Watchlist import failed."); }
-    finally { setPending(false); }
+    event.preventDefault(); setPending(true); setMessage(""); const form = new FormData(event.currentTarget); form.set("market", market);
+    try { const file = form.get("file"); if (!(file instanceof File)) throw new Error("Choose a CSV or XLSX file."); const name = String(form.get("listName") ?? "").trim(); if (!name) throw new Error("Enter a saved list name."); const response = await fetch("/api/swing/watchlists/preview", { method: "POST", body: form }); const payload = await response.json() as { candidates?: WatchlistCandidate[]; error?: string; issues?: string[] }; if (!response.ok || !payload.candidates) throw new Error(payload.issues?.join(" ") ?? payload.error ?? "List preview failed."); setImportListName(name); setWatchlistFile(file); setWatchlistCandidates(payload.candidates); setSelectedSymbols(payload.candidates.length <= 20 ? payload.candidates.map((candidate) => candidate.symbol) : []); setCandidateSearch(""); setMessage(`${payload.candidates.length} valid rows found. Choose up to ${SWING_WATCHLIST_MAX_ENTRIES} stocks.`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "List import failed."); } finally { setPending(false); }
   }
-
-  async function activateSelectedWatchlist() {
-    if (!watchlistFile) return;
+  function toggleCandidate(symbol: string) { setSelectedSymbols((current) => current.includes(symbol) ? current.filter((item) => item !== symbol) : current.length < SWING_WATCHLIST_MAX_ENTRIES ? [...current, symbol] : current); }
+  async function activateList(versionId: string) {
     setPending(true); setMessage("");
-    try { await activateWatchlist(watchlistFile, selectedSymbols); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "Watchlist import failed."); }
-    finally { setPending(false); }
+    try { const response = await fetch("/api/swing/watchlists/activate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ versionId, market, expectedActiveVersionId: configuration.settings.activeWatchlistVersionId }) }); const payload = await response.json() as { activated?: { activeWatchlistVersionId: string | null }; error?: string }; if (!response.ok || payload.activated?.activeWatchlistVersionId !== versionId) throw new Error(payload.error ?? "The list did not become active."); const refreshed = await refreshState(); if (refreshed?.configurations[market].settings.activeWatchlistVersionId !== versionId) throw new Error("The server did not confirm the active list after refresh."); setActiveSelection([]); setMessage("Saved list activated and verified."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "List activation failed."); } finally { setPending(false); }
   }
-
-  function toggleCandidate(symbol: string) {
-    setSelectedSymbols((current) => current.includes(symbol)
-      ? current.filter((item) => item !== symbol)
-      : current.length < SWING_WATCHLIST_MAX_ENTRIES ? [...current, symbol] : current);
-  }
-
-  async function toggleAutomatic(enabled: boolean) {
+  async function saveSublist() {
     setPending(true); setMessage("");
-    try {
-      const response = await fetch("/api/swing/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ automaticEnabled: enabled }) });
-      const payload = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Setting update failed.");
-      setConfiguration((value) => ({ ...value, settings: { ...value.settings, automaticEnabled: enabled } }));
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Setting update failed."); }
-    finally { setPending(false); }
+    try { const sourceVersionId = configuration.settings.activeWatchlistVersionId; if (!sourceVersionId) throw new Error("Activate a master list first."); const response = await fetch("/api/swing/watchlists/sublist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceVersionId, expectedActiveVersionId: sourceVersionId, market, name: savedSublistName, symbols: activeSelection }) }); const payload = await response.json() as { error?: string }; if (!response.ok) throw new Error(payload.error ?? "Sublist could not be saved."); await refreshState(); setActiveSelection([]); setSavedSublistName(""); setSublistSearch(""); setSublistOpen(false); setMessage("Sublist snapshot saved and activated."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Sublist could not be saved."); } finally { setPending(false); }
   }
-
-  async function restoreWatchlist(versionId: string) {
-    setPending(true);
-    try {
-      const response = await fetch("/api/swing/watchlists/activate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ versionId }) });
-      if (!response.ok) throw new Error("Watchlist restore failed.");
-      await refreshState(); setMessage("Previous Swing watchlist version restored.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Watchlist restore failed."); }
-    finally { setPending(false); }
-  }
-
-  async function startRun() {
+  async function toggleAutomatic(enabled: boolean) { setPending(true); setMessage(""); try { const response = await fetch("/api/swing/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ automaticEnabled: enabled }) }); const payload = await response.json() as { error?: string }; if (!response.ok) throw new Error(payload.error ?? "Setting update failed."); await refreshState(); } catch (error) { setMessage(error instanceof Error ? error.message : "Setting update failed."); } finally { setPending(false); } }
+  async function startRun(versionId = configuration.settings.activeWatchlistVersionId) {
     setPending(true); setMessage("");
-    try {
-      const response = await fetch("/api/swing/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "manual", requestId: crypto.randomUUID() }) });
-      const payload = await response.json() as { runId?: string; error?: string };
-      if (!response.ok || !payload.runId) throw new Error(payload.error ?? "Swing run could not start.");
-      await loadRun(payload.runId); await refreshState();
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Swing run could not start."); }
-    finally { setPending(false); }
+    try { if (!versionId) throw new Error("Activate a saved list first."); const response = await fetch("/api/swing/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "manual", market, watchlistVersionId: versionId, requestId: crypto.randomUUID() }) }); const payload = await response.json() as { runId?: string; error?: string }; if (!response.ok || !payload.runId) throw new Error(payload.error ?? "Swing run could not start."); const run = await loadRun(payload.runId); await refreshState(); setSection("today"); updateUrl(run.market, "today"); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Swing run could not start."); } finally { setPending(false); }
   }
-
+  async function cancelRun() {
+    if (!activeRunId) return; setPending(true);
+    try { const response = await fetch(`/api/swing/runs/${activeRunId}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "user" }) }); const payload = await response.json() as { error?: string }; if (!response.ok) throw new Error(payload.error ?? "Run cancellation failed."); await loadRun(activeRunId, false); await refreshState(); setMessage("Run canceled. Completed results remain in today’s report; accepted provider requests may still be billed."); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Run cancellation failed."); } finally { setPending(false); }
+  }
   async function updatePrompt(kind: "save" | "activate", revisionId?: string, instructions = draft) {
     setPending(true); setMessage("");
-    try {
-      const response = await fetch(`/api/swing/prompts/${kind === "save" ? "revisions" : "activate"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kind === "save" ? { instructions, expectedActiveRevisionId: active.id } : { revisionId, expectedActiveRevisionId: active.id }) });
-      const payload = await response.json() as { revision?: Revision; error?: string };
-      if (!response.ok || !payload.revision) throw new Error(payload.error ?? "Prompt update failed.");
-      await refreshState(); setDraft(payload.revision.instructions); setMessage(`Swing prompt revision ${payload.revision.revisionNumber} is active.`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Prompt update failed."); }
-    finally { setPending(false); }
+    try { const response = await fetch(`/api/swing/prompts/${kind === "save" ? "revisions" : "activate"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kind === "save" ? { instructions, expectedActiveRevisionId: active.id } : { revisionId, expectedActiveRevisionId: active.id }) }); const payload = await response.json() as { revision?: Revision; error?: string }; if (!response.ok || !payload.revision) throw new Error(payload.error ?? "Prompt update failed."); await refreshState(); setDraft(payload.revision.instructions); setMessage(`Swing prompt revision ${payload.revision.revisionNumber} is active.`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Prompt update failed."); } finally { setPending(false); }
   }
 
-  return <div className="swing-stack">
-    {message ? <div className={/failed|error|pending approval/i.test(message) ? "warning-banner" : "notice-card"} role="status"><span>{message}</span></div> : null}
-    {!initial.availability.chartImg || !initial.availability.openRouter ? <div className="warning-banner" role="status"><strong>Provider setup required</strong><span>Add the missing server-only Chart-Img and OpenRouter keys before a run. No values are exposed here.</span></div> : null}
+  const nextSort = (current: SortDirection): SortDirection => current === "none" ? "asc" : current === "asc" ? "desc" : "none";
+  const importCreatesSublist = watchlistCandidates.length <= SWING_WATCHLIST_MAX_ENTRIES && selectedSymbols.length !== watchlistCandidates.length;
+  const importAction = importCreatesSublist ? `Save master and activate ${selectedSymbols.length}-stock sublist` : `Save and activate ${selectedSymbols.length}-stock master`;
+  const displayedRun = selectedBatch;
+  const settledCount = displayedRun ? displayedRun.completedCandidates + displayedRun.failedCandidates + displayedRun.canceledCandidates : 0;
+  const running = Boolean(activeRun);
+  const versionList = versionListId ? configuration.lists.find((list) => list.id === versionListId) ?? null : null;
+  const sourceMaster = activeList?.kind === "master" ? activeList : activeListParent;
 
-    <section className="swing-control-grid">
-      <article className="settings-card">
-        <p className="eyebrow">Independent universe</p><h2>Swing watchlist</h2>
-        <p className="muted">{configuration.entries.length ? `${configuration.entries.length} stocks · version ${configuration.versions.find((version) => version.active)?.versionNumber}` : "No active watchlist. Automatic runs are disabled until one is imported."}</p>
-        <form className="swing-upload" onSubmit={importWatchlist} data-sentry-mask><label><span>Watchlist CSV or XLSX</span><input accept=".csv,.xlsx" key={uploadKey} name="file" required type="file" /></label><button className="primary-button compact" disabled={pending} type="submit">Import and activate</button></form>
-        {watchlistCandidates.length > 20 ? <section className="swing-watchlist-picker" data-sentry-mask aria-label="Choose Swing stocks">
-          <div className="swing-picker-head"><div><strong>Choose stocks</strong><span>{selectedSymbols.length} of {SWING_WATCHLIST_MAX_ENTRIES} selected · {watchlistCandidates.length} valid rows</span></div><label>Search<input aria-label="Search uploaded stocks" value={candidateSearch} onChange={(event) => setCandidateSearch(event.target.value)} placeholder="Name or symbol" /></label></div>
-          <div className="swing-picker-actions"><button className="secondary-button compact" type="button" disabled={pending} onClick={() => setSelectedSymbols(watchlistCandidates.slice(0, 20).map((candidate) => candidate.symbol))}>Select first 20</button><button className="secondary-button compact" type="button" disabled={pending || watchlistCandidates.length > SWING_WATCHLIST_MAX_ENTRIES} onClick={() => setSelectedSymbols(watchlistCandidates.map((candidate) => candidate.symbol))}>Select all</button><button className="secondary-button compact" type="button" disabled={pending || !selectedSymbols.length} onClick={() => setSelectedSymbols([])}>Clear</button></div>
-          <div className="swing-picker-list">{watchlistCandidates.filter((candidate) => `${candidate.stockName} ${candidate.symbol} ${candidate.exchange}`.toLowerCase().includes(candidateSearch.trim().toLowerCase())).map((candidate) => {
-            const checked = selectedSymbols.includes(candidate.symbol);
-            return <label key={candidate.symbol}><input checked={checked} disabled={!checked && selectedSymbols.length >= SWING_WATCHLIST_MAX_ENTRIES} onChange={() => toggleCandidate(candidate.symbol)} type="checkbox" /><span>{candidate.stockName}</span><strong>{candidate.exchange}:{candidate.symbol}</strong></label>;
-          })}</div>
-          <div className="swing-picker-footer"><button className="secondary-button" disabled={pending} onClick={() => { setWatchlistFile(null); setWatchlistCandidates([]); setSelectedSymbols([]); setCandidateSearch(""); setMessage(""); setUploadKey((value) => value + 1); }} type="button">Cancel</button><button className="primary-button" disabled={pending || selectedSymbols.length < 1 || selectedSymbols.length > SWING_WATCHLIST_MAX_ENTRIES} onClick={() => void activateSelectedWatchlist()} type="button">Activate {selectedSymbols.length || "selected"}</button></div>
-        </section> : null}
-        {configuration.entries.length ? <ol className="swing-symbol-list">{configuration.entries.map((entry) => <li key={entry.symbol}><span>{entry.stockName}</span><strong>{entry.exchange}:{entry.symbol}</strong></li>)}</ol> : null}
-        <details><summary>Watchlist version history</summary><div className="swing-history-list">{configuration.versions.map((version) => <div key={version.id}><span>v{version.versionNumber} · {version.entryCount} rows · {version.sourceFilename}</span>{version.active ? <span className="status-pill live">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void restoreWatchlist(version.id)} type="button">Restore</button>}</div>)}</div></details>
-      </article>
+  return <div className="swing-workspace">
+    <header className="swing-header"><div className="swing-header-title"><p className="eyebrow">Daily visual analysis</p><h1>Swing Trade</h1><p>Find and audit 3–21 day candidates from frozen daily charts.</p></div><div className="swing-header-status"><span className={`status-pill ${providersReady ? "live" : "warning"}`}>{providersReady ? "Providers ready" : "Providers unavailable"}</span><dl><div><dt>Active list</dt><dd>{activeList?.name ?? "None"}</dd></div><div><dt>Type</dt><dd>{activeList ? titleCase(activeList.kind) : "—"}</dd></div><div><dt>Stocks</dt><dd>{configuration.entries.length || "—"}</dd></div><div><dt>Report date</dt><dd>{todayFor(market)}</dd></div></dl></div><div aria-label="Swing market" className="swing-market-switch" role="group"><button aria-pressed={market === "US"} className={market === "US" ? "active" : ""} onClick={() => chooseMarket("US")} type="button">US</button><button aria-pressed={market === "INDIA"} className={market === "INDIA" ? "active" : ""} onClick={() => chooseMarket("INDIA")} type="button">India</button></div></header>
+    <nav aria-label="Swing workspace" className="swing-section-tabs" role="tablist">{sections.map((item) => <button aria-controls={`swing-panel-${item.id}`} aria-selected={section === item.id} className={section === item.id ? "active" : ""} id={`swing-tab-${item.id}`} key={item.id} onClick={() => chooseSection(item.id)} role="tab" tabIndex={section === item.id ? 0 : -1} type="button">{item.label}</button>)}</nav>
+    {message ? <div className={/failed|error|could not|invalid|unavailable/i.test(message) ? "warning-banner" : "notice-card"} role="status"><span>{message}</span></div> : null}
+    {!providersReady ? <div className="warning-banner" role="status"><strong>Provider setup required</strong><span>Add the missing server-only Chart-Img and OpenRouter keys before a run.</span></div> : null}
 
-      <article className="settings-card">
-        <p className="eyebrow">Browser-driven schedule</p><h2>Automatic daily run</h2>
-        <label className="swing-auto"><input checked={configuration.settings.automaticEnabled} disabled={pending || !configuration.entries.length} onChange={(event) => void toggleAutomatic(event.target.checked)} type="checkbox" /><span>{configuration.settings.automaticEnabled ? "Enabled" : "Off by default"}</span></label>
-        <p className="muted">Next eligible time: {initial.schedule.nextEligibleAt ? new Date(initial.schedule.nextEligibleAt).toLocaleString() : "No regular session available"}.</p>
-        <p className="muted">The local server and at least one authenticated SpecialStock tab must remain open. Early closes run ten minutes before the calendar close; expired slots are not backfilled.</p>
-        <button className="primary-button" disabled={pending || running || !configuration.entries.length || !initial.availability.chartImg || !initial.availability.openRouter} onClick={() => void startRun()} type="button">{running ? "Run in progress…" : "Run now"}</button>
-      </article>
-    </section>
+    {section === "today" ? <section aria-labelledby="swing-tab-today" className="swing-tab-panel swing-today" id="swing-panel-today" role="tabpanel">
+      <section className="swing-command-bar"><div className="swing-command-list"><span>Active list</span><strong>{activeList?.name ?? `No active ${market} list`}</strong><small>{configuration.entries.length ? `${configuration.entries.length} stocks · ${activeList?.kind ?? "saved list"}` : "Choose or import a list to run analysis."}</small></div><div className="swing-schedule-control">{market === "US" ? <><button aria-checked={configuration.settings.automaticEnabled} aria-label="Automatic Swing analysis" className={`swing-switch${configuration.settings.automaticEnabled ? " on" : ""}`} disabled={pending || !configuration.entries.length} onClick={() => void toggleAutomatic(!configuration.settings.automaticEnabled)} role="switch" type="button"><span /></button><div><strong>Automatic analysis {configuration.settings.automaticEnabled ? "on" : "off"}</strong><small>Next eligible run: {initial.schedule.nextEligibleAt ? dateTime(initial.schedule.nextEligibleAt) : "No regular session available"}</small></div><details className="swing-info"><summary aria-label="About automatic analysis">i</summary><p>The browser schedules one US run near the close while a Swing Trade tab stays open. Server idempotency prevents duplicate due-slot work.</p></details></> : <div><strong>Manual analysis only</strong><small>India scheduling is intentionally unavailable. NSE/BSE charts use Asia/Kolkata.</small></div>}</div><div className="swing-command-actions"><button className="secondary-button" onClick={() => chooseSection("lists")} type="button">Change list</button><button className="primary-button" disabled={pending || running || !configuration.entries.length || !providersReady} onClick={() => void startRun()} type="button">{running ? "Analysis running…" : "Run analysis"}</button>{running ? <button className="danger-button" disabled={pending} onClick={() => void cancelRun()} type="button">Abort analysis</button> : null}</div>{running ? <details className="swing-command-disclosure"><summary>About cancellation</summary><p>Completed results stay in today’s report. A provider may still finish or bill a request accepted before the local abort. Closing the last Swing Trade tab also requests cancellation.</p></details> : null}</section>
+      {displayedRun ? <section aria-label="Run status" className={`swing-run-status${!terminal.has(displayedRun.status) ? " running" : ""}`}><div className="swing-run-status-head"><div><p className="eyebrow">This run</p><h2>{titleCase(displayedRun.stage)} <span>· {settledCount} of {displayedRun.totalCandidates}</span></h2><p>{displayedRun.listName} · {titleCase(displayedRun.mode)} · <StatusBadge status={displayedRun.status} /></p></div><div className="swing-run-time"><span>{terminal.has(displayedRun.status) ? "Elapsed" : "Estimated"}</span><strong>{terminal.has(displayedRun.status) ? duration(displayedRun.timing.elapsedMs) : displayedRun.timing.estimatedRemainingMs === null ? "Calculating…" : `${duration(displayedRun.timing.estimatedRemainingMs)} left`}</strong></div></div><progress aria-label={`${settledCount} of ${displayedRun.totalCandidates} candidates settled`} max={Math.max(1, displayedRun.totalCandidates)} value={settledCount} /><div className="swing-run-counts"><span><strong>{displayedRun.completedCandidates}</strong> completed</span><span><strong>{displayedRun.failedCandidates}</strong> failed</span><span><strong>{displayedRun.canceledCandidates}</strong> canceled</span></div><div className="swing-run-diagnostics"><Metric label="Total tokens" value={number(displayedRun.usage.totalTokens)} detail={`${number(displayedRun.usage.inputTokens)} input · ${number(displayedRun.usage.outputTokens)} output · ${number(displayedRun.usage.reasoningTokens)} reasoning (included in output)`} /><Metric label="Exact OpenRouter cost" value={money(displayedRun.usage.costUsd)} detail={displayedRun.usage.costComplete ? "Provider-reported" : "Provider reporting incomplete"} /><Metric label="Provider calls" value={number(displayedRun.providerCalls)} detail={`${displayedRun.usage.modelRuns} AI attempts`} /><Metric label="Concurrency" value={String(displayedRun.timing.concurrency)} detail="Candidate pool limit" /></div>{selected?.id === displayedRun.id && selected.errorMessage ? <div className="warning-banner"><span>{selected.errorMessage}</span></div> : null}</section> : <section className="swing-empty-run"><div><span aria-hidden="true">◇</span><h2>No run selected</h2><p>Run the active list or choose a prior batch from the report toolbar.</p></div></section>}
+      <details className="swing-run-explainer"><summary>How this run works</summary><div><span>4 macro chart calls</span><span>1 macro AI request</span><span>Candidate chart + AI pools of 5</span><span>1 app run ≠ 1 provider request</span></div></details>
+      <section className="swing-report" aria-live="polite"><div className="swing-report-toolbar"><div><p className="eyebrow">Daily consolidated results</p><h2>{market} · {reportDate}</h2><small>Latest successful result per symbol across every run that day.</small></div><div className="swing-date-controls"><button aria-label="Previous report date" className="swing-icon-button" disabled={!previousDate} onClick={() => previousDate && setReportDate(previousDate)} type="button">←</button><input aria-label="Report date" onChange={(event) => setReportDate(event.target.value)} type="date" value={reportDate} /><button aria-label="Next report date" className="swing-icon-button" disabled={!nextDate} onClick={() => nextDate && setReportDate(nextDate)} type="button">→</button></div><label className="swing-batch-select"><span>Selected batch context</span><select aria-label="Constituent batch" disabled={!currentReport?.batches.length} onChange={(event) => event.target.value && void loadRun(event.target.value)} value={selectedBatch?.id ?? ""}>{currentReport?.batches.map((batch) => <option key={batch.id} value={batch.id}>{dateTime(batch.createdAt)} · {batch.listName} · {titleCase(batch.status)}</option>)}</select></label><a className="secondary-button compact" href={`/api/swing/reports/export?market=${market}&date=${reportDate}&recommendedSort=${recommendedSort}&noTradeSort=${noTradeSort}`}>Download Excel</a></div>
+        <div className="swing-daily-total"><div><span>Today across all runs</span><strong>{number(dailyUsage.input + dailyUsage.output)} tokens</strong></div><span>{money(dailyUsage.cost)} OpenRouter{dailyUsage.incomplete ? " · reporting incomplete" : " · exact reported cost"}</span><span>{dailyUsage.calls} provider calls</span><span>{currentReport?.batches.length ?? 0} constituent batches</span></div>
+        <section className="swing-result-section"><div className="swing-section-heading"><div><h3>Recommended candidates</h3><p>Directional setups that passed server-side risk/reward and proximity checks.</p></div><span className="swing-count">{recommended.length}</span></div>{recommended.length ? <ResultsTable rows={recommended} sort={recommendedSort} onSort={() => setRecommendedSort(nextSort(recommendedSort))} /> : <p className="swing-empty-copy">No recommended candidates for this date.</p>}</section>
+        <section className="swing-result-section"><div className="swing-section-heading"><div><h3>Directional No-Trade</h3><p>Directional reads that did not pass the server’s execution-quality rules.</p></div><span className="swing-count">{directionalNoTrade.length}</span></div>{directionalNoTrade.length ? <ResultsTable directional rows={directionalNoTrade} sort={noTradeSort} onSort={() => setNoTradeSort(nextSort(noTradeSort))} /> : <p className="swing-empty-copy">No directional setups were downgraded.</p>}</section>
+        {currentReport?.undirectedNoTrade.length ? <details className="swing-compact-section" open={currentReport.undirectedNoTrade.length <= 5}><summary><span><strong>No direction</strong><small>Model returned NO_TRADE without a directional setup.</small></span><span className="swing-count">{currentReport.undirectedNoTrade.length}</span></summary><div className="swing-compact-table"><div className="heading"><span>Stock</span><span>Industry</span><span>Conviction</span><span>Reason</span></div>{currentReport.undirectedNoTrade.map((candidate) => <Link href={`/swing-trade/candidates/${candidate.id}`} key={candidate.id}><span><strong>{candidate.symbol}</strong><small>{candidate.stockName}</small></span><span>{candidate.industry || "—"}</span><span>{candidate.conviction ?? "—"}</span><span>{candidate.rejectionReason ?? "No directional setup was identified."}</span></Link>)}</div></details> : null}
+        {currentReport?.failures.length ? <details className="swing-compact-section swing-failures"><summary><span><strong>Failures</strong><small>Symbols that could not complete in one or more constituent runs.</small></span><span className="swing-count">{currentReport.failures.length}</span></summary><div className="swing-failure-list">{currentReport.failures.map((candidate) => <article key={`${candidate.runId}:${candidate.id}`}><div><strong>{candidate.symbol}</strong><span>{candidate.stockName}</span></div><p>{candidate.errorMessage ?? "Analysis could not be completed."}</p><details><summary>Technical detail</summary><p>Run {candidate.runId} · candidate {candidate.id}</p></details></article>)}</div></details> : null}
+        {selectedBatch?.macroResult ? <details className="swing-macro-panel"><summary><div><span>Macro context for selected batch</span><strong>{titleCase(selectedBatch.macroResult.regime)}</strong></div><div className="swing-macro-summary"><span>Long {titleCase(selectedBatch.macroResult.long_bias)}</span><span>Short {titleCase(selectedBatch.macroResult.short_bias)}</span><span>{selectedBatch.macroResult.high_beta_long_forbidden ? "High-beta longs restricted" : "High-beta longs allowed"}</span><time>{dateTime(selectedBatch.createdAt)}</time></div></summary><div className="swing-macro-body"><p>{selectedBatch.macroResult.summary}</p><div className="swing-anchor-grid">{Object.entries(selectedBatch.macroResult.anchors).map(([symbol, anchor]) => <article key={symbol}><header><strong>{symbol}</strong><span className={`swing-stance swing-stance-${anchor.stance.toLowerCase()}`}>{titleCase(anchor.stance)}</span></header><p>{anchor.observation}</p><small>Visual quality: {titleCase(anchor.visual_quality)}</small></article>)}</div></div></details> : null}
+        {!currentReport?.recommended.length && !currentReport?.directionalNoTrade.length && !currentReport?.undirectedNoTrade.length && !currentReport?.failures.length ? <div className="swing-report-empty"><span aria-hidden="true">◌</span><h3>No completed results</h3><p>Choose another report date or run the active list.</p></div> : null}
+      </section>
+    </section> : null}
 
-    <section className="settings-card swing-results" aria-live="polite">
-      <div className="settings-card-heading"><div><p className="eyebrow">Saved analysis</p><h2>{selected ? `${selected.mode === "automatic" ? "Automatic" : "Manual"} run · ${selected.sessionDate}` : "No Swing runs yet"}</h2></div>{selected ? <span className={`status-pill ${selected.status === "completed" ? "live" : selected.status === "failed" ? "warning" : "neutral"}`}>{selected.status}</span> : null}</div>
-      {selected ? <>
-        <div className="swing-progress"><strong>{selected.stage.replaceAll("_", " ")}</strong><span>{selected.completedCandidates}/{selected.totalCandidates} analyzed · {selected.failedCandidates} failed · {selected.providerCalls} provider calls · {money(selected.costUsd)}</span><progress max={Math.max(1, selected.totalCandidates)} value={selected.completedCandidates + selected.failedCandidates} /></div>
-        {selected.errorMessage ? <div className="warning-banner"><span>{selected.errorMessage}</span></div> : null}
-        {selected.macroResult ? <section className="swing-macro"><div><p className="eyebrow">Macro regime</p><h3>{selected.macroResult.regime.replaceAll("_", " ")}</h3><p>{selected.macroResult.summary}</p></div><div className="swing-anchor-grid">{Object.entries(selected.macroResult.anchors).map(([symbol, anchor]) => <article key={symbol}><strong>{symbol} · {anchor.stance}</strong><p>{anchor.observation}</p><small>{anchor.visual_quality}</small></article>)}</div></section> : null}
-        {ranked.length ? <><h3>Ranked actionable candidates</h3><div className="swing-table-wrap"><table><thead><tr><th>Rank / stock</th><th>Direction</th><th>Observed</th><th>Entry zone</th><th>Stop</th><th>T1 / T2</th><th>Conviction</th><th>R:R</th><th>Proximity</th><th>Quality</th></tr></thead><tbody>{ranked.map((candidate, index) => <tr key={candidate.id}><td><Link href={`/swing-trade/candidates/${candidate.id}`}><strong>#{index + 1} {candidate.symbol}</strong><small>{candidate.stockName} · {candidate.exchange}</small></Link></td><td>{candidate.direction}</td><td>{price(candidate.observedPrice)}</td><td>{price(candidate.entryZoneLow)}–{price(candidate.entryZoneHigh)}</td><td>{price(candidate.stopLoss)}</td><td>{price(candidate.profitTarget1)} / {price(candidate.profitTarget2)}</td><td>{candidate.conviction}</td><td>{candidate.riskReward?.toFixed(2) ?? "—"}</td><td>{candidate.proximityPercent?.toFixed(2) ?? "—"}%</td><td>{candidate.visualQuality}</td></tr>)}</tbody></table></div></> : null}
-        {noTrade.length ? <section><h3>NO_TRADE</h3><div className="swing-card-list">{noTrade.map((candidate) => <Link href={`/swing-trade/candidates/${candidate.id}`} key={candidate.id}><strong>{candidate.symbol} · {candidate.conviction}</strong><span>{candidate.rejectionReason ?? "Open validated blueprint and chart audit"}</span></Link>)}</div></section> : null}
-        {failed.length ? <section><h3>Failed symbols</h3><div className="swing-card-list">{failed.map((candidate) => <article key={candidate.id}><strong>{candidate.symbol}</strong><span>{candidate.errorMessage}</span></article>)}</div></section> : null}
-      </> : <p className="muted">Import a watchlist, configure providers, and start a mocked or approved live run.</p>}
-      {runs.length ? <details><summary>Saved automatic and manual run history</summary><div className="swing-history-list">{runs.map((run) => <button className={selected?.id === run.id ? "active" : ""} key={run.id} onClick={() => void loadRun(run.id)} type="button"><span>{run.sessionDate} · {run.mode}</span><small>{run.status} · {run.completedCandidates}/{run.totalCandidates} completed</small></button>)}</div></details> : null}
-    </section>
+    {section === "lists" ? <section aria-labelledby="swing-tab-lists" className="swing-tab-panel swing-lists" id="swing-panel-lists" role="tabpanel"><section className="swing-list-hero"><div><p className="eyebrow">Active list</p><h2>{activeList?.name ?? `No active ${market} list`}</h2><p>{activeList ? `${market} · ${titleCase(activeList.kind)} · ${configuration.entries.length} stocks${activeListParent ? ` · source ${activeListParent.name}` : ""}` : "Import or activate a saved list to start."}</p></div><div><button className="secondary-button" disabled={!configuration.entries.length} onClick={() => { setActiveSelection([]); setSublistOpen(true); }} type="button">Create sublist</button><button className="primary-button" disabled={pending || running || !configuration.entries.length || !providersReady} onClick={() => void startRun()} type="button">Run analysis</button></div></section><section className="swing-list-section"><div className="swing-section-heading"><div><h2>Saved lists</h2><p>Master lists and immutable snapshot sublists for {market}.</p></div><button className="primary-button" onClick={() => setImportOpen(true)} type="button">Import list</button></div>{configuration.lists.length ? <div className="swing-list-table"><div className="heading"><span>List</span><span>Type</span><span>Stocks</span><span>Created</span><span>Status</span><span>Actions</span></div>{configuration.lists.map((list) => { const parent = list.parentListId ? configuration.lists.find((candidate) => candidate.id === list.parentListId) : null; return <article className={list.active ? "active" : ""} key={list.id}><div><strong>{list.name}</strong>{parent ? <small>Source: {parent.name}</small> : <small>Independent master</small>}</div><span>{titleCase(list.kind)}</span><span className="numeric">{list.entryCount}</span><time>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(list.createdAt))}</time><span>{list.active ? <span className="swing-status swing-status-completed">Active</span> : "Inactive"}</span><div className="swing-row-actions">{list.active ? <button className="primary-button compact" disabled={pending || running || !list.latestVersionId || !providersReady} onClick={() => void startRun(list.latestVersionId)} type="button">Run</button> : <button className="primary-button compact" disabled={pending || !list.latestVersionId} onClick={() => list.latestVersionId && void activateList(list.latestVersionId)} type="button">Activate</button>}{!list.active ? <button className="secondary-button compact" disabled={pending || running || !list.latestVersionId || !providersReady} onClick={() => void startRun(list.latestVersionId)} type="button">Run</button> : null}<button className="text-button compact" onClick={() => setVersionListId(list.id)} type="button">Version history</button></div></article>; })}</div> : <div className="swing-report-empty"><h3>No saved lists</h3><p>Import a CSV or XLSX workbook to create the first {market} master list.</p></div>}</section></section> : null}
 
-    <section className="settings-card prompt-studio swing-prompt" data-sentry-mask>
-      <div className="settings-card-heading"><div><p className="eyebrow">Swing only · immutable history</p><h2>Swing Prompt Studio</h2></div><span className="status-pill live">Revision {active.revisionNumber} active</span></div>
-      <p className="muted">Editable methodology cannot change the model, image source, runtime metadata, strict JSON transport, validation, retries, or persistence. Markdown intent is rendered by the app from validated JSON.</p>
-      <div className="prompt-tabs filter-group"><button aria-pressed={phase === "macro"} className={phase === "macro" ? "active" : ""} onClick={() => setPhase("macro")} type="button">Macro prompt</button><button aria-pressed={phase === "stock"} className={phase === "stock" ? "active" : ""} onClick={() => setPhase("stock")} type="button">Stock prompt</button></div>
-      <div className="prompt-workspace"><section className="prompt-editor-pane"><textarea aria-label="Swing analysis instructions" maxLength={20000} onChange={(event) => setDraft(event.target.value)} rows={22} value={draft} /><div className="prompt-editor-footer"><span>{draft.length.toLocaleString()} / 20,000</span><div><button className="secondary-button compact" disabled={pending || active.instructions === prompt.defaultInstructions} onClick={() => void updatePrompt("save", undefined, prompt.defaultInstructions)} type="button">Restore default</button> <button className="primary-button compact" disabled={pending || !dirty || draft.trim().length < 100} onClick={() => void updatePrompt("save")} type="button">Save revision</button></div></div></section><section className="prompt-effective-preview"><pre aria-label="Swing assembled prompt preview">{preview}</pre></section></div>
-      <details><summary>Prompt revision history</summary><div className="swing-history-list">{prompt.revisions.map((revision) => <div key={revision.id}><span>Revision {revision.revisionNumber} · {new Date(revision.createdAt).toLocaleString()} · {revision.instructionsHash.slice(0, 12)}</span>{revision.active ? <span className="status-pill live">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void updatePrompt("activate", revision.id)} type="button">Reactivate</button>}</div>)}</div></details>
-    </section>
+    {section === "history" ? <section aria-labelledby="swing-tab-history" className="swing-tab-panel swing-history" id="swing-panel-history" role="tabpanel"><div className="swing-section-heading"><div><p className="eyebrow">Run history</p><h2>{market} analysis runs</h2><p>Every saved batch remains separate and retains its own macro context and candidate provenance.</p></div><span className="swing-count">{runs.filter((run) => run.market === market).length}</span></div><div className="swing-history-layout"><div className="swing-history-groups">{historyGroups.map(([date, grouped]) => <section key={date}><header><h3>{date}</h3><span>{grouped?.length ?? 0} runs</span></header><div className="swing-history-table">{grouped?.map((run) => { const detail = runDetails[run.id]; return <button className={selected?.id === run.id ? "active" : ""} key={run.id} onClick={() => void loadRun(run.id)} type="button"><span><strong>{detail?.listName ?? "Loading list…"}</strong><small>{dateTime(run.createdAt)}</small></span><span>{titleCase(run.mode)}</span><StatusBadge status={run.status} /><span>{run.completedCandidates}/{run.totalCandidates}<small>{run.failedCandidates} failed · {run.canceledCandidates} canceled</small></span><span>{duration(run.timing.elapsedMs)}<small>{number(detail?.usage.totalTokens ?? null)} tokens · {money(detail?.usage.costUsd ?? run.costUsd)}</small></span><span>{detail?.macroResult ? titleCase(detail.macroResult.regime) : "Macro unavailable"}</span></button>; })}</div></section>)}</div>{selected && selected.market === market ? <aside className="swing-history-detail"><p className="eyebrow">Selected run</p><h3>{selected.listName}</h3><div className="swing-history-detail-meta"><StatusBadge status={selected.status} /><span>{dateTime(selected.createdAt)}</span><span>{titleCase(selected.mode)}</span></div><dl><div><dt>Candidates</dt><dd>{selected.completedCandidates} completed / {selected.totalCandidates}</dd></div><div><dt>Duration</dt><dd>{duration(selected.timing.elapsedMs)}</dd></div><div><dt>Tokens</dt><dd>{number(selected.usage.totalTokens)}</dd></div><div><dt>Cost</dt><dd>{money(selected.usage.costUsd)}</dd></div><div><dt>Provider calls</dt><dd>{selected.providerCalls}</dd></div><div><dt>Macro regime</dt><dd>{selected.macroResult ? titleCase(selected.macroResult.regime) : "Unavailable"}</dd></div></dl>{selected.macroResult ? <p>{selected.macroResult.summary}</p> : null}{selected.candidates.some((candidate) => candidate.status === "failed") ? <details><summary>Failures ({selected.candidates.filter((candidate) => candidate.status === "failed").length})</summary><ul>{selected.candidates.filter((candidate) => candidate.status === "failed").map((candidate) => <li key={candidate.id}><strong>{candidate.symbol}</strong> — {candidate.errorMessage}</li>)}</ul></details> : null}<button className="primary-button" onClick={() => { setReportDate(selected.reportDate); chooseSection("today"); }} type="button">View consolidated report</button></aside> : <aside className="swing-history-detail empty"><p>Select a run to inspect its metrics and macro context.</p></aside>}</div></section> : null}
+
+    {section === "advanced" ? <section aria-labelledby="swing-tab-advanced" className="swing-tab-panel swing-advanced" data-sentry-mask id="swing-panel-advanced" role="tabpanel"><div className="swing-section-heading"><div><p className="eyebrow">Advanced configuration</p><h2>Swing Prompt Studio</h2><p>Versioned methodology shared by both Swing markets.</p></div><span className="status-pill live">Revision {active.revisionNumber} active</span></div><div className="swing-prompt-callout"><strong>Editable methodology, locked runtime</strong><p>You can refine analytical instructions. Market metadata, the sole-image rule, model, schemas, image verification, retries, and persistence remain immutable system rules.</p></div><div aria-label="Prompt phase" className="swing-prompt-tabs" role="tablist"><button aria-selected={phase === "macro"} className={phase === "macro" ? "active" : ""} onClick={() => setPhase("macro")} role="tab" type="button">Macro prompt</button><button aria-selected={phase === "stock"} className={phase === "stock" ? "active" : ""} onClick={() => setPhase("stock")} role="tab" type="button">Stock prompt</button></div><div className="swing-prompt-workspace"><section><header><div><span>Editor</span><strong>Methodology instructions</strong></div><small>{draft.length.toLocaleString()} / 20,000</small></header><textarea aria-label="Swing analysis instructions" maxLength={20000} onChange={(event) => setDraft(event.target.value)} rows={22} value={draft} /><footer><button className="secondary-button" disabled={pending || active.instructions === prompt.defaultInstructions} onClick={() => void updatePrompt("save", undefined, prompt.defaultInstructions)} type="button">Restore default</button><button className="primary-button" disabled={pending || !dirty || draft.trim().length < 100} onClick={() => void updatePrompt("save")} type="button">Save revision</button></footer></section><section><header><div><span>Effective prompt</span><strong>Assembled preview</strong></div><small>System rules included</small></header><pre aria-label="Swing assembled prompt preview">{preview || "The assembled prompt preview will appear here."}</pre></section></div><details className="swing-revision-history"><summary>Revision history <span>{prompt.revisions.length}</span></summary><div>{prompt.revisions.map((revision) => <article key={revision.id}><div><strong>Revision {revision.revisionNumber}</strong><span>{dateTime(revision.createdAt)} · {revision.instructionsHash.slice(0, 12)}</span></div>{revision.active ? <span className="swing-status swing-status-completed">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void updatePrompt("activate", revision.id)} type="button">Reactivate</button>}</article>)}</div></details></section> : null}
+
+    {importOpen ? <Modal description={watchlistCandidates.length ? `Review and select stocks for ${importListName}.` : `Create a new ${market} master list from a CSV or XLSX file.`} onClose={closeImport} title={watchlistCandidates.length ? "Review imported stocks" : "Import list"} wide>{!watchlistCandidates.length ? <form className="swing-import-form" data-sentry-mask onSubmit={importWatchlist}><div className="swing-import-market"><span>Market</span><strong>{market === "US" ? "United States" : "India"}</strong></div><label><span>List name</span><input aria-label="List name" key={`list-${uploadKey}`} maxLength={100} name="listName" placeholder={market === "US" ? "US master" : "India master"} required /></label><label><span>CSV or XLSX</span><input accept=".csv,.xlsx" aria-label="CSV or XLSX" key={uploadKey} name="file" required type="file" /></label><footer><button className="secondary-button" onClick={closeImport} type="button">Cancel</button><button className="primary-button" disabled={pending} type="submit">Preview and validate</button></footer></form> : <section aria-label="Choose Swing stocks" className="swing-watchlist-picker"><div className="swing-picker-head"><div><strong>Choose stocks</strong><span>{selectedSymbols.length} of {SWING_WATCHLIST_MAX_ENTRIES} selected · {watchlistCandidates.length} valid rows</span></div><label><span>Search</span><input aria-label="Search uploaded stocks" onChange={(event) => setCandidateSearch(event.target.value)} placeholder="Name, symbol, industry" value={candidateSearch} /></label></div><div className="swing-picker-actions"><button className="secondary-button compact" onClick={() => setSelectedSymbols(watchlistCandidates.slice(0, 20).map((candidate) => candidate.symbol))} type="button">Select first 20</button><button className="secondary-button compact" disabled={watchlistCandidates.length > SWING_WATCHLIST_MAX_ENTRIES} onClick={() => setSelectedSymbols(watchlistCandidates.map((candidate) => candidate.symbol))} type="button">Select all</button><button className="text-button compact" onClick={() => setSelectedSymbols([])} type="button">Clear</button></div><div className="swing-picker-columns"><span>Stock name</span><span>Symbol / exchange</span><span>Industry</span></div><div className="swing-picker-list">{watchlistCandidates.filter((candidate) => `${candidate.stockName} ${candidate.symbol} ${candidate.exchange} ${candidate.industry}`.toLowerCase().includes(candidateSearch.trim().toLowerCase())).map((candidate) => { const checked = selectedSymbols.includes(candidate.symbol); return <label key={`${candidate.exchange}:${candidate.symbol}`}><input checked={checked} disabled={!checked && selectedSymbols.length >= SWING_WATCHLIST_MAX_ENTRIES} onChange={() => toggleCandidate(candidate.symbol)} type="checkbox" /><span>{candidate.stockName}</span><strong>{candidate.exchange}:{candidate.symbol}</strong><small>{candidate.industry || "—"}</small></label>; })}</div>{importCreatesSublist ? <label className="swing-sublist-name"><span>Sublist name</span><input maxLength={100} onChange={(event) => setImportSublistName(event.target.value)} placeholder="My daily 20" required value={importSublistName} /></label> : null}<footer className="swing-picker-footer"><div><strong>{selectedSymbols.length} stocks selected</strong><span>{importCreatesSublist ? `Master ${importListName} will also be saved.` : "This selection will be the saved master."}</span></div><button className="secondary-button" onClick={closeImport} type="button">Cancel</button><button className="primary-button" disabled={pending || !selectedSymbols.length || (importCreatesSublist && !importSublistName.trim())} onClick={() => watchlistFile && void activateUpload(watchlistFile, selectedSymbols)} type="button">{importAction}</button></footer></section>}</Modal> : null}
+    {sublistOpen ? <Modal description={`Create an immutable snapshot from ${sourceMaster?.name ?? activeList?.name ?? "the active list"}.`} onClose={() => setSublistOpen(false)} title="Create sublist" wide><section className="swing-watchlist-picker"><div className="swing-picker-head"><div><strong>Source master: {sourceMaster?.name ?? activeList?.name}</strong><span>{activeSelection.length} selected · {configuration.entries.length} available</span></div><label><span>Search</span><input aria-label="Search active stocks" onChange={(event) => setSublistSearch(event.target.value)} placeholder="Name, symbol, industry" value={sublistSearch} /></label></div><label className="swing-sublist-name"><span>Sublist name</span><input maxLength={100} onChange={(event) => setSavedSublistName(event.target.value)} placeholder="Saved sublist name" value={savedSublistName} /></label><div className="swing-picker-actions"><button className="secondary-button compact" onClick={() => setActiveSelection(configuration.entries.slice(0, 20).map((entry) => entry.symbol))} type="button">Select first 20</button><button className="secondary-button compact" onClick={() => setActiveSelection(configuration.entries.map((entry) => entry.symbol))} type="button">Select all</button><button className="text-button compact" onClick={() => setActiveSelection([])} type="button">Clear</button></div><div className="swing-picker-list">{configuration.entries.filter((entry) => `${entry.stockName} ${entry.symbol} ${entry.exchange} ${entry.industry}`.toLowerCase().includes(sublistSearch.trim().toLowerCase())).map((entry) => <label key={`${entry.exchange}:${entry.symbol}`}><input checked={activeSelection.includes(entry.symbol)} onChange={() => setActiveSelection((current) => current.includes(entry.symbol) ? current.filter((symbol) => symbol !== entry.symbol) : [...current, entry.symbol])} type="checkbox" /><span>{entry.stockName}</span><strong>{entry.exchange}:{entry.symbol}</strong><small>{entry.industry || "—"}</small></label>)}</div><footer className="swing-picker-footer"><div><strong>{activeSelection.length} stocks selected</strong><span>The snapshot will not change when its source list changes.</span></div><button className="secondary-button" onClick={() => setSublistOpen(false)} type="button">Cancel</button><button className="primary-button" disabled={pending || !activeSelection.length || !savedSublistName.trim()} onClick={() => void saveSublist()} type="button">Save sublist</button></footer></section></Modal> : null}
+    {versionList ? <Modal description={`Immutable versions of ${versionList.name}.`} onClose={() => setVersionListId(null)} title="Version history"><div className="swing-version-list">{configuration.versions.filter((version) => version.listId === versionList.id).map((version) => <article key={version.id}><div><strong>Version {version.versionNumber}</strong><span>{version.entryCount} stocks · {version.sourceFilename}</span><small>{dateTime(version.createdAt)}</small></div>{version.active ? <span className="swing-status swing-status-completed">Active</span> : <button className="secondary-button compact" disabled={pending} onClick={() => void activateList(version.id)} type="button">Activate version</button>}</article>)}</div></Modal> : null}
   </div>;
 }
