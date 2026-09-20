@@ -89,8 +89,8 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   }
   await page.getByRole("button", { name: "Run selected" }).click();
   await expect(page.getByText(/Manual batch settled · 2 completed · 1 failed/)).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("checkbox", { name: "Select AAPL" })).not.toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "Select NVDA" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select AAPL" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select NVDA" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "Select AMZN" })).toBeChecked();
   await page.reload();
   await expectManualInterval(page, "AAPL", "10m");

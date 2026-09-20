@@ -238,7 +238,8 @@ describe("WatchlistTable", () => {
     expect(symbols).toEqual(["S02", "S03", "S01", "S04", "S05"]);
   });
 
-  it("remembers independent row timeframes and uses them for row and selected runs", async () => {
+  it("remembers row timeframes and keeps every stock selected after a manual batch", async () => {
+    localStorage.setItem("specialstock-manual-intervals-v2", JSON.stringify({ S01: ["10m"], S02: ["1m"] }));
     const onRun = vi.fn(async () => ({ results: [] }));
     const onRunSelected = vi.fn(async () => ({
       results: [
@@ -247,11 +248,12 @@ describe("WatchlistTable", () => {
       ],
     }));
     renderTable([item(1), item(2)], { onRun, onRunSelected });
-    expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "5m" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "10m" })).toHaveAttribute("aria-pressed", "true"));
+    expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "1m" }));
-    fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "5m" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "10m" }));
     fireEvent.click(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "10m" }));
-    fireEvent.click(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "5m" }));
+    fireEvent.click(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "1m" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]!);
     expect(onRun).toHaveBeenCalledWith([{ symbol: "S01", timeframe: "1m" }]);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all visible stocks" }));
@@ -260,8 +262,15 @@ describe("WatchlistTable", () => {
       { symbol: "S01", timeframe: "1m" },
       { symbol: "S02", timeframe: "10m" },
     ]));
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Select S01" })).not.toBeChecked());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run selected" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Select S02" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
+    await waitFor(() => expect(onRunSelected).toHaveBeenCalledTimes(2));
+    expect(onRunSelected).toHaveBeenLastCalledWith([
+      { symbol: "S01", timeframe: "1m" },
+      { symbol: "S02", timeframe: "10m" },
+    ]);
     expect(JSON.parse(localStorage.getItem("specialstock-manual-intervals-v2")!)).toEqual({ S01: ["1m"], S02: ["10m"] });
   });
 

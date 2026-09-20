@@ -287,8 +287,8 @@ describe("automatic scan scheduler", () => {
       expect.objectContaining({ method: "POST" }),
     ));
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Run selected" })).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select AAPL" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run selected" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "Select AAPL" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Disable auto" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/settings/automatic-scans",

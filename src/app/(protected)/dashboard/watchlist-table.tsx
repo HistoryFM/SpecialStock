@@ -280,13 +280,8 @@ export function WatchlistTable({
       .flatMap((item) => (timeframes[item.symbol] ?? ["5m"] as const).map((timeframe) => ({ symbol: item.symbol, timeframe })));
     if (!runs.length) return;
     setBulkPending(true);
-    const result = await onRunSelected(runs);
+    await onRunSelected(runs);
     setBulkPending(false);
-    if (!result) return;
-    const retrySymbols = new Set(
-      result.results.filter(({ outcome }) => outcome === "failed" || outcome === "already_running").map(({ symbol }) => symbol),
-    );
-    setSelected(retrySymbols);
   };
 
   const updateTimeframe = (symbol: string, value: ManualScanTimeframe) => {
