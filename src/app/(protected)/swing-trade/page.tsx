@@ -19,8 +19,8 @@ export default async function SwingTradePage({
 }) {
   const now = new Date();
   const query = await searchParams;
-  const [usConfiguration, indiaConfiguration, prompt, runs, session] = await Promise.all([
-    getSwingConfiguration("US"), getSwingConfiguration("INDIA"), getSwingPromptStudioState(), listSwingRuns(), createMarketDataProvider().getSession(now),
+  const [usConfiguration, indiaConfiguration, usPrompt, indiaPrompt, runs, session] = await Promise.all([
+    getSwingConfiguration("US"), getSwingConfiguration("INDIA"), getSwingPromptStudioState("US"), getSwingPromptStudioState("INDIA"), listSwingRuns(), createMarketDataProvider().getSession(now),
   ]);
   const preferredRun = runs.find((run) => run.status === "running" || run.status === "scheduled")
     ?? runs.find((run) => run.status === "completed" || run.status === "partial")
@@ -39,7 +39,7 @@ export default async function SwingTradePage({
     <SwingScheduler />
     <SwingTradeWorkbench initialMarket={initialMarket} initialSection={initialSection} initial={{
       configurations: { US: usConfiguration, INDIA: indiaConfiguration },
-      prompt,
+      prompts: { US: usPrompt, INDIA: indiaPrompt },
       runs,
       latest,
       availability: { chartImg: Boolean(env.CHART_IMG_API_KEY), openRouter: Boolean(env.OPENROUTER_API_KEY) },

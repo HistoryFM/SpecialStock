@@ -8,7 +8,7 @@ import { activateSwingPromptRevision, SwingConflictError, SwingNotFoundError } f
 export async function POST(request: Request) {
   if (!isAuthorizedSession(await auth())) return Response.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const body = z.object({ revisionId: z.string().uuid(), expectedActiveRevisionId: z.string().uuid() }).strict().parse(await request.json());
+    const body = z.object({ market: z.enum(["US", "INDIA"]), revisionId: z.string().uuid(), expectedActiveRevisionId: z.string().uuid() }).strict().parse(await request.json());
     const revision = await activateSwingPromptRevision(body);
     Sentry.logger.info("swing.prompt.revision.activated", { "specialstock.swing.prompt_revision": revision.id, "specialstock.swing.instructions_hash": revision.instructionsHash });
     return Response.json({ revision }, { headers: { "Cache-Control": "private, no-store" } });

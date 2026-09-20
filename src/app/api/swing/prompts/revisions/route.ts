@@ -8,7 +8,7 @@ import { createSwingPromptRevision, SwingConflictError } from "@/swing/repositor
 export async function POST(request: Request) {
   if (!isAuthorizedSession(await auth())) return Response.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const body = z.object({ instructions: z.string(), expectedActiveRevisionId: z.string().uuid() }).strict().parse(await request.json());
+    const body = z.object({ market: z.enum(["US", "INDIA"]), instructions: z.string(), expectedActiveRevisionId: z.string().uuid() }).strict().parse(await request.json());
     const revision = await createSwingPromptRevision(body);
     Sentry.logger.info("swing.prompt.revision.created", { "specialstock.swing.prompt_revision": revision.id, "specialstock.swing.instructions_hash": revision.instructionsHash, "specialstock.swing.instructions_length": revision.instructions.length });
     return Response.json({ revision }, { status: 201, headers: { "Cache-Control": "private, no-store" } });

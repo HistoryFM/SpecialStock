@@ -76,7 +76,7 @@ test("saves US and India lists, reuses sublists, consolidates reports, cancels r
   await waitForRun(page, 20);
   await expect(page.locator(".swing-run-status")).toContainText("39,900");
   await expect(page.locator(".swing-run-status")).toContainText("6,300 reasoning");
-  await expect(page.locator(".swing-run-status")).toContainText("45");
+  await expect(page.locator(".swing-run-status")).toContainText("46");
   await expect(page.locator(".swing-run-status")).toContainText("Concurrency");
 
   await page.getByRole("tab", { name: "Lists" }).click();
@@ -103,6 +103,14 @@ test("saves US and India lists, reuses sublists, consolidates reports, cancels r
   const focusedCard = page.locator(".swing-list-table article").filter({ has: page.getByText("US focused four", { exact: true }) });
   await focusedCard.getByRole("button", { name: "Run" }).click();
   await waitForRun(page, 3, 4);
+  const macroPanel = page.getByRole("region", { name: "Macro analysis for selected batch" });
+  await expect(macroPanel).toBeVisible();
+  for (const symbol of ["SPY", "QQQ", "USO", "TNX", "GLD"]) await expect(macroPanel.getByText(symbol, { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => {
+    const macro = document.querySelector('[aria-label="Macro analysis for selected batch"]');
+    const totals = document.querySelector(".swing-daily-total");
+    return Boolean(macro && totals && (macro.compareDocumentPosition(totals) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
   await expect(page.getByRole("heading", { name: "Recommended candidates" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Directional No-Trade" })).toBeVisible();
   await expect(page.getByText("No direction", { exact: true })).toBeVisible();
@@ -158,6 +166,14 @@ test("saves US and India lists, reuses sublists, consolidates reports, cancels r
   await page.getByRole("button", { name: "Save revision" }).click();
   await expect(page.getByText(/Swing prompt revision .* is active/)).toBeVisible();
 
+  await page.getByRole("button", { name: "India", exact: true }).click();
+  await page.getByRole("tab", { name: "Advanced" }).click();
+  await expect(page.getByLabel("Swing analysis instructions")).toContainText("THE INDIA MICRO-MACRO MATRIX");
+  await expect(page.getByLabel("Swing analysis instructions")).not.toContainText("prioritize polarity retests");
+  await page.getByRole("button", { name: "US", exact: true }).click();
+  await page.getByRole("tab", { name: "Advanced" }).click();
+  await expect(page.getByLabel("Swing analysis instructions")).toContainText("prioritize polarity retests");
+
   await page.getByRole("tab", { name: "Today" }).click();
   const aapl = page.locator(".swing-report .swing-table-wrap").first().getByRole("link", { name: /AAPL/ });
   const aaplHref = await aapl.getAttribute("href");
@@ -166,7 +182,7 @@ test("saves US and India lists, reuses sublists, consolidates reports, cancels r
   await expect(page.getByText("SHA-256 verified")).toBeVisible();
   await expect(page.getByRole("img", { name: /AAPL exact frozen daily chart sent to Gemini/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "📌 AAPL: LONG" })).toBeVisible();
-  await expect(page.getByText(/swing-daily-v3/)).toBeVisible();
+  await expect(page.getByText(/swing-daily-v4/)).toBeVisible();
   await page.getByRole("link", { name: "← Swing Trade" }).click();
 
   await page.getByRole("button", { name: "US", exact: true }).click();
@@ -189,7 +205,8 @@ test("saves US and India lists, reuses sublists, consolidates reports, cancels r
   expect(diagnostics.calls.swingStock).toBeGreaterThanOrEqual(90);
   expect(diagnostics.chartRequests).toEqual(expect.arrayContaining([
     { symbol: "AMEX:SPY", interval: "1D" }, { symbol: "NASDAQ:QQQ", interval: "1D" },
-    { symbol: "AMEX:GLD", interval: "1D" }, { symbol: "NASDAQ:TLT", interval: "1D" },
+    { symbol: "AMEX:USO", interval: "1D" }, { symbol: "TVC:TNX", interval: "1D" },
+    { symbol: "AMEX:GLD", interval: "1D" },
     { symbol: "NSE:NIFTY", interval: "1D" }, { symbol: "NSE:BANKNIFTY", interval: "1D" },
     { symbol: "NSE:INDIAVIX", interval: "1D" }, { symbol: "FX_IDC:USDINR", interval: "1D" },
   ]));

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SpecialStock Feature Work"
+  short_description: "Build SpecialStock features with repo context"
+  default_prompt: "Use $specialstock-feature-work to plan and implement this SpecialStock feature safely."

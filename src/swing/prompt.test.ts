@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sha256 } from "@/lib/hash";
-import { buildSwingMacroPrompt, buildSwingStockPrompt, DEFAULT_SWING_INSTRUCTIONS, swingPromptPreview } from "@/swing/prompt";
+import { buildSwingMacroPrompt, buildSwingStockPrompt, DEFAULT_SWING_INSTRUCTIONS, DEFAULT_SWING_INSTRUCTIONS_BY_MARKET, swingPromptPreview } from "@/swing/prompt";
 import type { SwingMacroResult, SwingPromptRevisionSnapshot } from "@/swing/types";
 
 const revision: SwingPromptRevisionSnapshot = {
@@ -9,13 +9,13 @@ const revision: SwingPromptRevisionSnapshot = {
   revisionNumber: 1,
   instructions: DEFAULT_SWING_INSTRUCTIONS,
   instructionsHash: sha256(DEFAULT_SWING_INSTRUCTIONS),
-  templateVersion: "swing-daily-v2",
+  templateVersion: "swing-daily-v4",
 };
 
 const macro: SwingMacroResult = {
   regime: "CHOPPING_RANGE", long_bias: "NEUTRAL", short_bias: "NEUTRAL", high_beta_long_forbidden: false,
   summary: "Mixed visible daily structure.",
-  anchors: Object.fromEntries(["SPY", "QQQ", "GLD", "TLT"].map((symbol) => [symbol, {
+  anchors: Object.fromEntries(["SPY", "QQQ", "USO", "TNX", "GLD"].map((symbol) => [symbol, {
     stance: "NEUTRAL", observation: `${symbol} is readable.`, visual_quality: "CLEAR",
   }])) as SwingMacroResult["anchors"],
 };
@@ -30,18 +30,26 @@ const chart = (symbol: string) => ({
 
 describe("Swing prompt assembly", () => {
   it("locks the exact seeded editable instructions", () => {
-    expect(sha256(DEFAULT_SWING_INSTRUCTIONS)).toBe("d8f0fb041a4606659e01f20e245adc3224340c4b05860f551799f27ad524093e");
+    expect(sha256(DEFAULT_SWING_INSTRUCTIONS)).toBe("455b5642c8624578731beb9f9b43cb4f05fb462689979ed57d9e1000e15202a9");
   });
 
-  it("assembles macro metadata for exactly four labeled verified images", () => {
-    const prompt = buildSwingMacroPrompt({ revision, charts: ["SPY", "QQQ", "GLD", "TLT"].map(chart) });
-    for (const symbol of ["SPY", "QQQ", "GLD", "TLT"]) {
+  it("assembles US macro metadata for exactly five ordered verified images", () => {
+    const prompt = buildSwingMacroPrompt({ revision, market: "US", charts: ["SPY", "QQQ", "USO", "TNX", "GLD"].map(chart) });
+    for (const symbol of ["SPY", "QQQ", "USO", "TNX", "GLD"]) {
       expect(prompt).toContain(`${symbol}: NASDAQ:${symbol}`);
       expect(prompt).toContain(`${symbol.toLowerCase()}-sha256`);
     }
     expect(prompt).toContain("Execute Phase 1 only");
+    expect(prompt).toContain("5 attached US market daily charts, labeled in attachment order as SPY, QQQ, USO, TNX, GLD");
     expect(prompt).toContain("Do not browse, search, use tools");
     expect(prompt).not.toMatch(/\bOHLCV\b|\"close\"\s*:/i);
+  });
+
+  it("keeps India on its independent four-anchor prompt", () => {
+    const prompt = swingPromptPreview(DEFAULT_SWING_INSTRUCTIONS_BY_MARKET.INDIA, "macro", "INDIA");
+    expect(prompt).toContain("4 attached INDIA market daily charts, labeled in attachment order as NIFTY50, BANKNIFTY, INDIAVIX, USDINR");
+    expect(prompt).toContain("THE INDIA MICRO-MACRO MATRIX");
+    expect(prompt).not.toContain("Crude Oil and TNX");
   });
 
   it("assembles one candidate image with locked macro JSON and server post-processing", () => {

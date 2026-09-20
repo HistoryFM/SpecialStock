@@ -630,18 +630,23 @@ export const swingWatchlistEntries = pgTable("swing_watchlist_entries", {
 
 export const swingPromptRevisions = pgTable("swing_prompt_revisions", {
   id: uuid("id").defaultRandom().primaryKey(),
-  revisionNumber: integer("revision_number").notNull().unique(),
+  market: text("market").default("US").notNull(),
+  revisionNumber: integer("revision_number").notNull(),
   instructions: text("instructions").notNull(),
   instructionsHash: text("instructions_hash").notNull(),
   templateVersion: text("template_version").notNull(),
   createdAt: timestamps.createdAt,
-}, (table) => [index("swing_prompt_revisions_created_idx").on(table.createdAt)]);
+}, (table) => [
+  uniqueIndex("swing_prompt_revisions_market_number_unique").on(table.market, table.revisionNumber),
+  index("swing_prompt_revisions_market_created_idx").on(table.market, table.createdAt),
+]);
 
 export const activeSwingPromptRevision = pgTable("active_swing_prompt_revision", {
-  id: integer("id").primaryKey().default(1),
+  id: integer("id").primaryKey(),
+  market: text("market").notNull().unique(),
   activeRevisionId: uuid("active_revision_id").references(() => swingPromptRevisions.id).notNull(),
   updatedAt: timestamps.updatedAt,
-}, (table) => [check("active_swing_prompt_revision_singleton", sql`${table.id} = 1`)]);
+}, (table) => [check("active_swing_prompt_revision_market_id", sql`(${table.market} = 'US' AND ${table.id} = 1) OR (${table.market} = 'INDIA' AND ${table.id} = 2)`)]);
 
 export const swingSettings = pgTable("swing_settings", {
   id: integer("id").primaryKey().default(1),

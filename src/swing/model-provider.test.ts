@@ -14,8 +14,8 @@ const macro = {
   long_bias: "NEUTRAL",
   short_bias: "NEUTRAL",
   high_beta_long_forbidden: false,
-  summary: "The four daily anchors are mixed.",
-  anchors: Object.fromEntries(["SPY", "QQQ", "GLD", "TLT"].map((symbol) => [symbol, {
+  summary: "The five daily anchors are mixed.",
+  anchors: Object.fromEntries(["SPY", "QQQ", "USO", "TNX", "GLD"].map((symbol) => [symbol, {
     stance: "NEUTRAL", observation: `${symbol} is visually readable.`, visual_quality: "CLEAR",
   }])),
 };
@@ -31,7 +31,7 @@ describe("Swing OpenRouter provider", () => {
   it("uses the 150-second Swing deadline", () => {
     expect(SWING_OPENROUTER_TIMEOUT_MS).toBe(150_000);
   });
-  it("sends four exact images and corrects one schema-invalid macro response", async () => {
+  it("sends five exact images and corrects one schema-invalid macro response", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal("fetch", vi.fn(async (_url, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -43,7 +43,7 @@ describe("Swing OpenRouter provider", () => {
       });
     }));
 
-    const images = ["one", "two", "three", "four"].map((value) => Buffer.from(value));
+    const images = ["one", "two", "three", "four", "five"].map((value) => Buffer.from(value));
     const result = await new SwingOpenRouterProvider().analyzeMacro({ prompt: "locked prompt", images });
 
     expect(result.result).toEqual(macro);
@@ -69,7 +69,7 @@ describe("Swing OpenRouter provider", () => {
       usage: { prompt_tokens: 100, completion_tokens: 3500, cost: 0.01 },
     })));
 
-    await expect(new SwingOpenRouterProvider().analyzeMacro({ prompt: "locked prompt", images: [Buffer.from("1"), Buffer.from("2"), Buffer.from("3"), Buffer.from("4")] }))
+    await expect(new SwingOpenRouterProvider().analyzeMacro({ prompt: "locked prompt", images: [Buffer.from("1"), Buffer.from("2"), Buffer.from("3"), Buffer.from("4"), Buffer.from("5")] }))
       .rejects.toMatchObject({ failureKind: "token_limit", attempts: [expect.objectContaining({ attemptNumber: 1, failureKind: "token_limit", costUsd: 0.01 })] } satisfies Partial<SwingModelError>);
   });
 
@@ -81,7 +81,7 @@ describe("Swing OpenRouter provider", () => {
       controller.abort("user");
       throw new DOMException("user", "AbortError");
     }));
-    await expect(new SwingOpenRouterProvider().analyzeMacro({ prompt: "locked prompt", images: [Buffer.from("1"), Buffer.from("2"), Buffer.from("3"), Buffer.from("4")], signal: controller.signal }))
+    await expect(new SwingOpenRouterProvider().analyzeMacro({ prompt: "locked prompt", images: [Buffer.from("1"), Buffer.from("2"), Buffer.from("3"), Buffer.from("4"), Buffer.from("5")], signal: controller.signal }))
       .rejects.toMatchObject({ failureKind: "canceled", attempts: [expect.objectContaining({ failureKind: "canceled" })] });
     expect(calls).toBe(1);
   });

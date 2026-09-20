@@ -9,7 +9,7 @@ import { hashObject, sha256 } from "@/lib/hash";
 import { SWING_MARKET_CONFIG, type SwingChartInput, type SwingMarket } from "@/swing/types";
 
 export const SWING_STUDIES = [
-  "EMA 8", "EMA 20", "SMA 50", "SMA 200", "Bollinger Bands 20/2",
+  "EMA 8", "EMA 20", "SMA 50", "SMA 200",
   "Volume", "RSI 14", "MACD 12/26/9", "CCI 14", "Chaikin Money Flow 21",
 ] as const;
 
@@ -56,15 +56,6 @@ export function swingChartRequestBody(input: { chartSymbol: string; from: string
       line("Moving Average Exponential", 20, "rgb(0,188,212)"),
       line("Moving Average", 50, "rgb(156,39,176)"),
       line("Moving Average", 200, "rgb(244,67,54)"),
-      {
-        name: "Bollinger Bands", forceOverlay: true, input: { in_0: 20, in_1: 2 },
-        override: {
-          "Median.visible": true, "Median.linewidth": 1, "Median.plottype": "line", "Median.color": "rgb(158,158,158)",
-          "Upper.visible": true, "Upper.linewidth": 1, "Upper.plottype": "line", "Upper.color": "rgb(255,255,255)",
-          "Lower.visible": true, "Lower.linewidth": 1, "Lower.plottype": "line", "Lower.color": "rgb(255,255,255)",
-          "Plots Background.visible": false,
-        },
-      },
       { name: "Volume", forceOverlay: false, override: { "Volume.plottype": "columns" } },
       {
         name: "Relative Strength Index", forceOverlay: false,
@@ -107,7 +98,7 @@ export class SwingChartImgProvider {
     const from = Temporal.Instant.fromEpochMilliseconds(input.capturedAt.getTime()).toZonedDateTimeISO(timezone).subtract({ months: 18 }).toInstant().toString();
     const chartSymbol = `${input.exchange}:${input.symbol}`;
     const base = {
-      version: "swing-chart-img-input-v2" as const,
+      version: "swing-chart-img-input-v3" as const,
       market,
       role: input.role,
       symbol: input.symbol,

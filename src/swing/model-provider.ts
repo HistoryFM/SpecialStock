@@ -28,7 +28,9 @@ function macroJsonSchema(market: SwingMarket) { const keys = SWING_MARKET_CONFIG
   type: "object", additionalProperties: false,
   required: ["regime", "long_bias", "short_bias", "high_beta_long_forbidden", "summary", "anchors"],
   properties: {
-    regime: { type: "string", enum: ["BULLISH_ACCELERATION", "BEARISH_REGIME", "CHOPPING_RANGE", "VOLATILITY_ENVELOPE_SQUEEZE"] },
+    regime: { type: "string", enum: market === "US"
+      ? ["BULLISH_REGIME", "BEARISH_REGIME", "CHOPPING_RANGE"]
+      : ["BULLISH_ACCELERATION", "BEARISH_REGIME", "CHOPPING_RANGE", "VOLATILITY_ENVELOPE_SQUEEZE"] },
     long_bias: { type: "string", enum: ["SUPPORTIVE", "NEUTRAL", "HOSTILE"] },
     short_bias: { type: "string", enum: ["SUPPORTIVE", "NEUTRAL", "HOSTILE"] },
     high_beta_long_forbidden: { type: "boolean" }, summary: { type: "string" },
@@ -66,10 +68,23 @@ function validateMacro(value: unknown, market: SwingMarket): SwingMacroResult {
   const keys = SWING_MARKET_CONFIG[market].macro.map((anchor) => anchor.key);
   if (Object.keys(parsed.anchors).length !== keys.length || keys.some((key) => !parsed.anchors[key])) throw new z.ZodError([{ code: "custom", path: ["anchors"], message: "Macro result does not contain the required market anchors.", input: parsed.anchors }]);
   if (Object.values(parsed.anchors).some((anchor) => anchor.stance === "UNREADABLE" || anchor.visual_quality === "UNREADABLE")) throw new z.ZodError([{ code: "custom", path: ["anchors"], message: "Macro result contains an unreadable anchor.", input: parsed.anchors }]);
-  const ruleTriggered = market === "US"
-    ? parsed.anchors.SPY?.stance === "BEARISH" && parsed.anchors.QQQ?.stance === "BEARISH" && parsed.anchors.TLT?.stance === "BEARISH"
-    : parsed.anchors.NIFTY50?.stance === "BEARISH" && parsed.anchors.BANKNIFTY?.stance === "BEARISH" && parsed.anchors.INDIAVIX?.stance === "BULLISH";
-  if (ruleTriggered && !parsed.high_beta_long_forbidden) throw new z.ZodError([{ code: "custom", path: ["high_beta_long_forbidden"], message: "Macro result contradicts the locked high-beta regime rule.", input: parsed.high_beta_long_forbidden }]);
+  if (market === "US") {
+    const oil = parsed.anchors.USO?.stance;
+    const yieldDirection = parsed.anchors.TNX?.stance;
+    const expectedRegime = oil === "BULLISH" && yieldDirection === "BEARISH"
+      ? "BEARISH_REGIME"
+      : oil === "BEARISH" && yieldDirection === "BULLISH"
+        ? "BULLISH_REGIME"
+        : "CHOPPING_RANGE";
+    if (parsed.regime !== expectedRegime) throw new z.ZodError([{ code: "custom", path: ["regime"], message: "Macro result contradicts the locked USO/TNX regime rule.", input: parsed.regime }]);
+    const highBetaForbidden = expectedRegime === "BEARISH_REGIME";
+    if (parsed.high_beta_long_forbidden !== highBetaForbidden) throw new z.ZodError([{ code: "custom", path: ["high_beta_long_forbidden"], message: "Macro result contradicts the locked US high-beta regime rule.", input: parsed.high_beta_long_forbidden }]);
+    if (expectedRegime === "BEARISH_REGIME" && parsed.long_bias !== "HOSTILE") throw new z.ZodError([{ code: "custom", path: ["long_bias"], message: "A bearish USO/TNX regime requires a hostile long bias.", input: parsed.long_bias }]);
+    if (expectedRegime === "BULLISH_REGIME" && parsed.long_bias !== "SUPPORTIVE") throw new z.ZodError([{ code: "custom", path: ["long_bias"], message: "A bullish USO/TNX regime requires a supportive long bias.", input: parsed.long_bias }]);
+  } else {
+    const ruleTriggered = parsed.anchors.NIFTY50?.stance === "BEARISH" && parsed.anchors.BANKNIFTY?.stance === "BEARISH" && parsed.anchors.INDIAVIX?.stance === "BULLISH";
+    if (ruleTriggered && !parsed.high_beta_long_forbidden) throw new z.ZodError([{ code: "custom", path: ["high_beta_long_forbidden"], message: "Macro result contradicts the locked India high-beta regime rule.", input: parsed.high_beta_long_forbidden }]);
+  }
   return parsed;
 }
 

@@ -95,7 +95,7 @@ export async function createSwingRun(input: { mode: "manual" | "automatic"; requ
   if (selectedWatchlist.list.market !== market) throw new SwingRunUnavailableError("The selected Swing list belongs to a different market.");
   if (!selectedWatchlist.entries.length) throw new SwingRunUnavailableError("The selected Swing list is empty.");
   if (input.mode === "automatic" && !configuration.settings.automaticEnabled) throw new SwingRunUnavailableError("Automatic Swing analysis is disabled.");
-  const prompt = await getActiveSwingPrompt();
+  const prompt = await getActiveSwingPrompt(market);
   const provider = createMarketDataProvider();
   const session = await provider.getSession(now);
   const slot = input.mode === "automatic" ? eligibleSwingSlot(now, session) : null;

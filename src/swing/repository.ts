@@ -13,8 +13,8 @@ import {
   swingWatchlistVersions,
 } from "@/db/schema";
 import { hashObject, sha256 } from "@/lib/hash";
-import { DEFAULT_SWING_INSTRUCTIONS } from "@/swing/prompt";
-import { SWING_TEMPLATE_VERSION, type SwingMarket, type SwingPromptRevisionSnapshot, type SwingWatchlistEntry } from "@/swing/types";
+import { DEFAULT_SWING_INSTRUCTIONS_BY_MARKET } from "@/swing/prompt";
+import { SWING_MARKETS, SWING_TEMPLATE_VERSION, type SwingMarket, type SwingPromptRevisionSnapshot, type SwingWatchlistEntry } from "@/swing/types";
 
 export class SwingConflictError extends Error {}
 export class SwingNotFoundError extends Error {}
@@ -23,42 +23,60 @@ function promptSnapshot(row: typeof swingPromptRevisions.$inferSelect): SwingPro
   return { id: row.id, revisionNumber: row.revisionNumber, instructions: row.instructions, instructionsHash: row.instructionsHash, templateVersion: row.templateVersion };
 }
 
+const promptPointerId = (market: SwingMarket) => market === "US" ? 1 : 2;
+
 export async function ensureSwingDefaults() {
   const database = await getDatabase();
   await database.transaction(async (transaction) => {
     await transaction.insert(swingSettings).values({ id: 1 }).onConflictDoNothing();
     await transaction.insert(swingMarketSettings).values([{ market: "US" }, { market: "INDIA" }]).onConflictDoNothing();
-    const [active] = await transaction.select().from(activeSwingPromptRevision).where(eq(activeSwingPromptRevision.id, 1)).limit(1);
-    if (active) return;
-    const [existing] = await transaction.select().from(swingPromptRevisions).orderBy(asc(swingPromptRevisions.revisionNumber)).limit(1);
-    const revision = existing ?? (await transaction.insert(swingPromptRevisions).values({
-      revisionNumber: 1,
-      instructions: DEFAULT_SWING_INSTRUCTIONS,
-      instructionsHash: sha256(DEFAULT_SWING_INSTRUCTIONS),
-      templateVersion: SWING_TEMPLATE_VERSION,
-    }).returning())[0];
-    if (!revision) throw new Error("The default Swing prompt could not be seeded.");
-    await transaction.insert(activeSwingPromptRevision).values({ id: 1, activeRevisionId: revision.id }).onConflictDoNothing();
+    for (const market of SWING_MARKETS) {
+      const instructions = DEFAULT_SWING_INSTRUCTIONS_BY_MARKET[market];
+      const instructionsHash = sha256(instructions);
+      let [revision] = await transaction.select().from(swingPromptRevisions).where(and(
+        eq(swingPromptRevisions.market, market),
+        eq(swingPromptRevisions.instructionsHash, instructionsHash),
+        eq(swingPromptRevisions.templateVersion, SWING_TEMPLATE_VERSION),
+      )).limit(1);
+      const createdDefault = !revision;
+      if (!revision) {
+        const [aggregate] = await transaction.select({ number: max(swingPromptRevisions.revisionNumber) }).from(swingPromptRevisions).where(eq(swingPromptRevisions.market, market));
+        [revision] = await transaction.insert(swingPromptRevisions).values({
+          market,
+          revisionNumber: (aggregate?.number ?? 0) + 1,
+          instructions,
+          instructionsHash,
+          templateVersion: SWING_TEMPLATE_VERSION,
+        }).returning();
+      }
+      if (!revision) throw new Error(`The default ${market} Swing prompt could not be seeded.`);
+      const [active] = await transaction.select().from(activeSwingPromptRevision).where(eq(activeSwingPromptRevision.market, market)).limit(1);
+      if (!active) {
+        await transaction.insert(activeSwingPromptRevision).values({ id: promptPointerId(market), market, activeRevisionId: revision.id });
+      } else if (createdDefault) {
+        await transaction.update(activeSwingPromptRevision).set({ activeRevisionId: revision.id, updatedAt: new Date() }).where(eq(activeSwingPromptRevision.market, market));
+      }
+    }
   });
 }
 
-export async function getActiveSwingPrompt() {
+export async function getActiveSwingPrompt(market: SwingMarket = "US") {
   await ensureSwingDefaults();
   const database = await getDatabase();
   const [row] = await database.select({ revision: swingPromptRevisions }).from(activeSwingPromptRevision)
     .innerJoin(swingPromptRevisions, eq(swingPromptRevisions.id, activeSwingPromptRevision.activeRevisionId))
-    .where(eq(activeSwingPromptRevision.id, 1)).limit(1);
-  if (!row) throw new SwingNotFoundError("The active Swing prompt is unavailable.");
+    .where(eq(activeSwingPromptRevision.market, market)).limit(1);
+  if (!row) throw new SwingNotFoundError(`The active ${market} Swing prompt is unavailable.`);
   return promptSnapshot(row.revision);
 }
 
-export async function getSwingPromptStudioState() {
-  const active = await getActiveSwingPrompt();
+export async function getSwingPromptStudioState(market: SwingMarket = "US") {
+  const active = await getActiveSwingPrompt(market);
   const database = await getDatabase();
-  const revisions = await database.select().from(swingPromptRevisions).orderBy(desc(swingPromptRevisions.revisionNumber));
+  const revisions = await database.select().from(swingPromptRevisions).where(eq(swingPromptRevisions.market, market)).orderBy(desc(swingPromptRevisions.revisionNumber));
   return {
     activeRevisionId: active.id,
-    defaultInstructions: DEFAULT_SWING_INSTRUCTIONS,
+    defaultInstructions: DEFAULT_SWING_INSTRUCTIONS_BY_MARKET[market],
     revisions: revisions.map((revision) => ({ ...promptSnapshot(revision), createdAt: revision.createdAt.toISOString(), active: revision.id === active.id })),
   };
 }
@@ -69,16 +87,17 @@ function normalizeInstructions(value: string) {
   return normalized;
 }
 
-export async function createSwingPromptRevision(input: { instructions: string; expectedActiveRevisionId: string }) {
+export async function createSwingPromptRevision(input: { market: SwingMarket; instructions: string; expectedActiveRevisionId: string }) {
   const instructions = normalizeInstructions(input.instructions);
   const database = await getDatabase();
   return database.transaction(async (transaction) => {
-    const [active] = await transaction.select().from(activeSwingPromptRevision).where(eq(activeSwingPromptRevision.id, 1)).limit(1);
+    const [active] = await transaction.select().from(activeSwingPromptRevision).where(eq(activeSwingPromptRevision.market, input.market)).limit(1);
     if (!active || active.activeRevisionId !== input.expectedActiveRevisionId) throw new SwingConflictError("The active Swing prompt changed in another tab.");
-    const [current] = await transaction.select().from(swingPromptRevisions).where(eq(swingPromptRevisions.id, active.activeRevisionId)).limit(1);
+    const [current] = await transaction.select().from(swingPromptRevisions).where(and(eq(swingPromptRevisions.id, active.activeRevisionId), eq(swingPromptRevisions.market, input.market))).limit(1);
     if (current?.instructions === instructions) throw new SwingConflictError("The Swing instructions are unchanged.");
-    const [aggregate] = await transaction.select({ number: max(swingPromptRevisions.revisionNumber) }).from(swingPromptRevisions);
+    const [aggregate] = await transaction.select({ number: max(swingPromptRevisions.revisionNumber) }).from(swingPromptRevisions).where(eq(swingPromptRevisions.market, input.market));
     const [created] = await transaction.insert(swingPromptRevisions).values({
+      market: input.market,
       revisionNumber: (aggregate?.number ?? 0) + 1,
       instructions,
       instructionsHash: sha256(instructions),
@@ -86,19 +105,19 @@ export async function createSwingPromptRevision(input: { instructions: string; e
     }).returning();
     if (!created) throw new Error("The Swing prompt revision could not be created.");
     const [updated] = await transaction.update(activeSwingPromptRevision).set({ activeRevisionId: created.id, updatedAt: new Date() }).where(and(
-      eq(activeSwingPromptRevision.id, 1), eq(activeSwingPromptRevision.activeRevisionId, input.expectedActiveRevisionId),
+      eq(activeSwingPromptRevision.market, input.market), eq(activeSwingPromptRevision.activeRevisionId, input.expectedActiveRevisionId),
     )).returning();
     if (!updated) throw new SwingConflictError("The active Swing prompt changed in another tab.");
     return { ...promptSnapshot(created), createdAt: created.createdAt.toISOString(), active: true };
   });
 }
 
-export async function activateSwingPromptRevision(input: { revisionId: string; expectedActiveRevisionId: string }) {
+export async function activateSwingPromptRevision(input: { market: SwingMarket; revisionId: string; expectedActiveRevisionId: string }) {
   const database = await getDatabase();
-  const [revision] = await database.select().from(swingPromptRevisions).where(eq(swingPromptRevisions.id, input.revisionId)).limit(1);
+  const [revision] = await database.select().from(swingPromptRevisions).where(and(eq(swingPromptRevisions.id, input.revisionId), eq(swingPromptRevisions.market, input.market))).limit(1);
   if (!revision) throw new SwingNotFoundError("Swing prompt revision not found.");
   const [updated] = await database.update(activeSwingPromptRevision).set({ activeRevisionId: revision.id, updatedAt: new Date() }).where(and(
-    eq(activeSwingPromptRevision.id, 1), eq(activeSwingPromptRevision.activeRevisionId, input.expectedActiveRevisionId),
+    eq(activeSwingPromptRevision.market, input.market), eq(activeSwingPromptRevision.activeRevisionId, input.expectedActiveRevisionId),
   )).returning();
   if (!updated) throw new SwingConflictError("The active Swing prompt changed in another tab.");
   return { ...promptSnapshot(revision), createdAt: revision.createdAt.toISOString(), active: true };

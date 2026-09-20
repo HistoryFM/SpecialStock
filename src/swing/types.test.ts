@@ -18,7 +18,7 @@ describe("Swing schemas", () => {
     expect(() => swingCandidateResultSchema.parse({ ...base, direction: "NO_TRADE" })).toThrow("null execution prices");
   });
 
-  it("requires all four macro anchors", () => {
+  it("requires at least one macro anchor while market validation enforces the exact profile", () => {
     expect(() => swingMacroResultSchema.parse({ regime: "CHOPPING_RANGE", long_bias: "NEUTRAL", short_bias: "NEUTRAL", high_beta_long_forbidden: false, summary: "Mixed", anchors: {} })).toThrow();
   });
 });

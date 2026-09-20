@@ -13,8 +13,29 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Source of truth
 
 - Read `README.md` before changing behavior or architecture.
+- For feature iteration or new product behavior, use the repo skill at `.agents/skills/specialstock-feature-work/SKILL.md`. It contains the change workflow and architecture routing; load its reference only when the skill directs you to it.
 - On Windows, also read `WINDOWS_CODEX_SETUP.md` before installing tools, configuring the app, or troubleshooting startup.
-- `PROJECT_PLAN.md` and `IMPLEMENTATION_PROMPT.md` are historical documents. They describe superseded architecture and must not be treated as requirements.
+- `PROJECT_PLAN.md`, `IMPLEMENTATION_PROMPT.md`, and `SWING_TRADE_BUILD_PROMPT.md` are historical inputs. They contain superseded requirements and must not override the current README, tests, or implementation.
+
+## Product and architecture context
+
+- SpecialStock is a private, single-user, local-first analysis workspace. It has three intentionally distinct domains: intraday scans, Swing Trade, and Backtesting.
+- The implementation is a Next.js 16 / React 19 / strict TypeScript application. Authenticated UI and routes live under `src/app`; domain logic belongs in the matching `src/*` module rather than route handlers or client components.
+- PGlite plus Drizzle is the durable application store. `src/db/schema.ts` is the current schema and `drizzle/` contains ordered, checked-in migrations. Backtesting also keeps versioned local files under `.data/backtesting/`.
+- Provider boundaries are server-only. Chart-Img captures evidence, OpenRouter runs model analysis, and Alpaca is limited to calendar/outcome support. Keep provider transports behind their existing domain abstractions so routine tests can use mocks.
+- Treat stored image bytes, hashes, prompt revisions, model attempts, costs, and locked result fields as one audit chain. A feature that changes one link must account for the rest of that chain.
+- Browser-driven scheduling is deliberate. Do not silently replace it with an in-process timer, cron job, background worker, or cloud assumption.
+
+## Change routing
+
+- Intraday capture or signals: `src/chart/`, `src/analysis/`, `src/scans/`, then dashboard/history/alert consumers.
+- Watchlist and automatic-scan settings: `src/settings/`, `src/symbols/`, and the relevant protected UI/API routes.
+- Swing Trade: `src/swing/`, `src/app/api/swing/`, `src/app/(protected)/swing-trade/`, and `src/app/(protected)/swing-scheduler.tsx`; keep it isolated from intraday scan state and Backtesting.
+- Backtesting: `src/backtesting/` and `src/app/**/backtesting/**`; local indicators are valid only in this isolated domain.
+- Persistence changes: `src/db/schema.ts`, a new checked-in `drizzle/` migration, and the matching migration/regression tests.
+- Cross-cutting auth, secrets, or telemetry: `src/auth/`, `src/config/`, Sentry setup, and the repository/browser secret checks.
+
+Before editing, trace the existing vertical slice from UI to route, service, repository/provider, persistence, and tests. Prefer extending the established slice over creating a parallel abstraction.
 
 ## Product invariants
 
@@ -48,9 +69,13 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Engineering workflow
 
-- Inspect first and keep changes focused. Preserve unrelated user changes.
+- Inspect `git status` first and keep changes focused. Preserve unrelated user changes; do not rewrite or absorb an existing migration without understanding it.
+- For a substantial or unfamiliar feature, state the intended behavior, smallest coherent scope, affected areas, important risks, and validation plan before editing.
 - Before editing Next.js code, read the relevant guide under `node_modules/next/dist/docs/`.
 - Use `pnpm` and the committed lockfile. Ask before adding production dependencies.
+- Keep route handlers thin: authenticate, validate a strict request shape, call domain code, and return sanitized/private responses. Keep secrets and provider payloads out of client components and logs.
+- Add or update tests at the domain boundary where behavior changes. Cover idempotency, partial failure, concurrency, and audit provenance when the feature touches those concerns.
+- Update `README.md` when product behavior, configuration, architecture, commands, storage, or operational constraints change.
 - Use `pnpm validate` for the standard verification suite and `pnpm test:e2e` for the mocked browser flow.
 - Do not use real provider calls as a setup or regression test.
 - Report what changed, what passed, and any remaining Windows-only uncertainty.

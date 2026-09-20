@@ -122,7 +122,9 @@ const mockServer = createServer(async (request, response) => {
       const expectedImage = `data:image/png;base64,${chart.toString("base64")}`;
       const promptText = content.find((part) => part.type === "text")?.text ?? "";
       const macro = responseName === "swing_macro";
-      if (requestBody.model !== "google/gemini-2.5-pro" || images.length !== (macro ? 4 : 1) || images.some((image) => image.image_url?.url !== expectedImage) || requestBody.temperature !== 0.1 || requestBody.max_tokens !== 6500 || requestBody.stream !== false) {
+      const india = promptText.includes("attached INDIA market daily charts");
+      const expectedImageCount = macro ? (india ? 4 : 5) : 1;
+      if (requestBody.model !== "google/gemini-2.5-pro" || images.length !== expectedImageCount || images.some((image) => image.image_url?.url !== expectedImage) || requestBody.temperature !== 0.1 || requestBody.max_tokens !== 6500 || requestBody.stream !== false) {
         response.writeHead(422, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ error: "Swing model, images, or settings did not match." }));
         return;
@@ -141,12 +143,11 @@ const mockServer = createServer(async (request, response) => {
           return;
         }
       }
-      const india = promptText.includes("four attached INDIA");
-      const macroSymbols = india ? ["NIFTY50", "BANKNIFTY", "INDIAVIX", "USDINR"] : ["SPY", "QQQ", "GLD", "TLT"];
+      const macroSymbols = india ? ["NIFTY50", "BANKNIFTY", "INDIAVIX", "USDINR"] : ["SPY", "QQQ", "USO", "TNX", "GLD"];
       const macroResult = {
-        regime: "BULLISH_ACCELERATION", long_bias: "SUPPORTIVE", short_bias: "NEUTRAL", high_beta_long_forbidden: false,
-        summary: india ? "NIFTY 50 and NIFTY Bank remain structurally constructive while India VIX and USD/INR are neutral." : "SPY and QQQ remain structurally constructive while GLD and TLT are neutral.",
-        anchors: Object.fromEntries(macroSymbols.map((symbol) => [symbol, { stance: ["SPY", "QQQ", "NIFTY50", "BANKNIFTY"].includes(symbol) ? "BULLISH" : "NEUTRAL", observation: `${symbol} daily structure is visually legible.`, visual_quality: "CLEAR" }])),
+        regime: india ? "BULLISH_ACCELERATION" : "CHOPPING_RANGE", long_bias: india ? "SUPPORTIVE" : "NEUTRAL", short_bias: "NEUTRAL", high_beta_long_forbidden: false,
+        summary: india ? "NIFTY 50 and NIFTY Bank remain structurally constructive while India VIX and USD/INR are neutral." : "USO and TNX are neutral, so the US matrix remains in a chopping range.",
+        anchors: Object.fromEntries(macroSymbols.map((symbol) => [symbol, { stance: india && ["NIFTY50", "BANKNIFTY"].includes(symbol) ? "BULLISH" : "NEUTRAL", observation: `${symbol} daily structure is visually legible.`, visual_quality: "CLEAR" }])),
       };
       const symbol = promptText.match(/- Symbol: ([A-Z0-9.-]+)/)?.[1] ?? "AAPL";
       const direction = symbol === "MSFT" ? "SHORT" : symbol === "NVDA" ? "NO_TRADE" : "LONG";

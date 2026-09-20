@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const SWING_MODEL_ID = "google/gemini-2.5-pro" as const;
-export const SWING_TEMPLATE_VERSION = "swing-daily-v3" as const;
+export const SWING_TEMPLATE_VERSION = "swing-daily-v4" as const;
 export const SWING_MARKETS = ["US", "INDIA"] as const;
 export type SwingMarket = (typeof SWING_MARKETS)[number];
 export const SWING_EXCHANGES = ["NASDAQ", "NYSE", "AMEX", "NSE", "BSE"] as const;
@@ -15,8 +15,9 @@ export const SWING_MARKET_CONFIG = {
     macro: [
       { key: "SPY", symbol: "SPY", exchange: "AMEX" },
       { key: "QQQ", symbol: "QQQ", exchange: "NASDAQ" },
+      { key: "USO", symbol: "USO", exchange: "AMEX" },
+      { key: "TNX", symbol: "TNX", exchange: "TVC" },
       { key: "GLD", symbol: "GLD", exchange: "AMEX" },
-      { key: "TLT", symbol: "TLT", exchange: "NASDAQ" },
     ],
   },
   INDIA: {
@@ -54,12 +55,12 @@ const anchorSchema = z.object({
 }).strict();
 
 export const swingMacroResultSchema = z.object({
-  regime: z.enum(["BULLISH_ACCELERATION", "BEARISH_REGIME", "CHOPPING_RANGE", "VOLATILITY_ENVELOPE_SQUEEZE"]),
+  regime: z.enum(["BULLISH_REGIME", "BULLISH_ACCELERATION", "BEARISH_REGIME", "CHOPPING_RANGE", "VOLATILITY_ENVELOPE_SQUEEZE"]),
   long_bias: z.enum(["SUPPORTIVE", "NEUTRAL", "HOSTILE"]),
   short_bias: z.enum(["SUPPORTIVE", "NEUTRAL", "HOSTILE"]),
   high_beta_long_forbidden: z.boolean(),
   summary: z.string().trim().min(1).max(3_000),
-  anchors: z.record(z.string(), anchorSchema).refine((anchors) => Object.keys(anchors).length === 4, "Macro analysis requires exactly four anchors."),
+  anchors: z.record(z.string(), anchorSchema).refine((anchors) => Object.keys(anchors).length > 0, "Macro analysis requires market anchors."),
 }).strict();
 
 export type SwingMacroResult = z.infer<typeof swingMacroResultSchema>;
@@ -144,7 +145,7 @@ export const swingCandidateResultSchema = z.object({
 export type SwingCandidateResult = z.infer<typeof swingCandidateResultSchema>;
 
 export type SwingChartInput = {
-  version: "swing-chart-img-input-v2";
+  version: "swing-chart-img-input-v2" | "swing-chart-img-input-v3";
   market: SwingMarket;
   role: "macro" | "candidate";
   symbol: string;
