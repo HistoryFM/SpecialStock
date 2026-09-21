@@ -89,10 +89,23 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   }
   await page.getByRole("button", { name: "Run selected" }).click();
   await expect(page.getByText(/Manual batch settled · 2 completed · 1 failed/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("checkbox", { name: "Select AAPL" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select NVDA" })).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select AMZN" })).not.toBeChecked();
+  await expect(page.getByRole("button", { name: "Reuse last selection (3)" })).toBeVisible();
+  await expect(page.getByText("Last: AAPL 10m · AMZN 5m · NVDA 1m")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Select failed (1)" })).toBeVisible();
+  await page.getByRole("button", { name: "Reuse last selection (3)" }).click();
   await expect(page.getByRole("checkbox", { name: "Select AAPL" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "Select NVDA" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "Select AMZN" })).toBeChecked();
   await page.reload();
+  await expect(page.getByRole("button", { name: "Reuse last selection (3)" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select AAPL" })).not.toBeChecked();
+  await page.getByRole("button", { name: "Reuse last selection (3)" }).click();
+  await expect(page.getByRole("checkbox", { name: "Select AAPL" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select NVDA" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select AMZN" })).toBeChecked();
   await expectManualInterval(page, "AAPL", "10m");
   await expectManualInterval(page, "NVDA", "1m");
   await expectManualInterval(page, "AMZN", "5m");

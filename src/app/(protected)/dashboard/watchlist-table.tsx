@@ -16,6 +16,7 @@ const filters: Array<{ value: WatchlistFilter; label: string }> = [
 ];
 const MANUAL_TIMEFRAMES_KEY = "specialstock-manual-timeframes-v1";
 const MANUAL_INTERVALS_KEY = "specialstock-manual-intervals-v2";
+const LAST_MANUAL_BATCH_KEY = "specialstock-last-manual-batch-v1";
 const MANUAL_INTERVALS: ManualScanTimeframe[] = ["1m", "5m", "10m"];
 const convictionRank = { high: 3, medium: 2, low: 1 } as const;
 
@@ -52,6 +53,33 @@ export function parseManualIntervalSelections(value: string | null): Record<stri
       return valid.length ? [[symbol, valid]] : [];
     }));
   } catch { return {}; }
+}
+
+export function parseManualBatchRuns(value: string | null): ManualBatchRun[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    return parsed.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+      const { symbol, timeframe } = candidate as Record<string, unknown>;
+      if (typeof symbol !== "string" || !symbol.trim() || !isManualTimeframe(timeframe)) return [];
+      const normalizedSymbol = symbol.trim().toUpperCase();
+      const key = `${normalizedSymbol}:${timeframe}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ symbol: normalizedSymbol, timeframe }];
+    }).slice(0, 20);
+  } catch { return []; }
+}
+
+function manualBatchSummary(runs: ManualBatchRun[]): string {
+  const grouped = new Map<string, ManualScanTimeframe[]>();
+  for (const run of runs) grouped.set(run.symbol, [...(grouped.get(run.symbol) ?? []), run.timeframe]);
+  const labels = [...grouped].map(([symbol, intervals]) => `${symbol} ${intervals.join("/")}`);
+  const visible = labels.slice(0, 3).join(" · ");
+  return `Last: ${visible}${labels.length > 3 ? ` · +${labels.length - 3} more` : ""}`;
 }
 
 function price(value: number | null): string {
@@ -212,6 +240,8 @@ export function WatchlistTable({
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [timeframes, setTimeframes] = useState<Record<string, ManualScanTimeframe[]>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastManualRuns, setLastManualRuns] = useState<ManualBatchRun[]>([]);
+  const [retryableRuns, setRetryableRuns] = useState<ManualBatchRun[]>([]);
   const [bulkPending, setBulkPending] = useState(false);
   const visible = useMemo(
     () => filterAndSortItems(items, filter, sortKey, direction),
@@ -224,12 +254,18 @@ export function WatchlistTable({
   const allVisibleSelected = visibleSymbols.length > 0 && visibleSymbols.every((symbol) => selected.has(symbol));
   const allConfiguredSelected = items.length > 0 && items.every((item) => activeSelected.has(item.symbol));
   const selectedJobCount = selectedSymbols.reduce((count, symbol) => count + (timeframes[symbol]?.length ?? 1), 0);
+  const reusableRuns = lastManualRuns.filter(({ symbol }) => configuredSymbols.has(symbol));
+  const reusableSymbolCount = new Set(reusableRuns.map(({ symbol }) => symbol)).size;
 
   useEffect(() => {
     const saved = parseManualIntervalSelections(localStorage.getItem(MANUAL_INTERVALS_KEY));
     const legacy = parseManualTimeframes(localStorage.getItem(MANUAL_TIMEFRAMES_KEY));
+    const lastBatch = parseManualBatchRuns(localStorage.getItem(LAST_MANUAL_BATCH_KEY));
     const migrated = Object.fromEntries(Object.entries(legacy).map(([symbol, timeframe]) => [symbol, [timeframe]]));
-    const timer = window.setTimeout(() => setTimeframes({ ...migrated, ...saved }), 0);
+    const timer = window.setTimeout(() => {
+      setTimeframes({ ...migrated, ...saved });
+      setLastManualRuns(lastBatch);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
@@ -274,14 +310,36 @@ export function WatchlistTable({
     if (updated) setSelected(new Set());
   };
 
+  const restoreManualRuns = (runs: ManualBatchRun[]) => {
+    const applicable = runs.filter(({ symbol }) => configuredSymbols.has(symbol));
+    if (!applicable.length) return;
+    const restoredSymbols = new Set(applicable.map(({ symbol }) => symbol));
+    setTimeframes((current) => {
+      const next = { ...current };
+      for (const symbol of restoredSymbols) {
+        const intervals = new Set(applicable.filter((run) => run.symbol === symbol).map(({ timeframe }) => timeframe));
+        next[symbol] = MANUAL_INTERVALS.filter((interval) => intervals.has(interval));
+      }
+      localStorage.setItem(MANUAL_INTERVALS_KEY, JSON.stringify(next));
+      return next;
+    });
+    setSelected(new Set(items.filter(({ symbol }) => restoredSymbols.has(symbol)).map(({ symbol }) => symbol)));
+  };
+
   const runSelected = async () => {
     const runs = items
       .filter((item) => activeSelected.has(item.symbol))
       .flatMap((item) => (timeframes[item.symbol] ?? ["5m"] as const).map((timeframe) => ({ symbol: item.symbol, timeframe })));
     if (!runs.length) return;
+    localStorage.setItem(LAST_MANUAL_BATCH_KEY, JSON.stringify(runs));
+    setLastManualRuns(runs);
+    setRetryableRuns([]);
     setBulkPending(true);
-    await onRunSelected(runs);
+    const result = await onRunSelected(runs);
     setBulkPending(false);
+    if (!result) return;
+    setRetryableRuns(result.results.filter(({ outcome }) => outcome === "failed" || outcome === "already_running"));
+    setSelected(new Set());
   };
 
   const updateTimeframe = (symbol: string, value: ManualScanTimeframe) => {
@@ -319,6 +377,21 @@ export function WatchlistTable({
         </div>
         <div className="watchlist-controls">
           <label className="select-all-stocks"><input aria-label="Select all stocks" checked={allConfiguredSelected} onChange={toggleAllConfigured} type="checkbox" />Select all stocks</label>
+          <div className="selection-recall">
+            <button
+              className="secondary-button compact"
+              disabled={bulkPending || !reusableRuns.length}
+              onClick={() => restoreManualRuns(reusableRuns)}
+              title={reusableRuns.length ? "Restore these stocks and intervals without running a scan" : "Run a selected batch once to save it here"}
+              type="button"
+            >
+              {reusableRuns.length ? `Reuse last selection (${reusableSymbolCount})` : "Reuse last selection"}
+            </button>
+            <span title={reusableRuns.map(({ symbol, timeframe }) => `${symbol} ${timeframe}`).join(" · ")}>
+              {reusableRuns.length ? manualBatchSummary(reusableRuns) : "No previous selection saved yet"}
+            </span>
+          </div>
+          {retryableRuns.length ? <button className="secondary-button compact" disabled={bulkPending} onClick={() => restoreManualRuns(retryableRuns)} title="Select failed or already-running jobs for another attempt" type="button">Select failed ({retryableRuns.length})</button> : null}
           <div className="filter-group" aria-label="Filter watchlist">
             {filters.map((option) => (
               <button

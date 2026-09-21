@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ManualBatchRun,
   type ManualBatchSelectionResult,
+  parseManualBatchRuns,
   parseManualIntervalSelections,
   parseManualTimeframes,
   WatchlistTable,
@@ -79,6 +80,12 @@ describe("WatchlistTable", () => {
     renderTable(Array.from({ length: count }, (_, index) => item(index)));
     expect(screen.getAllByRole("row")).toHaveLength(count + 1);
     if (count === 0) expect(screen.getByText("No symbols match this filter.")).toBeVisible();
+  });
+
+  it("keeps the previous-selection action visible before a batch has been saved", () => {
+    renderTable([item(1)]);
+    expect(screen.getByRole("button", { name: "Reuse last selection" })).toBeDisabled();
+    expect(screen.getByText("No previous selection saved yet")).toBeVisible();
   });
 
   it("provides only direction filters", () => {
@@ -238,7 +245,7 @@ describe("WatchlistTable", () => {
     expect(symbols).toEqual(["S02", "S03", "S01", "S04", "S05"]);
   });
 
-  it("remembers row timeframes and keeps every stock selected after a manual batch", async () => {
+  it("clears a settled batch and restores its exact selection without rerunning it", async () => {
     localStorage.setItem("specialstock-manual-intervals-v2", JSON.stringify({ S01: ["10m"], S02: ["1m"] }));
     const onRun = vi.fn(async () => ({ results: [] }));
     const onRunSelected = vi.fn(async () => ({
@@ -247,7 +254,7 @@ describe("WatchlistTable", () => {
         { symbol: "S02", timeframe: "10m" as const, outcome: "failed" as const },
       ],
     }));
-    renderTable([item(1), item(2)], { onRun, onRunSelected });
+    const rendered = renderTable([item(1), item(2)], { onRun, onRunSelected });
     await waitFor(() => expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "10m" })).toHaveAttribute("aria-pressed", "true"));
     expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "1m" }));
@@ -262,16 +269,33 @@ describe("WatchlistTable", () => {
       { symbol: "S01", timeframe: "1m" },
       { symbol: "S02", timeframe: "10m" },
     ]));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run selected" })).toBeEnabled());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Run selected" })).not.toBeInTheDocument());
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select S02" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Reuse last selection (2)" })).toBeEnabled();
+    expect(screen.getByText("Last: S01 1m · S02 10m")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Select failed (1)" }));
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select S02" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Reuse last selection (2)" }));
     expect(screen.getByRole("checkbox", { name: "Select S01" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Select S02" })).toBeChecked();
-    fireEvent.click(screen.getByRole("button", { name: "Run selected" }));
-    await waitFor(() => expect(onRunSelected).toHaveBeenCalledTimes(2));
-    expect(onRunSelected).toHaveBeenLastCalledWith([
+    expect(onRunSelected).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem("specialstock-manual-intervals-v2")!)).toEqual({ S01: ["1m"], S02: ["10m"] });
+    expect(parseManualBatchRuns(localStorage.getItem("specialstock-last-manual-batch-v1"))).toEqual([
       { symbol: "S01", timeframe: "1m" },
       { symbol: "S02", timeframe: "10m" },
     ]);
-    expect(JSON.parse(localStorage.getItem("specialstock-manual-intervals-v2")!)).toEqual({ S01: ["1m"], S02: ["10m"] });
+
+    rendered.unmount();
+    renderTable([item(1), item(2)], { onRunSelected });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reuse last selection (2)" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Reuse last selection (2)" }));
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select S02" })).toBeChecked();
+    expect(within(screen.getByLabelText("Manual intervals for S01")).getByRole("button", { name: "1m" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "10m" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("restores valid per-stock preferences and rejects invalid stored values", async () => {
@@ -282,5 +306,24 @@ describe("WatchlistTable", () => {
     expect(within(screen.getByLabelText("Manual intervals for S02")).getByRole("button", { name: "5m" })).toHaveAttribute("aria-pressed", "true");
     expect(parseManualTimeframes("not-json")).toEqual({});
     expect(parseManualIntervalSelections(JSON.stringify({ S01: ["10m", "bogus", "1m"] }))).toEqual({ S01: ["1m", "10m"] });
+    expect(parseManualBatchRuns(JSON.stringify([
+      { symbol: " s01 ", timeframe: "10m" },
+      { symbol: "S01", timeframe: "10m" },
+      { symbol: "S02", timeframe: "15m" },
+    ]))).toEqual([{ symbol: "S01", timeframe: "10m" }]);
+    expect(parseManualBatchRuns("not-json")).toEqual([]);
+  });
+
+  it("ignores stocks removed from the watchlist when reusing a saved batch", async () => {
+    localStorage.setItem("specialstock-last-manual-batch-v1", JSON.stringify([
+      { symbol: "S01", timeframe: "5m" },
+      { symbol: "OLD", timeframe: "10m" },
+    ]));
+    renderTable([item(1)]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reuse last selection (1)" })).toBeEnabled());
+    expect(screen.getByText("Last: S01 5m")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Reuse last selection (1)" }));
+    expect(screen.getByRole("checkbox", { name: "Select S01" })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "Select OLD" })).not.toBeInTheDocument();
   });
 });

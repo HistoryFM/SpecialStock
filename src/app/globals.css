@@ -1255,6 +1255,21 @@ h1 {
   gap: 0.65rem;
 }
 
+.selection-recall {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.selection-recall .secondary-button { white-space: nowrap; }
+.selection-recall > span {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .filter-group button,
 .chart-toolbar button,
 .studies-menu summary,
@@ -1902,6 +1917,8 @@ h1 {
   .workspace-status-strip > .status-message { min-width: 12rem; }
   .watchlist-toolbar { align-items: flex-start; flex-direction: column; padding-block: 0.6rem; }
   .watchlist-controls { width: 100%; flex-wrap: wrap; }
+  .selection-recall { order: 3; width: 100%; }
+  .selection-recall > span { max-width: none; }
   .filter-group { width: 100%; overflow-x: auto; }
   .watchlist-table th:nth-child(5), .watchlist-table td:nth-child(5),
   .watchlist-table th:nth-child(6), .watchlist-table td:nth-child(6),
