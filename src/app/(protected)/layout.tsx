@@ -25,6 +25,7 @@ export default async function ProtectedLayout({
           <Link href="/evaluation">Evaluation</Link>
           <Link href="/backtesting">Backtesting</Link>
           <Link href="/swing-trade">Swing Trade</Link>
+          <Link href="/gex">GEX Analysis</Link>
           <Link href="/settings">Settings</Link>
         </nav>
         <form action={logoutAction}>

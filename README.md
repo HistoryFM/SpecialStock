@@ -23,6 +23,7 @@ This README is the current product and engineering source of truth. `PROJECT_PLA
 - Last valid analysis remains visible if a newer scan fails.
 - Authenticated Backtesting tab with versioned local CSV imports shared across named strategies, confirmed multi-asset AI-interpreted plans, deterministic simulations, saved customizable reports with chart zoom controls, and manually tested AI suggestions.
 - An isolated authenticated Swing Trade workspace with named US and India master lists, reusable snapshot sublists, independent active lists, daily macro-first visual analysis, ranked 3–21-day candidates, cancellable run history, verified chart/model audit, and a dedicated immutable prompt history.
+- A separate GEX Analysis sample preview with its own saved US ticker list and three downloadable illustrative outputs. It does not yet fetch option chains or run on a schedule.
 
 Automatic scanning requires an authenticated dashboard tab to remain open. It is intentionally not a background cloud service.
 
@@ -265,6 +266,14 @@ Results are consolidated by market-local report date. Later runs on the same day
 
 Provider calls use paid Chart-Img/OpenRouter capacity and are never used by routine tests. The configured daily amount remains informational and does not block Swing runs. All prices and levels are visual interpretations of a frozen chart, not broker quotes or execution instructions. Swing output never adds current-event or announcement claims, citations, fundamentals, analyst targets, options-chain selection, position sizing, or follow-up solicitations because those inputs are outside the verified chart evidence.
 
+### GEX Analysis preview
+
+Open **GEX Analysis** after signing in. Upload a CSV, TXT, or single-populated-sheet XLSX file with up to 100 distinct US ticker symbols, or load the 16 symbols in the supplied sample. CSV and XLSX accept a `Symbol` column; a one-column list needs no header. TXT accepts symbols separated by whitespace, commas, or semicolons. Invalid symbols are excluded with a count, duplicates are removed, and upload order is preserved. The GEX list is saved locally and does not change the intraday or Swing watchlists. Optionability cannot be checked until a market-data provider is connected.
+
+Only symbols present in the undated sample have preview data. The page identifies symbols without sample coverage. It offers a three-tab Excel workbook (`Unified Master Table`, `Call Wall Focus`, `Put Wall Focus`) and two ThinkScript downloads (`GEX_Master_Charts.ts`, `GEX_Watchlist_Column.ts`). The workbook preserves the sample's numeric levels in typed cells, shows conditional breakout/fade/bounce/breakdown rows, and leaves scenarios absent from the sample blank. It is not a calculated or dated market report. The ThinkScript files map the selected sample symbols but keep plotting and watchlist alerts disabled by default; their optional `showSampleLevels` switch is for visual testing only. Paste-compile both in thinkorswim before relying on their syntax; set the custom quote to five-minute aggregation manually.
+
+Schwab OAuth, option-chain calculations, the 10 PM Eastern next-session run, live trade grids, and reuse of GEX in 5-minute or Swing scans are not active. No sample value should be treated as current market evidence.
+
 The seeded universe is AAPL, MSFT, AMZN, GOOGL, META, TSLA, NVDA, AMD, AVGO, BE,
 MU, SKHY, SNDK, NOW, CRM, SPCX, ORCL, GLD, SLV, and USO. The default daily provider
 spend target is $12. It is informational and never stops scans. The routine
@@ -337,6 +346,7 @@ The end-to-end suite uses local mock providers. It verifies that the exact store
 - `src/market-data/`: Alpaca/demo calendar and outcome provider support; no indicator calculation.
 - `src/backtesting/`: CSV validation, local indicator/trade engine, isolated AI transport, and versioned local storage.
 - `src/swing/`: Swing watchlists, prompt revisions, daily Chart-Img contract, verified artifacts, macro/candidate Gemini transport, deterministic ranking, scheduling, persistence, and run audit.
+- `src/gex/`: isolated sample reference, ticker intake, three-tab export, and inactive ThinkScript preview generation.
 - `src/app/`: authenticated Next.js UI and API routes.
 - `src/db/` and `drizzle/`: current schema and migrations.
 - `tests/e2e/` and `scripts/run-e2e-server.mjs`: fully mocked browser flow.
@@ -366,5 +376,6 @@ Chart capture retries once only for timeouts and server errors. Configuration er
 - India Chart-Img macro identifiers are contract-tested but still require an explicitly approved live availability check; India automatic scheduling remains deferred pending a reliable holiday/calendar source.
 - Chart-Img v2 currently documents no Volume moving-average input, RSI 50 midline override, or CCI zero-line override; Swing uses only documented provider fields and treats visually unreadable exact volume ratios conservatively.
 - The intraday scan watchlist supports at most 20 stocks; the independent Swing watchlist supports at most 100. The app remains single-user.
+- GEX is currently an undated sample preview, not a live options-chain engine. Its generated thinkorswim scripts still require platform paste-and-compile validation.
 - Dashboard history intentionally shows only the rolling last 24 hours; permanent scan-graph retention is seven rolling days.
 - This tool provides visual technical-analysis assistance, not investment advice, order execution, or guarantees of outcome.

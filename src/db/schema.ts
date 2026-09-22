@@ -808,5 +808,16 @@ export const swingModelAttempts = pgTable("swing_model_attempts", {
   uniqueIndex("swing_model_attempts_run_number_unique").on(table.modelRunId, table.attemptNumber),
 ]);
 
+export const gexSettings = pgTable("gex_settings", {
+  id: integer("id").primaryKey().default(1),
+  symbols: jsonb("symbols").$type<string[]>().default([]).notNull(),
+  revision: integer("revision").default(0).notNull(),
+  sourceFilename: text("source_filename"),
+  ...timestamps,
+}, (table) => [
+  check("gex_settings_singleton", sql`${table.id} = 1`),
+  check("gex_settings_symbols_size", sql`jsonb_array_length(${table.symbols}) <= 100`),
+]);
+
 export type AppSettingsRow = typeof appSettings.$inferSelect;
 export type NewAppSettingsRow = typeof appSettings.$inferInsert;
