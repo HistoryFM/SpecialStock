@@ -59,8 +59,8 @@ const frozen: ChartAnalysisInput = {
   ],
   inputHash: "input-hash",
 };
-const wireAnalysis = { p: 100, pc: 99, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
-const analysis = { observed_price: 100, previous_completed_candle_close: 99, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
+const wireAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
+const analysis = { observed_price: 100, previous_completed_candle_close: null, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
 const fullAnalysis = {
   phase1: "Higher lows are visible above VWAP.",
   phase2: "ADX rising; RSI above midpoint; MACD bars expand; CCI and CMF above zero.",
@@ -125,7 +125,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     }).json_schema.schema;
     expect(compactSchema.anyOf).toHaveLength(3);
     expect(compactSchema.anyOf[0]?.properties.p.type).toBe("number");
-    expect((compactSchema.anyOf[0]?.properties.pc as { anyOf?: unknown[] } | undefined)?.anyOf).toHaveLength(2);
+    expect(compactSchema.anyOf.every((branch) => !("pc" in branch.properties))).toBe(true);
     expect(compactSchema.anyOf[2]?.properties.t.type).toBe("null");
 
     expect(modelSpans()).toHaveLength(1);

@@ -51,14 +51,11 @@ const generationSchema = z.object({
   }).optional(),
 });
 
-function compactJsonSchema(requirePreviousCompletedClose: boolean) {
+function compactJsonSchema() {
   const conviction = { type: "string", enum: ["low", "medium", "high"] };
   const readableQuality = { type: "string", enum: ["clear", "partial"] };
   const allQuality = { type: "string", enum: ["clear", "partial", "unreadable"] };
-  const previousClose = requirePreviousCompletedClose
-    ? { pc: { anyOf: [{ type: "number" }, { type: "null" }] } }
-    : {};
-  const required = ["p", "v", "c", "t", "i", "q", ...(requirePreviousCompletedClose ? ["pc"] : [])];
+  const required = ["p", "v", "c", "t", "i", "q"];
   const directional = (verdict: "bullish" | "bearish") => ({
     type: "object",
     additionalProperties: false,
@@ -70,7 +67,6 @@ function compactJsonSchema(requirePreviousCompletedClose: boolean) {
       t: { type: "number" },
       i: { type: "number" },
       q: readableQuality,
-      ...previousClose,
     },
   });
   return {
@@ -88,7 +84,6 @@ function compactJsonSchema(requirePreviousCompletedClose: boolean) {
           t: { type: "null" },
           i: { type: "null" },
           q: allQuality,
-          ...previousClose,
         },
       },
     ],
@@ -400,7 +395,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
               headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "HTTP-Referer": "http://localhost:3000", "X-Title": "SpecialStock" },
               body: JSON.stringify({
                 model, temperature, max_tokens: maxTokens, reasoning,
-                response_format: { type: "json_schema", json_schema: { name: compact ? "compact_signal" : "full_analysis", strict: true, schema: compact ? compactJsonSchema(frozen.interval === "5m") : fullJsonSchema() } },
+                response_format: { type: "json_schema", json_schema: { name: compact ? "compact_signal" : "full_analysis", strict: true, schema: compact ? compactJsonSchema() : fullJsonSchema() } },
                 messages: [{ role: "user", content: [
                   { type: "text", text: attemptPrompt },
                   { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } },
@@ -426,7 +421,7 @@ export class OpenRouterAnalysisModelProvider implements AnalysisModelProvider {
             if (!content) throw new Error("OpenRouter returned an empty response.");
             const parsedContent = parseJsonResponse(content);
             const analysis = compact
-              ? validateCompactAnalysis(parsedContent, { requirePreviousCompletedClose: frozen.interval === "5m" })
+              ? validateCompactAnalysis(parsedContent)
               : validateFullAnalysis(parsedContent);
             span.setAttribute("gen_ai.output.messages", JSON.stringify([{ role: "assistant", parts: [{ type: "text", content: JSON.stringify({ schema: compact ? "compact_signal" : "full_analysis", byte_length: content.length }) }] }]));
             const usage = await resolveUsage(apiKey, raw);

@@ -34,7 +34,6 @@ import {
 } from "@/market-data/time";
 import type { MarketDataProvider, MarketSession } from "@/market-data/provider";
 import { evaluatePendingOutcomes } from "@/outcomes/evaluate";
-import { persistGexGateForFiveMinuteScan } from "@/gex/gate";
 import {
   getScanExecutionPolicy,
   MANUAL_SMOKE_SLOT_KIND,
@@ -627,26 +626,6 @@ export async function runScan(input: {
             promptRevision,
           }),
         );
-        if (timeframe === "5m") {
-          await Sentry.startSpan(
-            {
-              name: "Persist GEX scanner gate",
-              op: "specialstock.gex.gate",
-              attributes: {
-                "specialstock.symbol": input.symbol,
-                "specialstock.scan.slot_id": claim.slot.id,
-              },
-            },
-            () => persistGexGateForFiveMinuteScan({
-              analysisId: primary.analysis.id,
-              symbol: input.symbol,
-              price: primary.analysis.observedPrice === null ? null : Number(primary.analysis.observedPrice),
-              previousPrice: primary.analysis.previousCompletedCandleClose === null
-                ? null
-                : Number(primary.analysis.previousCompletedCandleClose),
-            }),
-          );
-        }
         stage = "thesis_and_outcomes";
         await Sentry.startSpan(
           {

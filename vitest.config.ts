@@ -11,7 +11,7 @@ export default defineConfig({
   test: {
     environment: "node",
     testTimeout: 15_000,
-    exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
+    exclude: ["tests/e2e/**", "node_modules/**", ".next/**", ".data/**", ".data-*/**"],
     setupFiles: ["./vitest.setup.ts"],
     coverage: {
       provider: "v8",

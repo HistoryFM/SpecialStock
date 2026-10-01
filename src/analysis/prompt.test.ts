@@ -26,7 +26,8 @@ describe("compact analysis prompt", () => {
     ["5m", "five-minute", "open"], ["5m", "five-minute", "closed"],
     ["10m", "ten-minute", "open"], ["10m", "ten-minute", "closed"],
   ] as const)("composes the v3 %s/%s prompt with runtime bar status", (interval, wording, barStatus) => {
-    expect(COMPACT_PROMPT_VERSION).toBe("chart-compact-v4");
+    expect(COMPACT_PROMPT_VERSION).toBe("chart-compact-v5");
+    expect(buildCompactAnalysisPrompt(input(interval, barStatus))).not.toContain("second-to-last");
     const prompt = buildCompactAnalysisPrompt(input(interval, barStatus));
     expect(prompt).toContain(`contains ${wording} candles`);
     expect(prompt).toContain(`Interval/session: ${interval}, regular`);
