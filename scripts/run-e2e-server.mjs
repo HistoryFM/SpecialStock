@@ -6,6 +6,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 
 const mockPort = 3199;
+const packageRunner = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const runRoot = mkdtempSync(join(tmpdir(), "specialstock-e2e-"));
 const databasePath = join(runRoot, "database");
 const artifactPath = join(runRoot, "charts");
@@ -233,7 +234,11 @@ const mockServer = createServer(async (request, response) => {
 });
 
 await new Promise((resolve) => mockServer.listen(mockPort, "127.0.0.1", resolve));
-const migration = spawnSync("pnpm", ["db:migrate"], { stdio: "inherit", env: testEnv });
+const windowsShell = process.platform === "win32";
+const migration = spawnSync(packageRunner, ["db:migrate"], { stdio: "inherit", env: testEnv, shell: windowsShell });
+if (migration.error) {
+  console.error(`Unable to start the isolated migration process: ${migration.error.message}`);
+}
 if (migration.status !== 0) {
   mockServer.close();
   rmSync(runRoot, { recursive: true, force: true });
@@ -242,9 +247,10 @@ if (migration.status !== 0) {
 const appArgs = process.env.SPECIALSTOCK_E2E_PRODUCTION === "1"
   ? ["start", "--hostname", "127.0.0.1", "--port", "3100"]
   : ["dev", "--hostname", "127.0.0.1", "--port", "3100"];
-const app = spawn("pnpm", appArgs, {
+const app = spawn(packageRunner, appArgs, {
   stdio: "inherit",
   env: testEnv,
+  shell: windowsShell,
 });
 
 const cleanup = () => {

@@ -29,10 +29,13 @@ function csvFields(line: string): string[] {
 function selectSymbolColumn(rows: string[][], fileType: "csv" | "xlsx") {
   if (!rows.length) throw new GexWatchlistError("The file does not contain any symbols.");
   const header = rows[0]!.map((cell) => cell.trim().toLowerCase());
-  const symbolColumn = header.indexOf("symbol");
+  const symbolColumn = header.findIndex((cell) => ["symbol", "ticker", "stock"].includes(cell));
   if (symbolColumn >= 0) return rows.slice(1).map((row) => row[symbolColumn] ?? "");
-  if (rows.some((row) => row.length > 1)) throw new GexWatchlistError(`${fileType.toUpperCase()} files with multiple columns need a Symbol header.`);
-  return rows.map((row) => row[0] ?? "");
+  if (rows.some((row) => row.length > 1)) throw new GexWatchlistError(`${fileType.toUpperCase()} files with multiple columns need a Symbol, Ticker, or Stock header.`);
+  // Spreadsheet-style uploads always reserve their first row for a heading,
+  // even when that heading uses a custom label. This prevents labels such as
+  // "STOCK" from being saved and submitted to Schwab as a ticker.
+  return rows.slice(1).map((row) => row[0] ?? "");
 }
 
 export function normalizeGexSymbols(raw: string[]): GexParsedWatchlist {

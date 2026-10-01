@@ -10,10 +10,14 @@ describe("GEX list intake", () => {
     });
   });
 
-  it("accepts one-column CSV and TXT lists and a Symbol column", async () => {
+  it("treats spreadsheet first rows as headers and accepts common symbol labels", async () => {
     expect((await parseGexWatchlistFile("stocks.csv", Buffer.from("Symbol,Name\nNVDA,Nvidia\nAMD,AMD\n"))).symbols).toEqual(["NVDA", "AMD"]);
-    expect((await parseGexWatchlistFile("stocks.csv", Buffer.from("NVDA\nAMD\n"))).symbols).toEqual(["NVDA", "AMD"]);
+    expect((await parseGexWatchlistFile("stocks.csv", Buffer.from("Stock\nNVDA\nAMD\n"))).symbols).toEqual(["NVDA", "AMD"]);
     expect((await parseGexWatchlistFile("stocks.txt", Buffer.from("NVDA, AMD\nMETA"))).symbols).toEqual(["NVDA", "AMD", "META"]);
+  });
+
+  it("does not save a custom one-column header as a ticker", async () => {
+    expect((await parseGexWatchlistFile("stocks.csv", Buffer.from("My GEX symbols\nSPY\nQQQ\n"))).symbols).toEqual(["SPY", "QQQ"]);
   });
 
   it("accepts a single populated XLSX sheet and rejects ambiguous layouts", async () => {
@@ -28,6 +32,6 @@ describe("GEX list intake", () => {
   it("bounds file and list sizes", async () => {
     expect(() => normalizeGexSymbols(Array.from({ length: 101 }, (_, index) => `T${index}`))).toThrow(GexWatchlistError);
     await expect(parseGexWatchlistFile("stocks.txt", Buffer.alloc(1024 * 1024 + 1))).rejects.toThrow("1 MB");
-    await expect(parseGexWatchlistFile("stocks.csv", Buffer.from("Name,Exchange\nNvidia,NASDAQ"))).rejects.toThrow("Symbol header");
+    await expect(parseGexWatchlistFile("stocks.csv", Buffer.from("Name,Exchange\nNvidia,NASDAQ"))).rejects.toThrow("Symbol, Ticker, or Stock header");
   });
 });

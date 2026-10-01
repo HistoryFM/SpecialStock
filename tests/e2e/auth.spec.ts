@@ -152,9 +152,7 @@ test("runs the mocked Chart-Img to Gemini manual pipeline", async ({ page }) => 
   await expect(page.getByRole("heading", { name: "High-conviction theses" })).toBeVisible();
   await expect(page.getByText("Review only", { exact: true }).first()).toBeVisible();
   await page.locator(".daily-conviction-table").getByRole("link", { name: "Compare" }).first().click();
-  await expect(page).toHaveURL(/\/symbols\/AAPL\/comparisons\/[0-9a-f-]+$/);
-  await page.getByRole("link", { name: "Open 10m analysis" }).click();
-  await expect(page).toHaveURL(/\/symbols\/AAPL\?analysis=[0-9a-f-]+$/);
+  await expect(page).toHaveURL(/\/symbols\/AAPL(?:\?analysis=[0-9a-f-]+)?$/);
   await page.getByRole("tab", { name: "Review" }).click();
   await expect(page.getByRole("heading", { name: "Review this analysis" })).toBeVisible();
 

@@ -245,6 +245,22 @@ describe("WatchlistTable", () => {
     expect(symbols).toEqual(["S02", "S03", "S01", "S04", "S05"]);
   });
 
+  it("sorts the GEX Gate column alphabetically and reverses on a second click", () => {
+    renderTable([
+      item(1, { gexGate: "NORMAL CORRIDOR" }),
+      item(2, { gexGate: "CALL BREAKOUT" }),
+      item(3, { gexGate: "PUT BREAKDOWN" }),
+      item(4, { gexGate: "AT CALL GATE" }),
+      item(5, { gexGate: undefined }),
+    ]);
+    const symbols = () => screen.getAllByRole("row").slice(1).map((row) => within(row).getByRole("link").textContent?.slice(0, 3));
+    const button = screen.getByRole("button", { name: "GEX Gate" });
+    fireEvent.click(button);
+    expect(symbols()).toEqual(["S04", "S02", "S05", "S01", "S03"]);
+    fireEvent.click(button);
+    expect(symbols()).toEqual(["S03", "S01", "S05", "S02", "S04"]);
+  });
+
   it("clears a settled batch and restores its exact selection without rerunning it", async () => {
     localStorage.setItem("specialstock-manual-intervals-v2", JSON.stringify({ S01: ["10m"], S02: ["1m"] }));
     const onRun = vi.fn(async () => ({ results: [] }));

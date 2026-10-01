@@ -59,8 +59,8 @@ const frozen: ChartAnalysisInput = {
   ],
   inputHash: "input-hash",
 };
-const wireAnalysis = { p: 100, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
-const analysis = { observed_price: 100, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
+const wireAnalysis = { p: 100, pc: 99, v: "bullish", c: "high", t: 104, i: 97, q: "clear" };
+const analysis = { observed_price: 100, previous_completed_candle_close: 99, verdict: "bullish", conviction: "high", primary_target: 104, invalidation_level: 97, visual_quality: "clear" };
 const fullAnalysis = {
   phase1: "Higher lows are visible above VWAP.",
   phase2: "ADX rising; RSI above midpoint; MACD bars expand; CCI and CMF above zero.",
@@ -125,6 +125,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
     }).json_schema.schema;
     expect(compactSchema.anyOf).toHaveLength(3);
     expect(compactSchema.anyOf[0]?.properties.p.type).toBe("number");
+    expect((compactSchema.anyOf[0]?.properties.pc as { anyOf?: unknown[] } | undefined)?.anyOf).toHaveLength(2);
     expect(compactSchema.anyOf[2]?.properties.t.type).toBe("null");
 
     expect(modelSpans()).toHaveLength(1);
@@ -542,7 +543,7 @@ describe("OpenRouterAnalysisModelProvider", () => {
       "specialstock.analysis.phase": "full",
       "specialstock.analysis.usage_class": "full_analysis",
       "gen_ai.request.max_tokens": 3_200,
-      "gen_ai.request.reasoning.level": "low",
+      "gen_ai.request.reasoning.level": "medium",
     });
     expect(String(span.attributes["gen_ai.input.messages"])).not.toContain("Locked compact signal");
     expect(String(span.attributes["gen_ai.input.messages"])).not.toContain("data:image/png;base64");

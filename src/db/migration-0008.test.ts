@@ -35,7 +35,9 @@ describe("compact quality profile migration", () => {
       select revision_number,instructions_hash,instructions from prompt_revisions
       join active_prompt_revisions on active_revision_id = id where active_prompt_revisions.phase = 'compact'
     `);
-    expect(active.rows).toEqual([{ revision_number: 2, instructions_hash: "9f93f9b093ced2514fe37813bc48d91ee2b5e2632b6187bd3d9363abcea3ebaa", instructions: DEFAULT_COMPACT_ANALYSIS_INSTRUCTIONS }]);
+    expect(active.rows).toHaveLength(1);
+    expect(active.rows[0]).toMatchObject({ revision_number: 2, instructions_hash: "9f93f9b093ced2514fe37813bc48d91ee2b5e2632b6187bd3d9363abcea3ebaa" });
+    expect(active.rows[0]?.instructions.replaceAll("\r\n", "\n")).toBe(DEFAULT_COMPACT_ANALYSIS_INSTRUCTIONS);
   });
 
   it("preserves an active custom revision", async () => {

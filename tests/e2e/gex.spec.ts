@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { expect, test } from "@playwright/test";
 
-test("GEX keeps an independent list and exports only matching undated sample symbols", async ({ page }) => {
+test("GEX keeps an independent list and leaves sample preview tables out of the live workspace", async ({ page }) => {
   const unauthorized = await page.request.get("/api/gex/state");
   expect(unauthorized.status()).toBe(401);
 
@@ -10,21 +10,18 @@ test("GEX keeps an independent list and exports only matching undated sample sym
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("link", { name: "GEX Analysis" }).click();
   await expect(page.getByRole("heading", { name: "GEX Analysis" })).toBeVisible();
-  await expect(page.getByText("Illustrative data only")).toBeVisible();
-  await page.getByRole("button", { name: "Use sample tickers" }).click();
-  await expect(page.getByText("16 matched")).toBeVisible();
-
+  await expect(page.getByRole("heading", { name: "Schwab option-chain structure" })).toHaveCount(0);
   await page.getByLabel("CSV, TXT, or XLSX symbol list").setInputFiles({
     name: "gex-list.csv", mimeType: "text/csv", buffer: Buffer.from("Symbol\nGOOGL\nAAPL\nAMD\nGOOGL\nbad!\n"),
   });
-  await page.getByRole("button", { name: "Save list" }).click();
-  await expect(page.getByRole("status")).toContainText("3 symbols saved");
-  await expect(page.getByRole("status")).toContainText("1 duplicate removed");
-  await expect(page.getByRole("status")).toContainText("1 invalid item excluded");
-  await expect(page.getByText("2 matched")).toBeVisible();
-  await expect(page.getByText(/No sample data:.*AAPL/)).toBeVisible();
-  await expect(page.getByRole("row", { name: /GOOGL/ })).toBeVisible();
-  await expect(page.getByRole("row", { name: /AMD/ })).toBeVisible();
+  const saveList = page.getByRole("button", { name: "Save list" });
+  await expect(saveList).toBeEnabled();
+  await saveList.click();
+  const listPanel = page.getByLabel("Your GEX ticker list");
+  await expect(listPanel.getByRole("status")).toContainText("3 symbols saved");
+  await expect(listPanel.getByRole("status")).toContainText("1 duplicate removed");
+  await expect(listPanel.getByRole("status")).toContainText("1 invalid item excluded");
+  await expect(page.getByRole("heading", { name: "Sample wall tables" })).toHaveCount(0);
 
   const stateResponse = await page.request.get("/api/gex/state");
   const state = (await stateResponse.json() as { state: { symbols: string[]; revision: number } }).state;
@@ -49,6 +46,5 @@ test("GEX keeps an independent list and exports only matching undated sample sym
   expect((await watchlist.text()).match(/^plot /gm)).toHaveLength(1);
 
   await page.reload();
-  await expect(page.getByText("2 matched")).toBeVisible();
   await expect(page.getByText("gex-list.csv")).toBeVisible();
 });

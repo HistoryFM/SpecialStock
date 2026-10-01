@@ -33,7 +33,7 @@ export function isFullAnalysisEligible(input: {
   return true;
 }
 
-export function validateCompactAnalysis(raw: unknown): CompactAnalysisResult {
+export function validateCompactAnalysis(raw: unknown, options?: { requirePreviousCompletedClose?: boolean }): CompactAnalysisResult {
   const wire = compactAnalysisWireSchema.safeParse(raw);
   if (!wire.success) {
     throw new AnalysisValidationError(
@@ -42,6 +42,7 @@ export function validateCompactAnalysis(raw: unknown): CompactAnalysisResult {
   }
   const result = compactAnalysisResultSchema.parse({
     observed_price: wire.data.p,
+    previous_completed_candle_close: wire.data.pc ?? null,
     verdict: wire.data.v,
     conviction: wire.data.c,
     primary_target: wire.data.t,
@@ -49,6 +50,9 @@ export function validateCompactAnalysis(raw: unknown): CompactAnalysisResult {
     visual_quality: wire.data.q,
   });
   const issues: string[] = [];
+  if (options?.requirePreviousCompletedClose && result.previous_completed_candle_close === null) {
+    issues.push("five-minute GEX gate extraction requires the prior visible candle close");
+  }
   if (result.verdict === "no_trade") {
     if (result.primary_target !== null || result.invalidation_level !== null) {
       issues.push("no_trade must not include target or invalidation levels");

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 
 import { getBudgetSummary } from "@/analysis/budget";
 import { requireAuthorizedUser } from "@/auth/require-user";
@@ -31,6 +31,7 @@ export type SymbolDashboardItem = {
   latestPrice: number | null;
   verdict: "bullish" | "bearish" | "no_trade" | null;
   conviction: "low" | "medium" | "high" | null;
+  gexGate?: string;
   visualQuality?: "clear" | "partial" | "unreadable" | null;
   summary?: string | null;
   target: number | null;
@@ -61,11 +62,17 @@ export async function getDashboardData() {
   await database.insert(appSettings).values({ id: 1 }).onConflictDoNothing();
   const [settings] = await database.select().from(appSettings).where(eq(appSettings.id, 1));
   if (!settings) throw new Error("Settings are unavailable.");
-
   const items: SymbolDashboardItem[] = [];
   const now = new Date();
   for (const entry of settings.watchlist) {
     const symbol = entry.symbol;
+    const [storedGexGate] = await database.select({ gate: analyses.gexGate })
+      .from(modelRuns)
+      .innerJoin(analyses, eq(analyses.modelRunId, modelRuns.id))
+      .innerJoin(scanSlots, eq(scanSlots.id, modelRuns.scanSlotId))
+      .where(and(eq(scanSlots.symbol, symbol), eq(scanSlots.scanInterval, "5m"), eq(modelRuns.status, "valid"), isNotNull(analyses.gexGate)))
+      .orderBy(desc(scanSlots.scheduledFor), desc(modelRuns.completedAt))
+      .limit(1);
     const [slot] = await database
       .select()
       .from(scanSlots)
@@ -93,6 +100,7 @@ export async function getDashboardData() {
         latestPrice: null,
         verdict: null,
         conviction: null,
+        gexGate: storedGexGate?.gate ?? "Awaiting 5m scan",
         visualQuality: null,
         target: null,
         invalidation: null,
@@ -180,6 +188,7 @@ export async function getDashboardData() {
       latestPrice: joined?.analysis.observedPrice ? Number(joined.analysis.observedPrice) : null,
       verdict: joined?.analysis.verdict ?? null,
       conviction: joined?.analysis.conviction ?? null,
+      gexGate: storedGexGate?.gate ?? "Awaiting 5m scan",
       visualQuality: joined?.analysis.visualQuality ?? null,
       target: joined?.analysis.primaryTarget ? Number(joined.analysis.primaryTarget) : null,
       invalidation: joined?.analysis.invalidationLevel

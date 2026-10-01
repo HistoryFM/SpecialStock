@@ -113,6 +113,41 @@
       "when": 1790096470483,
       "tag": "0015_organic_pandemic",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790368724292,
+      "tag": "0016_gex_history_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790701200000,
+      "tag": "0017_gex_model_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790703300000,
+      "tag": "0018_gex_model_usage_purpose",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790713000000,
+      "tag": "0019_gex_saved_lists",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790715000000,
+      "tag": "0020_scan_gex_gate",
+      "breakpoints": true
     }
   ]
 }

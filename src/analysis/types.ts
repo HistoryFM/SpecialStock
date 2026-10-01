@@ -32,6 +32,7 @@ export type FourPhaseReport = z.infer<typeof fourPhaseReportSchema>;
 
 export const compactAnalysisWireSchema = z.object({
   p: z.number().positive().nullable(),
+  pc: z.number().positive().nullable().optional(),
   v: z.enum(["bullish", "bearish", "no_trade"]),
   c: z.enum(["low", "medium", "high"]),
   t: z.number().positive().nullable(),
@@ -41,6 +42,7 @@ export const compactAnalysisWireSchema = z.object({
 
 export const compactAnalysisResultSchema = z.object({
   observed_price: z.number().positive().nullable(),
+  previous_completed_candle_close: z.number().positive().nullable(),
   verdict: z.enum(["bullish", "bearish", "no_trade"]),
   conviction: z.enum(["low", "medium", "high"]),
   primary_target: z.number().positive().nullable(),

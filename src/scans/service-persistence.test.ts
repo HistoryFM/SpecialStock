@@ -33,6 +33,7 @@ const result = {
   attempts: [],
   analysis: {
     observed_price: 100,
+    previous_completed_candle_close: 99,
     verdict: "no_trade",
     conviction: "low",
     primary_target: null,

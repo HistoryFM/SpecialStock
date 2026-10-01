@@ -27,6 +27,7 @@ const migrations = [
   "0007_tough_swarm.sql",
   "0008_fluffy_radioactive_man.sql",
   "0009_lazy_tinkerer.sql",
+  "0020_scan_gex_gate.sql",
 ] as const;
 
 async function createDatabase() {

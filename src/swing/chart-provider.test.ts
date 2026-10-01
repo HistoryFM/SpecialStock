@@ -7,7 +7,7 @@ import { swingChartRequestBody } from "@/swing/chart-provider";
 describe("dedicated Swing Chart-Img profile", () => {
   it("locks the documented v3 daily layout without Bollinger Bands", () => {
     const body = swingChartRequestBody({ chartSymbol: "NASDAQ:AAPL", from: "2025-03-15T19:50:10.000Z", to: "2026-09-15T19:50:10.000Z" });
-    expect(hashObject(body)).toBe("567e6d04d06ee6ee7acfc5fcbd910fae75bab43f7af8f207257d855c67b7f18c");
+    expect(hashObject(body)).toBe("9071a62cd3baa3c536b8ce96c90a7abdf3dde0999187677f655a8d64af3026d9");
     expect(body).toMatchObject({
       symbol: "NASDAQ:AAPL", interval: "1D", width: 1600, height: 1920, style: "candle", theme: "dark",
       scale: "regular", session: "regular", timezone: "America/New_York", format: "png",

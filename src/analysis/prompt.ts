@@ -1,6 +1,6 @@
 import type { ChartAnalysisInput } from "@/analysis/types";
 
-export const COMPACT_PROMPT_VERSION = "chart-compact-v3";
+export const COMPACT_PROMPT_VERSION = "chart-compact-v4";
 export const FULL_PROMPT_VERSION = "chart-full-v4";
 export const CHAT_PROMPT_VERSION = "analysis-chat-v1";
 export const PROMPT_VERSION = COMPACT_PROMPT_VERSION;
@@ -81,7 +81,7 @@ Captured at: ${input.capturedAt}
 Interval/session: ${input.interval}, ${input.session}
 Latest bar status: ${input.barStatus}
 
-Return exactly six judgments: observed price (p), verdict (v), conviction (c), target (t), invalidation (i), and visual quality (q).
+Return exactly ${input.interval === "5m" ? "seven" : "six"} judgments: observed price (p), verdict (v), conviction (c), target (t), invalidation (i), and visual quality (q)${input.interval === "5m" ? ", plus the second-to-last visible five-minute candle close (pc)" : ""}.
 
 Guardrails:
 
@@ -92,6 +92,7 @@ For bullish: target > observed price > invalidation. For bearish: target < obser
 Treat an open candle as incomplete.
 Conviction is qualitative, never a probability.
 Visual quality is clear only when the price and the relevant panes/labels are legible, partial when a judgment remains possible with limited visibility, and unreadable when no reliable judgment is possible.
+${input.interval === "5m" ? "For pc, transcribe only the close of the second-to-last visible five-minute candle. Return null if it is not clearly legible; do not estimate it." : ""}
 Return no narratives, evidence, indicator readings, or extra fields.`;
 }
 

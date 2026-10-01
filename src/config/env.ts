@@ -31,6 +31,7 @@ export const serverEnvSchema = z.object({
   OPENROUTER_API_URL: z.string().url().default("https://openrouter.ai/api/v1/chat/completions"),
   ALPACA_API_KEY: optionalSecret,
   ALPACA_API_SECRET: optionalSecret,
+  SCHWAB_ACCESS_TOKEN: optionalSecret,
   SPECIALSTOCK_DEMO_MODE: z.enum(["0", "1"]).optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 }).superRefine((value, context) => {
@@ -64,6 +65,7 @@ export function parseServerEnv(
     OPENROUTER_API_URL: environment.OPENROUTER_API_URL,
     ALPACA_API_KEY: environment.ALPACA_API_KEY || undefined,
     ALPACA_API_SECRET: environment.ALPACA_API_SECRET || undefined,
+    SCHWAB_ACCESS_TOKEN: environment.SCHWAB_ACCESS_TOKEN || undefined,
     SPECIALSTOCK_DEMO_MODE: environment.SPECIALSTOCK_DEMO_MODE,
     NODE_ENV: environment.NODE_ENV,
   });

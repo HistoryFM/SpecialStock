@@ -21,10 +21,10 @@ export class SwingChartError extends Error {
 }
 
 export function swingChartRequestBody(input: { chartSymbol: string; from: string; to: string; timezone?: SwingChartInput["timezone"] }) {
-  const line = (name: string, length: number, color: string) => ({
+  const line = (name: string, length: number, color: string, showLegendValue = false) => ({
     name, forceOverlay: true,
     input: { length, source: "close", offset: 0, smoothingLine: "SMA", smoothingLength: length },
-    override: { "Plot.visible": true, "Plot.linewidth": 2, "Plot.plottype": "line", "Plot.color": color },
+    override: { "Plot.visible": true, "Plot.linewidth": 2, "Plot.plottype": "line", "Plot.color": color, ...(showLegendValue ? { showLegendValues: true } : {}) },
   });
   return {
     symbol: input.chartSymbol,
@@ -52,8 +52,8 @@ export function swingChartRequestBody(input: { chartSymbol: string; from: string
       showHorzGrid: true,
     },
     studies: [
-      line("Moving Average Exponential", 8, "rgb(255,193,7)"),
-      line("Moving Average Exponential", 20, "rgb(0,188,212)"),
+      line("Moving Average Exponential", 8, "rgb(255,193,7)", true),
+      line("Moving Average Exponential", 20, "rgb(0,188,212)", true),
       line("Moving Average", 50, "rgb(156,39,176)"),
       line("Moving Average", 200, "rgb(244,67,54)"),
       { name: "Volume", forceOverlay: false, override: { "Volume.plottype": "columns" } },

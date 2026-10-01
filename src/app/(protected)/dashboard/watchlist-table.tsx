@@ -7,7 +7,7 @@ import type { ManualScanTimeframe } from "@/analysis/types";
 import type { SymbolDashboardItem } from "@/dashboard/data";
 
 export type WatchlistFilter = "all" | "bullish" | "bearish";
-type SortKey = "configured" | "symbol" | "verdict" | "conviction" | "automaticScanEnabled" | "price" | "sourceAt" | "scannedAt";
+type SortKey = "configured" | "symbol" | "verdict" | "conviction" | "gexGate" | "automaticScanEnabled" | "price" | "sourceAt" | "scannedAt";
 
 const filters: Array<{ value: WatchlistFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -140,8 +140,8 @@ export function filterAndSortItems(
       if (left !== right) return direction === "desc" ? right - left : left - right;
       return aEntry.index - bEntry.index;
     }
-    const left = sortKey === "price" ? a.latestPrice : a[sortKey];
-    const right = sortKey === "price" ? b.latestPrice : b[sortKey];
+    const left = sortKey === "price" ? a.latestPrice : sortKey === "gexGate" ? (a.gexGate ?? "No daily GEX") : a[sortKey];
+    const right = sortKey === "price" ? b.latestPrice : sortKey === "gexGate" ? (b.gexGate ?? "No daily GEX") : b[sortKey];
     if (left === null && right === null) return aEntry.index - bEntry.index;
     if (left === null) return 1;
     if (right === null) return -1;
@@ -457,6 +457,7 @@ export function WatchlistTable({
                   <SortButton label="Conviction" value="conviction" active={sortKey === "conviction"} direction={direction} onSort={sort} />
                 </div>
               </th>
+              <th><SortButton label="GEX Gate" value="gexGate" active={sortKey === "gexGate"} direction={direction} onSort={sort} /></th>
               <th><SortButton label="Auto" value="automaticScanEnabled" active={sortKey === "automaticScanEnabled"} direction={direction} onSort={sort} /></th>
               <th>Visual quality</th>
               <th>Target / invalidation</th>
@@ -510,6 +511,7 @@ export function WatchlistTable({
                     <small className={`run-state ${runState.tone}`}>{runState.label}</small>
                     {rowProgress.length ? <small className="run-state running">Batch: {rowProgress.map((run) => `${run.timeframe} ${run.status}`).join(" · ")}</small> : null}
                   </td>
+                  <td><span className="gex-gate">{item.gexGate ?? "No daily GEX"}</span></td>
                   <td>
                     <span className={`auto-state ${item.automaticScanEnabled ? "on" : "off"}`}>
                       {item.automaticScanEnabled ? "Auto on" : "Auto off"}

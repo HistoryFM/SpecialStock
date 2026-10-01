@@ -409,6 +409,9 @@ export const analyses = pgTable("analyses", {
   fullLeaseExpiresAt: timestamp("full_lease_expires_at", { withTimezone: true }),
   fullError: text("full_error"),
   observedPrice: numeric("observed_price", { precision: 20, scale: 8 }),
+  previousCompletedCandleClose: numeric("previous_completed_candle_close", { precision: 20, scale: 8 }),
+  gexGate: text("gex_gate"),
+  gexDatasetRunAt: timestamp("gex_dataset_run_at", { withTimezone: true }),
   candlestickAnalysis: text("candlestick_analysis"),
   volumeAnalysis: text("volume_analysis"),
   vwapKeltnerAnalysis: text("vwap_keltner_analysis"),
@@ -818,6 +821,43 @@ export const gexSettings = pgTable("gex_settings", {
   check("gex_settings_singleton", sql`${table.id} = 1`),
   check("gex_settings_symbols_size", sql`jsonb_array_length(${table.symbols}) <= 100`),
 ]);
+
+export const gexLists = pgTable("gex_lists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),
+  parentListId: uuid("parent_list_id"),
+  symbols: jsonb("symbols").$type<string[]>().default([]).notNull(),
+  sourceFilename: text("source_filename"),
+  active: boolean("active").default(false).notNull(),
+  ...timestamps,
+}, (table) => [index("gex_lists_active_idx").on(table.active), index("gex_lists_parent_idx").on(table.parentListId)]);
+
+export const gexTemplates = pgTable("gex_templates", {
+  id: uuid("id").defaultRandom().primaryKey(), kind: text("kind").notNull(), version: integer("version").notNull(),
+  content: text("content").notNull(), active: boolean("active").default(false).notNull(), createdAt: timestamps.createdAt,
+}, (table) => [uniqueIndex("gex_templates_kind_version_unique").on(table.kind, table.version), index("gex_templates_kind_created_idx").on(table.kind, table.createdAt)]);
+
+export const gexDatasets = pgTable("gex_datasets", {
+  id: uuid("id").defaultRandom().primaryKey(), category: text("category").notNull(), runAt: timestamp("run_at", { withTimezone: true }).notNull(),
+  rows: jsonb("rows").$type<unknown[]>().notNull(), createdAt: timestamps.createdAt,
+}, (table) => [index("gex_datasets_category_run_idx").on(table.category, table.runAt)]);
+
+export const gexModelRuns = pgTable("gex_model_runs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  symbol: text("symbol").notNull(),
+  category: text("category").notNull(),
+  purpose: text("purpose").notNull(),
+  requestedModel: text("requested_model").notNull(),
+  actualModel: text("actual_model"),
+  actualProvider: text("actual_provider"),
+  responseId: text("response_id"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  reasoningTokens: integer("reasoning_tokens"),
+  costUsd: numeric("cost_usd", { precision: 16, scale: 8 }),
+  createdAt: timestamps.createdAt,
+}, (table) => [index("gex_model_runs_created_idx").on(table.createdAt)]);
 
 export type AppSettingsRow = typeof appSettings.$inferSelect;
 export type NewAppSettingsRow = typeof appSettings.$inferInsert;

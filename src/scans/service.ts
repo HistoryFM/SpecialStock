@@ -34,6 +34,7 @@ import {
 } from "@/market-data/time";
 import type { MarketDataProvider, MarketSession } from "@/market-data/provider";
 import { evaluatePendingOutcomes } from "@/outcomes/evaluate";
+import { persistGexGateForFiveMinuteScan } from "@/gex/gate";
 import {
   getScanExecutionPolicy,
   MANUAL_SMOKE_SLOT_KIND,
@@ -314,6 +315,7 @@ export async function persistModelResult(input: {
           visualQuality: result.visual_quality,
           fullAnalysisState: "not_requested",
           observedPrice: result.observed_price === null ? null : String(result.observed_price),
+          previousCompletedCandleClose: result.previous_completed_candle_close === null ? null : String(result.previous_completed_candle_close),
           primaryTarget: result.primary_target === null ? null : String(result.primary_target),
           invalidationLevel:
             result.invalidation_level === null ? null : String(result.invalidation_level),
@@ -625,6 +627,26 @@ export async function runScan(input: {
             promptRevision,
           }),
         );
+        if (timeframe === "5m") {
+          await Sentry.startSpan(
+            {
+              name: "Persist GEX scanner gate",
+              op: "specialstock.gex.gate",
+              attributes: {
+                "specialstock.symbol": input.symbol,
+                "specialstock.scan.slot_id": claim.slot.id,
+              },
+            },
+            () => persistGexGateForFiveMinuteScan({
+              analysisId: primary.analysis.id,
+              symbol: input.symbol,
+              price: primary.analysis.observedPrice === null ? null : Number(primary.analysis.observedPrice),
+              previousPrice: primary.analysis.previousCompletedCandleClose === null
+                ? null
+                : Number(primary.analysis.previousCompletedCandleClose),
+            }),
+          );
+        }
         stage = "thesis_and_outcomes";
         await Sentry.startSpan(
           {

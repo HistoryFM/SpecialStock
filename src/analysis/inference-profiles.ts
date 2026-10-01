@@ -30,12 +30,12 @@ export function compactInferenceProfileFor(usageClass: "routine_compact" | "manu
 }
 
 export const FULL_INFERENCE_PROFILE = {
-  id: "full-low-v1",
+  id: "full-medium-v1",
   settings: {
     temperature: 0.1,
     maxTokens: 3_200,
     providerTimeoutMs: 45_000,
-    reasoning: { mode: "effort", effort: "low" },
+    reasoning: { mode: "effort", effort: "medium" },
   } satisfies InferenceRequestSettings,
   estimatedCostUsd: 0.08,
 } as const;

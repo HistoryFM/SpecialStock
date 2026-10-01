@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 const allowedEnvironmentFiles = new Set([".env.example"]);
 const forbiddenPaths = [
-  /(^|\/)\.data(?:\/|$)/,
+  /(^|\/)\.data(?:-[^/]+)?(?:\/|$)/,
   /(^|\/)\.next(?:\/|$)/,
   /(^|\/)node_modules(?:\/|$)/,
   /(^|\/)coverage(?:\/|$)/,
@@ -19,6 +19,15 @@ const configuredSecretNames = new Set([
   "ALPACA_API_KEY",
   "ALPACA_API_SECRET",
   "DATABASE_URL",
+  "SCHWAB_ACCESS_TOKEN",
+  "SCHWAB_REFRESH_TOKEN",
+  "SCHWAB_APP_KEY",
+  "SCHWAB_APP_SECRET",
+  "SCHWAB_CLIENT_ID",
+  "SCHWAB_CLIENT_SECRET",
+  "SENTRY_AUTH_TOKEN",
+  "SENTRY_DSN",
+  "NEXT_PUBLIC_SENTRY_DSN",
 ]);
 const knownSecretPatterns = [
   { name: "OpenRouter credential", pattern: /sk-or-v1-[A-Za-z0-9_-]{20,}/ },
@@ -52,7 +61,7 @@ function configuredSecrets() {
       const separator = line.indexOf("=");
       return [line.slice(0, separator), line.slice(separator + 1).replaceAll("\\$", "$")];
     })
-    .filter(([name, value]) => configuredSecretNames.has(name) && value.length >= 8);
+    .filter(([name, value]) => (configuredSecretNames.has(name) || /KEY|SECRET|TOKEN|PASSWORD|DSN/i.test(name)) && value.length >= 8);
 }
 
 const failures = [];

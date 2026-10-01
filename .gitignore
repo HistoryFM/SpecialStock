@@ -13,6 +13,7 @@ playwright-report/
 
 # embedded local Postgres data
 .data/
+.data-*/
 
 # local environment files
 .env
