@@ -12,10 +12,10 @@ describe("GEX history and template migration", () => {
     const migration = readFileSync(new URL("../../drizzle/0016_gex_history_templates.sql", import.meta.url), "utf8").replaceAll("--> statement-breakpoint", "");
     await client.exec(migration);
     await client.exec("INSERT INTO gex_templates (kind, version, content, active) VALUES ('engine', 1, 'template', true)");
-    await client.exec("INSERT INTO gex_datasets (category, run_at, rows) VALUES ('daily', now(), '[]'::jsonb)");
+    await client.exec("INSERT INTO gex_datasets (category, run_at, rows) VALUES ('daily', now(), '[]'::jsonb), ('weekly', now(), '[]'::jsonb), ('monthly', now(), '[]'::jsonb), ('manual', now(), '[{\"requestedExpiration\":\"2026-10-16\"}]'::jsonb)");
     const templates = await client.query<{ kind: string; version: number }>("SELECT kind, version FROM gex_templates");
-    const datasets = await client.query<{ category: string }>("SELECT category FROM gex_datasets");
+    const datasets = await client.query<{ category: string }>("SELECT category FROM gex_datasets ORDER BY category");
     expect(templates.rows).toEqual([{ kind: "engine", version: 1 }]);
-    expect(datasets.rows).toEqual([{ category: "daily" }]);
+    expect(datasets.rows).toEqual([{ category: "daily" }, { category: "manual" }, { category: "monthly" }, { category: "weekly" }]);
   });
 });

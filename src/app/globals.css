@@ -3819,6 +3819,13 @@ h1 {
 .gex-upload input { padding: .7rem; }
 .gex-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
 .gex-actions button:disabled { cursor: not-allowed; opacity: .55; }
+.gex-run-controls { display: grid; justify-items: start; gap: 1.1rem; margin: 1.15rem 0; }
+.gex-run-controls label { display: grid; gap: .45rem; width: min(100%, 21rem); color: var(--muted); font-size: .84rem; }
+.gex-run-controls input { width: 100%; padding: .7rem; }
+.gex-results-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 1.5fr) auto; align-items: end; }
+.gex-results-head label { display: grid; gap: .4rem; min-width: 0; color: var(--muted); font-size: .78rem; }
+.gex-results-head select { width: 100%; min-width: 0; padding: .55rem; }
+.gex-results-head time { padding: .5rem .65rem; border-radius: .4rem; background: var(--surface-soft); color: var(--muted); font-size: .78rem; white-space: nowrap; }
 .gex-downloads .secondary-button:disabled { cursor: default; }
 .gex-gate { font-size: .72rem; font-weight: 700; white-space: nowrap; }
 .gex-feedback, .gex-error { margin: 1rem 0 0; font-size: .82rem; line-height: 1.5; }
@@ -3844,4 +3851,5 @@ h1 {
 .gex-table-wrap tbody tr:hover { background: var(--surface-soft); }
 .gex-table-wrap .numeric { text-align: right; font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) { .gex-grid { grid-template-columns: 1fr; } }
+@media (max-width: 960px) { .gex-results-head { grid-template-columns: 1fr; align-items: stretch; } .gex-results-head time { justify-self: start; } }
 @media (max-width: 620px) { .gex-shell { width: min(100% - 1rem, 90rem); } .gex-hero { align-items: start; flex-direction: column; } .gex-hero-status { justify-items: start; } .gex-spend { text-align: left; } .gex-actions { flex-direction: column; } .gex-actions button { width: 100%; } }

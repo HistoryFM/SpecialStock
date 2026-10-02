@@ -4,12 +4,13 @@ import { GexChartImgProvider } from "@/gex/chart-provider";
 import { GexChartValueReader, type GexChartReading, type GexModelUsage } from "@/gex/chart-reader";
 import { GexFlipReader } from "@/gex/gex-flip-reader";
 
-export const GEX_CATEGORIES = ["daily", "weekly", "monthly"] as const;
+export const GEX_CATEGORIES = ["daily", "weekly", "monthly", "manual"] as const;
 export type GexCategory = (typeof GEX_CATEGORIES)[number];
 
 export type GexLiveRow = {
   symbol: string;
   category: GexCategory;
+  requestedExpiration?: string;
   expiration: string;
   underlyingPrice: number;
   gexFlip: number;
@@ -75,19 +76,53 @@ function expiryDate(key: string): Date | null {
 
 function isoDate(date: Date): string { return date.toISOString().slice(0, 10); }
 
-function thirdWednesday(year: number, month: number): Date {
+function thirdFriday(year: number, month: number): Date {
   const first = new Date(Date.UTC(year, month, 1, 12));
-  return new Date(Date.UTC(year, month, 1 + ((3 - first.getUTCDay() + 7) % 7) + 14, 12));
+  return new Date(Date.UTC(year, month, 1 + ((5 - first.getUTCDay() + 7) % 7) + 14, 12));
 }
 
-function chooseExpiration(keys: string[], category: GexCategory, now: Date): string {
-  const options = keys.map((key) => ({ key, date: expiryDate(key) })).filter((value): value is { key: string; date: Date } => value.date !== null).filter((value) => value.date >= new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12))).sort((a, b) => a.date.getTime() - b.date.getTime());
+export function validRequestedExpiration(value: string, now = new Date()): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = expiryDate(value);
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  return parsed !== null && isoDate(parsed) === value && value >= today;
+}
+
+function chooseExpiration(keys: string[], category: GexCategory, now: Date, requestedExpiration?: string): string {
+  if (category === "manual" && (!requestedExpiration || !validRequestedExpiration(requestedExpiration, now))) {
+    throw new GexLiveError("unavailable", "Select a valid current or future expiration date for manual GEX.");
+  }
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  const easternHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hourCycle: "h23" }).format(now));
+  const todayDate = expiryDate(today)!;
+  const afterClose = easternHour >= 16;
+  const weeklyAfterClose = category === "weekly" && todayDate.getUTCDay() === 5 && afterClose;
+  const currentThirdFriday = thirdFriday(todayDate.getUTCFullYear(), todayDate.getUTCMonth());
+  const earliest = category === "manual" ? requestedExpiration! : today;
+  const options = keys.map((key) => ({ key, date: expiryDate(key) })).filter((value): value is { key: string; date: Date } => value.date !== null).filter((value) => {
+    const date = isoDate(value.date);
+    if (((category === "daily" && afterClose) || weeklyAfterClose) && date <= today) return false;
+    return date >= earliest;
+  }).sort((a, b) => a.date.getTime() - b.date.getTime());
+  if (category === "manual") {
+    if (!options.length) throw new GexLiveError("unavailable", `Schwab returned no expiration on or after ${earliest}.`);
+    return options[0]!.key;
+  }
   if (!options.length) throw new GexLiveError("unavailable", "Schwab did not return a usable future expiration.");
   if (category === "daily") return options[0]!.key;
-  if (category === "weekly") return options.find((value) => value.date.getUTCDay() === 5)?.key ?? options[0]!.key;
-  let target = thirdWednesday(now.getUTCFullYear(), now.getUTCMonth());
-  if (target < options[0]!.date) target = thirdWednesday(now.getUTCFullYear(), now.getUTCMonth() + 1);
-  return options.slice().sort((a, b) => Math.abs(a.date.getTime() - target.getTime()) - Math.abs(b.date.getTime() - target.getTime()))[0]!.key;
+  if (category === "weekly") {
+    const friday = options.find((value) => value.date.getUTCDay() === 5);
+    if (weeklyAfterClose && !friday) throw new GexLiveError("unavailable", "Schwab returned no later Friday expiration after the 4 p.m. Eastern cutoff.");
+    return friday?.key ?? options[0]!.key;
+  }
+  const currentDate = isoDate(currentThirdFriday);
+  const target = today > currentDate || (today === currentDate && afterClose)
+    ? thirdFriday(todayDate.getUTCFullYear(), todayDate.getUTCMonth() + 1)
+    : currentThirdFriday;
+  const targetDate = isoDate(target);
+  const monthlyExpiry = options.find((value) => isoDate(value.date) === targetDate);
+  if (!monthlyExpiry) throw new GexLiveError("unavailable", `Schwab returned no options chain for the monthly third-Friday expiration ${targetDate}.`);
+  return monthlyExpiry.key;
 }
 
 function contracts(map: Record<string, Record<string, Contract[]>> | undefined, expiry: string): Contract[] {
@@ -128,12 +163,16 @@ function expectedMove(contractsForExpiry: Contract[], spot: number, expiry: Date
 
 /** Computes dollar GEX as open interest × gamma × 100 × spot²; calls are positive and puts negative.
  * Activity walls are ranked separately by open interest plus traded volume. */
-export function calculateGex(chain: Chain, symbol: string, category: GexCategory, now = new Date()): GexLiveRow {
+export function calculateGex(chain: Chain, symbol: string, category: GexCategory, now = new Date(), requestedExpiration?: string): GexLiveRow {
   const spot = number(chain.underlyingPrice) ?? number(chain.underlying?.mark) ?? number(chain.underlying?.last);
   if (!spot || spot <= 0) throw new GexLiveError("unavailable", `${symbol} did not include a usable underlying price.`);
   const keys = [...new Set([...Object.keys(chain.callExpDateMap ?? {}), ...Object.keys(chain.putExpDateMap ?? {})])];
-  const expiry = chooseExpiration(keys, category, now);
+  const availableKeys = category === "manual"
+    ? Object.keys(chain.callExpDateMap ?? {}).filter((key) => contracts(chain.callExpDateMap, key).length > 0 && contractsForDate(chain.putExpDateMap, key.slice(0, 10)).length > 0)
+    : keys;
+  const expiry = chooseExpiration(availableKeys, category, now, requestedExpiration);
   const expiryValue = expiryDate(expiry)!;
+  const putExpiry = category === "manual" ? Object.keys(chain.putExpDateMap ?? {}).find((key) => key.startsWith(`${isoDate(expiryValue)}:`)) ?? expiry : expiry;
   const callByStrike = new Map<number, number>(); const putByStrike = new Map<number, number>();
   const callWallScore = new Map<number, number>(); const putWallScore = new Map<number, number>();
   for (const contract of contracts(chain.callExpDateMap, expiry)) {
@@ -142,7 +181,7 @@ export function calculateGex(chain: Chain, symbol: string, category: GexCategory
     callByStrike.set(strike, (callByStrike.get(strike) ?? 0) + openInterest * gamma * 100 * spot ** 2);
     callWallScore.set(strike, (callWallScore.get(strike) ?? 0) + openInterest + Math.max(0, volume));
   }
-  for (const contract of contracts(chain.putExpDateMap, expiry)) {
+  for (const contract of contracts(chain.putExpDateMap, putExpiry)) {
     const strike = number(contract.strikePrice); const gamma = number(contract.gamma); const openInterest = number(contract.openInterest); const volume = number(contract.totalVolume) ?? number(contract.volume) ?? 0;
     if (strike === null || gamma === null || openInterest === null || gamma < 0 || openInterest < 0) continue;
     putByStrike.set(strike, (putByStrike.get(strike) ?? 0) - openInterest * gamma * 100 * spot ** 2);
@@ -156,8 +195,8 @@ export function calculateGex(chain: Chain, symbol: string, category: GexCategory
   for (const [strike, value] of putByStrike) net.set(strike, (net.get(strike) ?? 0) + value);
   const flip = zeroCrossing([...net.entries()]);
   if (callWall === null || putWall === null || activityCallWall === null || activityPutWall === null || flip === null) throw new GexLiveError("unavailable", `${symbol} did not include enough gamma and open-interest data for the selected expiration.`);
-  const expectedMoveValue = expectedMove([...contracts(chain.callExpDateMap, expiry), ...contracts(chain.putExpDateMap, expiry)], spot, expiryValue, now);
-  return { symbol, category, expiration: isoDate(expiryValue), underlyingPrice: spot, gexFlip: flip, callWall, putWall, activityCallWall, activityPutWall, netGex: [...net.values()].reduce((sum, value) => sum + value, 0), expectedMove: expectedMoveValue, levels: null, calculatedAt: now.toISOString(), chart: null };
+  const expectedMoveValue = expectedMove([...contracts(chain.callExpDateMap, expiry), ...contracts(chain.putExpDateMap, putExpiry)], spot, expiryValue, now);
+  return { symbol, category, ...(category === "manual" ? { requestedExpiration } : {}), expiration: isoDate(expiryValue), underlyingPrice: spot, gexFlip: flip, callWall, putWall, activityCallWall, activityPutWall, netGex: [...net.values()].reduce((sum, value) => sum + value, 0), expectedMove: expectedMoveValue, levels: null, calculatedAt: now.toISOString(), chart: null };
 }
 
 export async function fetchSchwabChain(symbol: string, fetcher: typeof fetch = fetch): Promise<Chain> {
@@ -192,7 +231,10 @@ export async function fetchSchwabChain(symbol: string, fetcher: typeof fetch = f
   throw new GexLiveError("provider", "Schwab options data could not be retrieved.");
 }
 
-export async function runLiveGex(symbols: string[], category: GexCategory, fetcher: typeof fetch = fetch): Promise<{ rows: GexLiveRow[]; failures: string[]; warnings: string[]; modelUsage: Array<GexModelUsage & { symbol: string; category: GexCategory }> }> {
+export async function runLiveGex(symbols: string[], category: GexCategory, fetcher: typeof fetch = fetch, requestedExpiration?: string): Promise<{ rows: GexLiveRow[]; failures: string[]; warnings: string[]; modelUsage: Array<GexModelUsage & { symbol: string; category: GexCategory }> }> {
+  if (category === "manual" && (!requestedExpiration || !validRequestedExpiration(requestedExpiration))) {
+    throw new GexLiveError("unavailable", "Select a valid current or future expiration date for manual GEX.");
+  }
   const chartProvider = new GexChartImgProvider();
   const chartReader = new GexChartValueReader();
   const flipReader = new GexFlipReader();
@@ -203,7 +245,7 @@ export async function runLiveGex(symbols: string[], category: GexCategory, fetch
     for (let symbol = pending.shift(); symbol; symbol = pending.shift()) {
       try {
         const chain = await fetchSchwabChain(symbol, fetcher);
-        const row = calculateGex(chain, symbol, category);
+        const row = calculateGex(chain, symbol, category, new Date(), requestedExpiration);
         try {
           const flip = await flipReader.calculate({
             symbol, spot: row.underlyingPrice, expiration: row.expiration,

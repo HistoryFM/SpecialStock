@@ -106,23 +106,48 @@ export async function saveGexDataset(category: string, rows: unknown[]) {
     const expiration = typeof value.expiration === "string" ? value.expiration : "unknown-expiry";
     return { ...value, datasetTitle: `${symbol}-${expiration}-${category}-${runLabel} ET` };
   });
-  await database.insert(gexDatasets).values({ category, runAt, rows: titledRows });
+  const [saved] = await database.insert(gexDatasets).values({ category, runAt, rows: titledRows }).returning({ id: gexDatasets.id });
   const old = await database.select({ id: gexDatasets.id }).from(gexDatasets).where(eq(gexDatasets.category, category)).orderBy(desc(gexDatasets.runAt)).offset(3);
   if (old.length) await database.delete(gexDatasets).where(inArray(gexDatasets.id, old.map((row) => row.id)));
-  return runAt;
+  return { id: saved.id, runAt };
 }
 
 export async function getLatestGexDataset(category: GexCategory) {
   const database = await getDatabase();
-  const [dataset] = await database.select({ rows: gexDatasets.rows, runAt: gexDatasets.runAt })
+  const [dataset] = await database.select({ id: gexDatasets.id, rows: gexDatasets.rows, runAt: gexDatasets.runAt })
     .from(gexDatasets).where(eq(gexDatasets.category, category)).orderBy(desc(gexDatasets.runAt)).limit(1);
   return dataset ? { ...dataset, rows: dataset.rows as GexLiveRow[] } : null;
+}
+
+export async function getGexDatasetById(id: string) {
+  const database = await getDatabase();
+  const [dataset] = await database.select({ id: gexDatasets.id, category: gexDatasets.category, rows: gexDatasets.rows, runAt: gexDatasets.runAt })
+    .from(gexDatasets).where(eq(gexDatasets.id, id)).limit(1);
+  return dataset ? { ...dataset, rows: dataset.rows as GexLiveRow[] } : null;
+}
+
+export type GexDatasetSummary = { id: string; category: GexCategory; optionDate: string; runAt: string };
+
+export async function getRecentGexDatasetSummaries(): Promise<GexDatasetSummary[]> {
+  const database = await getDatabase();
+  const datasets = await database.select({ id: gexDatasets.id, category: gexDatasets.category, rows: gexDatasets.rows, runAt: gexDatasets.runAt })
+    .from(gexDatasets).orderBy(desc(gexDatasets.runAt));
+  const order = ["manual", "daily", "weekly", "monthly"] as const;
+  return order.flatMap((category) => datasets.filter((dataset) => dataset.category === category).slice(0, 3).map((dataset) => {
+    const first = (dataset.rows as GexLiveRow[])[0];
+    return {
+      id: dataset.id,
+      category,
+      optionDate: category === "manual" ? first?.requestedExpiration ?? first?.expiration ?? "Unknown expiry" : first?.expiration ?? "Unknown expiry",
+      runAt: dataset.runAt.toISOString(),
+    };
+  }));
 }
 
 export async function getAvailableGexDatasetCategories(): Promise<GexCategory[]> {
   const database = await getDatabase();
   const datasets = await database.select({ category: gexDatasets.category }).from(gexDatasets);
-  return (["daily", "weekly", "monthly"] as const).filter((category) => datasets.some((dataset) => dataset.category === category));
+  return (["daily", "weekly", "monthly", "manual"] as const).filter((category) => datasets.some((dataset) => dataset.category === category));
 }
 
 export type GexUsageSummary = {

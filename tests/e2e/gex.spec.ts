@@ -1,6 +1,21 @@
 import ExcelJS from "exceljs";
 import { expect, test } from "@playwright/test";
 
+test("manual expiration requires a date and rejects an invalid date", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByLabel("Shared password").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("link", { name: "GEX Analysis" }).click();
+  await page.getByLabel("Expiration category").selectOption("monthly");
+  await expect(page.getByLabel("Expiration category").locator("option:checked")).toHaveText("Monthly - third friday");
+  await page.getByLabel("Expiration category").selectOption("manual");
+  await expect(page.getByLabel("Expiration date")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Calculate live GEX" })).toBeDisabled();
+  await page.getByLabel("Expiration date").fill("2026-10-16");
+  const invalidManual = await page.request.post("/api/gex/run", { data: { category: "manual", selectedDate: "2026-02-30" } });
+  expect(invalidManual.status()).toBe(400);
+});
+
 test("GEX keeps an independent list and leaves sample preview tables out of the live workspace", async ({ page }) => {
   const unauthorized = await page.request.get("/api/gex/state");
   expect(unauthorized.status()).toBe(401);
@@ -22,6 +37,13 @@ test("GEX keeps an independent list and leaves sample preview tables out of the 
   await expect(listPanel.getByRole("status")).toContainText("1 duplicate removed");
   await expect(listPanel.getByRole("status")).toContainText("1 invalid item excluded");
   await expect(page.getByRole("heading", { name: "Sample wall tables" })).toHaveCount(0);
+
+  await page.getByLabel("Expiration category").selectOption("manual");
+  await expect(page.getByRole("button", { name: "Calculate live GEX" })).toBeDisabled();
+  await page.getByLabel("Expiration date").fill("2026-10-16");
+  await expect(page.getByRole("button", { name: "Calculate live GEX" })).toBeEnabled();
+  const invalidManual = await page.request.post("/api/gex/run", { data: { category: "manual", selectedDate: "2026-02-30" } });
+  expect(invalidManual.status()).toBe(400);
 
   const stateResponse = await page.request.get("/api/gex/state");
   const state = (await stateResponse.json() as { state: { symbols: string[]; revision: number } }).state;
